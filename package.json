@@ -4,6 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "build": "pnpx tsc",
+    "init:db": "pnpx prisma migrate dev --skip-generate",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -17,10 +19,13 @@
   },
   "dependencies": {
     "@mozilla/readability": "^0.4.4",
+    "@prisma/client": "^4.13.0",
+    "dotenv": "^16.0.3",
     "html-to-text": "^9.0.5",
     "jsdom": "^21.1.1",
     "langchain": "^0.0.63",
     "node-inmemory": "^0.1.0",
+    "prisma": "^4.13.0",
     "puppeteer": "^19.10.1"
   }
 }

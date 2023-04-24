@@ -1,4 +1,7 @@
 import { parseArgs } from "util";
+import { config } from "dotenv";
+
+config();
 
 const {
     values: { url, key },
