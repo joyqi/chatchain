@@ -1,0 +1,26 @@
+{
+  "name": "chaturl",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/html-to-text": "^9.0.0",
+    "@types/jsdom": "^21.1.1",
+    "@types/node": "^18.16.0",
+    "typescript": "^5.0.4"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.4.4",
+    "html-to-text": "^9.0.5",
+    "jsdom": "^21.1.1",
+    "langchain": "^0.0.63",
+    "node-inmemory": "^0.1.0",
+    "puppeteer": "^19.10.1"
+  }
+}
