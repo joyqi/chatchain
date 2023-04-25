@@ -8,7 +8,7 @@ const qaTemplate = `Use the following pieces of context to answer the question $
 Question: {question}
 Helpful Answer:`;
 
-export type Respond = (question: string, fn: (str: string) => void) => Promise<void>;
+export type Respond = (question: string, fn?: (str: string) => void) => Promise<string>;
 
 export abstract class Responder {
     protected history: string[] = [];

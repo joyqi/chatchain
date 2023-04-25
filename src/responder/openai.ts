@@ -27,18 +27,19 @@ export default class extends Responder {
 
         const chain = this.createLLMChain(model);
 
-        return async (question: string, fn: (str: string) => void) => {
-            if (streaming) {
+        return async (question: string, fn?: (str: string) => void) => {
+            if (streaming && fn) {
                 cb = fn;
             }
 
             const { text } = await chain.call({ question, chat_history: this.history });
 
-            if (!streaming) {
+            if (!streaming && fn) {
                 fn(text);
             }
 
             this.history.push(question, text);
+            return text;
         }
     }
 }
