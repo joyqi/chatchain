@@ -1,11 +1,12 @@
 {
-  "name": "chaturl",
+  "name": "readgpt",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
-    "build": "pnpx tsc",
-    "init:db": "pnpx prisma migrate dev --skip-generate",
+    "start": "pnpm exec ts-node src/index.ts",
+    "build": "pnpm exec tsc",
+    "init:db": "pnpm exec prisma migrate dev --skip-generate",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -13,19 +14,26 @@
   "license": "ISC",
   "devDependencies": {
     "@types/html-to-text": "^9.0.0",
+    "@types/inquirer": "^8.0.0",
     "@types/jsdom": "^21.1.1",
     "@types/node": "^18.16.0",
+    "ts-node": "^10.9.1",
     "typescript": "^5.0.4"
   },
   "dependencies": {
+    "@dqbd/tiktoken": "^1.0.6",
     "@mozilla/readability": "^0.4.4",
     "@prisma/client": "^4.13.0",
     "dotenv": "^16.0.3",
+    "hnswlib-node": "^1.4.2",
     "html-to-text": "^9.0.5",
+    "inquirer": "^8.0.0",
     "jsdom": "^21.1.1",
     "langchain": "^0.0.63",
     "node-inmemory": "^0.1.0",
+    "ora": "^5.0.0",
     "prisma": "^4.13.0",
-    "puppeteer": "^19.10.1"
+    "puppeteer": "^19.10.1",
+    "sentence-splitter": "^4.2.0"
   }
 }

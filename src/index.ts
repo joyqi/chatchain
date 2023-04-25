@@ -1,23 +1,30 @@
-import { OpenAI } from "langchain/llms/openai";
-import { apiKey, srcUrl } from "./args";
-import { crawl } from "./crawlers";
-import { VectorDBQAChain } from "langchain/chains";
-import { getVectorStore, saveVector } from "./store";
+import { vectorStore, handler } from './config';
+import { Handler, WebHandler } from './handler';
+import { PrismaStore, HNSWLibStore, Store } from './store';
 
-async function getEmbeddingsFromUrl(url: string) {
-    const docs = await crawl(url);
-    const texts = docs.map(doc => doc.pageContent);
-    await saveVector(texts);
-    const model = new OpenAI({
-        openAIApiKey: apiKey,
-    });
-    const chain = VectorDBQAChain.fromLLM(model, getVectorStore(), {
-        returnSourceDocuments: true,
-    });
-    return await chain.call({query: "什么是QOS?"});
+function getVectorStore(): Store {
+    switch (vectorStore) {
+        case "prisma":
+            return new PrismaStore();
+        case "hnswlib":
+            return new HNSWLibStore();
+        default:
+            throw new Error("Invalid vector store");
+    }
+}
+
+function getHandler(): Handler {
+    const store = getVectorStore();
+
+    switch (handler) {
+        case "web":
+            return new WebHandler(store);
+        default:
+            throw new Error("Invalid prompt handler");
+    }
 }
 
 (async () => {
-    const embeddings = await getEmbeddingsFromUrl(srcUrl);
-    console.log(embeddings);
+    const handler = getHandler();
+    await handler.start();
 })();
