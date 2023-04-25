@@ -1,6 +1,5 @@
-import { ConversationalRetrievalQAChain } from "langchain/chains";
 import { Responder, Respond } from ".";
-import { chatLang, llmKey } from "../config";
+import { llmKey } from "../config";
 import { OpenAI } from "langchain/llms/openai";
 
 export default class extends Responder {
