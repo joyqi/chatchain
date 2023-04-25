@@ -1,8 +1,7 @@
 import { PrismaVectorStore } from "langchain/vectorstores/prisma";
-import { ConversationalRetrievalQAChain } from "langchain/chains";
 import { PrismaClient, Prisma, Document as PrismaDocument } from "@prisma/client";
 import { inMemory } from "node-inmemory";
-import { getEmbeddings, getModel, Store } from ".";
+import { getEmbeddings, Store } from ".";
 import { Document } from "langchain/document";
 
 const [getDb] = inMemory(() => new PrismaClient());
@@ -34,7 +33,7 @@ export default class implements Store {
         );
     }
 
-    async getChain() {
-        return ConversationalRetrievalQAChain.fromLLM(getModel(), getVectorStore().asRetriever());
+    getVectorStore() {
+        return getVectorStore().asRetriever();
     }
 }

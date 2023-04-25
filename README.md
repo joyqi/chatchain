@@ -38,6 +38,12 @@ HTTP_PROXY=YOUR_PROXY_URL
 HTTPS_PROXY=YOUR_PROXY_URL
 ```
 
+有时候因为你的语料是其它语言，所以输出的结果可能会是其它语言，你可以在 `.env` 文件中添加如下内容：
+
+```
+CHAT_LANG=Chinese
+```
+
 ### 3. Docker 安装 PostgreSQL 数据库(可选)
 
 注意，这一步是可选的，如果你已经安装了 PostgreSQL 数据库或者想直接使用 HNSWLib 数据库，可以跳过这一步。

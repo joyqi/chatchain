@@ -1,14 +1,23 @@
 import inquirer from "inquirer";
 import ora from "ora";
-import { Store } from "../store";
+import { Store, getModel } from "../store";
+import { ConversationalRetrievalQAChain } from "langchain/chains";
+import { chatLang } from "../config";
+
+const qaTemplate = `Use the following pieces of context to answer the question ${chatLang ? `in ${chatLang}` : ''} at the end. If you don't know the answer, just say that you don't know, don't try to make up an answer.
+{context}
+Question: {question}
+Helpful Answer:`;
 
 export abstract class Handler {
     constructor(protected store: Store) { }
 
-    protected abstract handle(): Promise<void>;
+    protected getLLMChain() {
+        const vectorStore = this.store.getVectorStore();
+        return ConversationalRetrievalQAChain.fromLLM(getModel(), vectorStore, { qaTemplate });
+    }
 
-    async start() {
-        await this.handle();
+    async handle() {
         const history = [];
 
         while (true) {
@@ -27,8 +36,7 @@ export abstract class Handler {
             ]);
 
             const spinner = ora("Thinking...").start();
-            const chain = await this.store.getChain();
-            const { text } = await chain.call({ question, chat_history: history });
+            const { text } = await this.getLLMChain().call({ question, chat_history: history });
             history.push(question, text);
             spinner.stop();
 

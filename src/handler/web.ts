@@ -10,10 +10,10 @@ import ora from "ora";
 
 async function fetch(url: string) {
     const browser = await puppeteer.launch({
-        headless: "new",
+        headless: 'new'
     });
     const page = await browser.newPage();
-    await page.goto(url, { waitUntil: "networkidle2" });
+    await page.goto(url, { waitUntil: "domcontentloaded" });
     const html = await page.content();
     await browser.close();
     return html;
@@ -72,5 +72,7 @@ export default class extends Handler {
         const url = await promptUrl();
         const docs = await crawl(url);
         await this.store.saveVector(docs);
+
+        await super.handle();
     }
 }

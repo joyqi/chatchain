@@ -6,6 +6,7 @@ const apiKey = process.env.OPENAI_API_KEY;
 const chunkSize = parseInt(process.env.CHUNK_SIZE || '512');
 const vectorStore = process.env.VECTOR_STORE || "hnswlib";
 const handler = process.env.HANDLER || "web";
+const chatLang = process.env.CHAT_LANG;
 
 if (!apiKey) {
     throw new Error("No API key provided");
@@ -15,4 +16,4 @@ if (!apiKey) {
     throw new Error("Invalid handler provided");
 }
 
-export { apiKey, chunkSize, vectorStore, handler };
+export { apiKey, chunkSize, chatLang, vectorStore, handler };

@@ -26,5 +26,5 @@ function getHandler(): Handler {
 
 (async () => {
     const handler = getHandler();
-    await handler.start();
+    await handler.handle();
 })();

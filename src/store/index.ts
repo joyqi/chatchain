@@ -2,8 +2,8 @@ import { OpenAIEmbeddings } from "langchain/embeddings/openai";
 import { OpenAI } from "langchain/llms/openai";
 import { inMemory } from "node-inmemory";
 import { apiKey } from "../config";
-import { BaseChain } from "langchain/chains";
 import { Document } from "langchain/document";
+import { VectorStoreRetriever } from "langchain/vectorstores/base";
 
 export const [getEmbeddings] = inMemory(() => new OpenAIEmbeddings({
     openAIApiKey: apiKey,
@@ -15,7 +15,7 @@ export const [getModel] = inMemory(() => new OpenAI({
 
 export interface Store {
     saveVector(docs: Document[]): Promise<void>;
-    getChain(): Promise<BaseChain>;
+    getVectorStore(): VectorStoreRetriever;
 }
 
 import PrismaStore from "./prisma";

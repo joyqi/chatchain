@@ -1,6 +1,5 @@
 import { HNSWLib } from "langchain/vectorstores/hnswlib";
-import { ConversationalRetrievalQAChain } from "langchain/chains";
-import { getEmbeddings, getModel, Store } from ".";
+import { getEmbeddings, Store } from ".";
 import { Document } from "langchain/document";
 
 export default class implements Store {
@@ -10,11 +9,11 @@ export default class implements Store {
         this.store = await HNSWLib.fromDocuments(docs, getEmbeddings());
     }
 
-    async getChain() {
+    getVectorStore() {
         if (!this.store) {
             throw new Error("Store not initialized");
         }
 
-        return ConversationalRetrievalQAChain.fromLLM(getModel(), this.store.asRetriever());
+        return this.store.asRetriever();
     }
 }
