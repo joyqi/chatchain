@@ -2,13 +2,16 @@ import { config } from "dotenv";
 
 config();
 
-const apiKey = process.env.OPENAI_API_KEY;
+const llm = process.env.LLM || "openai";
+const llmKey = process.env.LLM_API_KEY;
 const chunkSize = parseInt(process.env.CHUNK_SIZE || '512');
 const vectorStore = process.env.VECTOR_STORE || "hnswlib";
 const handler = process.env.HANDLER || "web";
 const chatLang = process.env.CHAT_LANG;
 
-if (!apiKey) {
+if (!llm || !llm.match(/^(openai)$/)) {
+    throw new Error("Invalid LLM provided");
+} else if (!llmKey) {
     throw new Error("No API key provided");
 } else if (!vectorStore || !vectorStore.match(/^(prisma|hnswlib)$/)) {
     throw new Error("Invalid store provided");
@@ -16,4 +19,4 @@ if (!apiKey) {
     throw new Error("Invalid handler provided");
 }
 
-export { apiKey, chunkSize, chatLang, vectorStore, handler };
+export { llm, llmKey, chunkSize, chatLang, vectorStore, handler };

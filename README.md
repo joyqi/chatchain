@@ -26,10 +26,10 @@ pnpm install
 在项目根目录下放置一个 `.env` 文件，内容如下：
 
 ```
-OPENAI_API_KEY=YOUR_API_KEY
+LLM_API_KEY=YOUR_API_KEY
 ```
 
-把这里的 `YOUR_API_KEY` 改为你的 OpenAI API Key。
+把这里的 `YOUR_API_KEY` 改为你的大语言模型 API Key(默认是 OpenAI)。
 
 如果你想使用 http 代理，可以在 `.env` 文件中添加如下内容：
 
