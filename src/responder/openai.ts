@@ -1,9 +1,9 @@
-import { Responder, Respond } from ".";
+import { Responder, Respond, LLMChainType } from ".";
 import { llmKey } from "../config";
 import { OpenAI } from "langchain/llms/openai";
 
 export default class extends Responder {
-    respond(streaming: boolean): Respond {
+    respond(streaming: boolean, type?: LLMChainType, template?: string): Respond {
         let isRephrasing = false;
         let cb: (str: string) => void;
 
@@ -24,7 +24,7 @@ export default class extends Responder {
             ]
         });
 
-        const chain = this.createLLMChain(model);
+        const chain = this.createLLMChain(model, type, template);
 
         return async (question: string, fn?: (str: string) => void) => {
             if (streaming && fn) {
