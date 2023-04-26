@@ -1,54 +1,55 @@
-# Read GPT
+# Chat Chain
 
-使用 GPT 读取文本并将其向量化存储，用于生成对话场景。
+Use LangChain to read text and vectorize it for generating dialogue scenarios.
 
-## 原理
+## Principle
 
-将预处理后的文本切割并转换为向量（使用 OpenAI 的 Embedding），然后存储到向量数据库中。在后续的对话中先对问题进行向量化处理，然后在向量数据库中搜索到相关文本。使用这些文本生成对话 prompt 提交至 OpenAI，然后获取对话的结果。
+Split and convert the preprocessed text into vectors (default using OpenAI's Embedding), then store it in the vector database. In the subsequent dialogue, first vectorize the question, then search for relevant text in the vector database. Use these texts to generate dialogue prompts and submit them to LLM for results.
 
-## 使用
+## Usage
 
-### 1. 安装依赖
+### 1. Install dependencies
 
-环境需求：
+Requirements:
 
 - Node.js 18.0.0+
 - pnpm 6.0.0+
-- 安装了 pgvector 插件的 PostgreSQL 数据库(可选，默认使用 HNSWLib 数据库)
+- PostgreSQL database with pgvector plugin installed (optional, HNSWLib database is used by default)
 
-在根目录运行如下命令安装所有依赖
+Run the following command to install all dependencies in the root directory
 
 ```bash
 pnpm install
 ```
-### 2. 配置
 
-在项目根目录下放置一个 `.env` 文件，内容如下：
+### 2. Configuration
+
+Place a `.env` file in the project root directory with the following content:
 
 ```
 LLM_API_KEY=YOUR_API_KEY
 ```
 
-把这里的 `YOUR_API_KEY` 改为你的大语言模型 API Key(默认是 OpenAI)。
+Replace `YOUR_API_KEY` with your LLM API Key (default is OpenAI).
 
-如果你想使用 http 代理，可以在 `.env` 文件中添加如下内容：
+If you want to use an http proxy, you can add the following content to the `.env` file:
 
 ```
 HTTP_PROXY=YOUR_PROXY_URL
 HTTPS_PROXY=YOUR_PROXY_URL
 ```
 
-有时候因为你的语料是其它语言，所以输出的结果可能会是其它语言，你可以在 `.env` 文件中添加如下内容：
+Sometimes, because your corpus is in another language, the output result may be in another language. You can add the following content to the `.env` file:
 
 ```
-CHAT_LANG=Chinese
+LLM_LANG=Chinese
 ```
 
-### 3. Docker 安装 PostgreSQL 数据库(可选)
+### 3. Docker install PostgreSQL database (optional)
 
-注意，这一步是可选的，如果你已经安装了 PostgreSQL 数据库或者想直接使用 HNSWLib 数据库，可以跳过这一步。
+Note that this step is optional. If you have already installed the PostgreSQL database or want to use the HNSWLib database directly, you can skip this step.
 
-在 `.env` 文件里添加如下内容：
+Add the following content to the `.env` file:
 
 ```bash
 POSTGRES_USER=super
@@ -58,23 +59,20 @@ DATABASE_URL=postgresql://super:123456@127.0.0.1:5432/test
 VECTOR_STORE=prisma
 ```
 
-请把 `POSTGRES_USER` 和 `POSTGRES_PASSWORD` 改为你想要的用户名和密码，`POSTGRES_DB` 改为你想要的数据库名，`DATABASE_URL` 改为你想要的数据库连接地址。然后运行如下命令启动 PostgreSQL 数据库：
+Replace the `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB` with your own values. The `DATABASE_URL` is the database connection URL, which is composed of the `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` and the database address. The `VECTOR_STORE` is the vector database type, which can be `hnswlib` or `prisma`. Run the following command to start the database:
 
 ```bash
 docker-compose up -d
 ```
 
-然后执行以下命令初始化数据库：
+Run the following command to install the pgvector plugin:
 
 ```bash
 pnpm exec init:db
 ```
 
-### 4. 运行
-
-执行以下命令启动服务：
+### 4. Start the server
 
 ```bash
-pnpm exec start
+pnpm start
 ```
-

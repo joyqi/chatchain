@@ -1,9 +1,9 @@
 import { BaseLLM } from "langchain/dist/llms/base";
-import { chatLang } from "../config";
+import { llmLang } from "../config";
 import { Store } from "../store";
 import { ConversationalRetrievalQAChain } from "langchain/chains";
 
-const qaTemplate = `Use the following pieces of context to answer the question ${chatLang ? `in ${chatLang}` : ''} at the end. If you don't know the answer, just say that you don't know, don't try to make up an answer.
+const qaTemplate = `Use the following pieces of context to answer the question ${llmLang ? `in ${llmLang}` : ''} at the end. If you don't know the answer, just say that you don't know, don't try to make up an answer.
 {context}
 Question: {question}
 Helpful Answer:`;

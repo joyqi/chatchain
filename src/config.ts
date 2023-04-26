@@ -4,10 +4,10 @@ config();
 
 const llm = process.env.LLM || "openai";
 const llmKey = process.env.LLM_API_KEY;
+const llmLang = process.env.LLM_LANG;
 const chunkSize = parseInt(process.env.CHUNK_SIZE || '512');
 const vectorStore = process.env.VECTOR_STORE || "hnswlib";
 const handler = process.env.HANDLER || "web";
-const chatLang = process.env.CHAT_LANG;
 
 if (!llm || !llm.match(/^(openai)$/)) {
     throw new Error("Invalid LLM provided");
@@ -19,4 +19,4 @@ if (!llm || !llm.match(/^(openai)$/)) {
     throw new Error("Invalid handler provided");
 }
 
-export { llm, llmKey, chunkSize, chatLang, vectorStore, handler };
+export { llm, llmKey, chunkSize, llmLang, vectorStore, handler };
