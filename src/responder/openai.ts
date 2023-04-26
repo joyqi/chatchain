@@ -1,13 +1,15 @@
 import { Responder, Respond, LLMChainType } from ".";
 import { llmKey } from "../config";
-import { OpenAI } from "langchain/llms/openai";
+import { OpenAI, OpenAIChat } from "langchain/llms/openai";
+import { ChatOpenAI } from "langchain/chat_models/openai";
+
+type OpenAIOptions = ConstructorParameters<typeof OpenAI>[0] & ConstructorParameters<typeof ChatOpenAI>[0];
 
 export default class extends Responder {
     respond(streaming: boolean, type?: LLMChainType, template?: string): Respond {
         let isRephrasing = false;
         let cb: (str: string) => void;
-
-        const model = new OpenAI({
+        const options: OpenAIOptions = {
             openAIApiKey: llmKey,
             streaming,
             callbacks: [
@@ -22,22 +24,22 @@ export default class extends Responder {
                     },
                 }
             ]
-        });
+        };
 
+        const model = type === 'chat' ? new OpenAIChat(options) : new OpenAI(options);
         const chain = this.createLLMChain(model, type, template);
 
-        return async (question: string, fn?: (str: string) => void) => {
+        return async (question, fn?: (str: string) => void) => {
             if (streaming && fn) {
                 cb = fn;
             }
 
-            const { text } = await chain.call({ question, chat_history: this.history });
+            const text = await this.callChain(chain, question);
 
             if (!streaming && fn) {
                 fn(text);
             }
 
-            this.history.push(question, text);
             return text;
         }
     }

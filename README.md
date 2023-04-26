@@ -27,10 +27,11 @@ pnpm install
 Place a `.env` file in the project root directory with the following content:
 
 ```
+LLM=YOUR_LLM_MODEL
 LLM_API_KEY=YOUR_API_KEY
 ```
 
-Replace `YOUR_API_KEY` with your LLM API Key (default is OpenAI).
+Replace `YOUR_LLM_MODEL` with your LLM model name (default is `openai`). Replace `YOUR_API_KEY` with your LLM API key.
 
 If you want to use an http proxy, you can add the following content to the `.env` file:
 
