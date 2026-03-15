@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChatChain — CLI AI Chat Tool</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0d1117;
+      color: #c9d1d9;
+      font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', Menlo, Monaco, Consolas, monospace;
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 4rem 1.5rem;
+    }
+
+    h1 {
+      font-size: 2.5rem;
+      color: #58a6ff;
+      margin-bottom: 0.25rem;
+      letter-spacing: -0.5px;
+    }
+
+    .slogan {
+      color: #8b949e;
+      font-size: 1rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .slogan::before { content: '> '; color: #484f58; }
+
+    /* ── Hero buttons ── */
+    .hero-buttons {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 2.5rem;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.6rem 1.4rem;
+      border-radius: 6px;
+      text-decoration: none;
+      font-family: inherit;
+      font-size: 0.9rem;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    .btn-primary {
+      background: #238636;
+      color: #fff;
+      border: 1px solid #2ea043;
+    }
+
+    .btn-primary:hover {
+      background: #2ea043;
+      border-color: #3fb950;
+    }
+
+    .btn-secondary {
+      background: #21262d;
+      color: #c9d1d9;
+      border: 1px solid #30363d;
+    }
+
+    .btn-secondary:hover {
+      background: #30363d;
+      border-color: #484f58;
+    }
+
+    .btn svg {
+      width: 16px;
+      height: 16px;
+      fill: currentColor;
+      flex-shrink: 0;
+    }
+
+    /* ── Demo animation ── */
+    .demo {
+      margin-bottom: 2.5rem;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .demo-titlebar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 10px 14px;
+      background: #1c2128;
+      border-bottom: 1px solid #30363d;
+    }
+
+    .demo-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+    }
+
+    .demo-dot:nth-child(1) { background: #f85149; }
+    .demo-dot:nth-child(2) { background: #d29922; }
+    .demo-dot:nth-child(3) { background: #3fb950; }
+
+    .demo-titlebar span:last-child {
+      margin-left: auto;
+      color: #484f58;
+      font-size: 0.75rem;
+    }
+
+    .demo-body {
+      padding: 1rem 1.25rem;
+      min-height: 220px;
+      font-size: 0.85rem;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .demo-body .line { min-height: 1.7em; }
+
+    .demo-body .user-label { color: #58a6ff; font-weight: bold; }
+    .demo-body .assistant-label { color: #d2a8ff; font-weight: bold; }
+    .demo-body .dim { color: #484f58; }
+    .demo-body .system { color: #3fb950; }
+    .demo-body .model-name { color: #d29922; }
+
+    .cursor {
+      display: inline-block;
+      width: 7px;
+      background: #c9d1d9;
+      animation: blink 0.6s step-end infinite;
+      margin-left: 1px;
+    }
+
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
+
+    .demo-restart {
+      display: block;
+      margin: 0 auto;
+      padding: 0;
+      background: none;
+      border: none;
+      color: #484f58;
+      font-family: inherit;
+      font-size: 0.75rem;
+      cursor: pointer;
+      padding: 6px 14px;
+      transition: color 0.15s;
+    }
+
+    .demo-restart:hover { color: #8b949e; }
+
+    section { margin-bottom: 2.5rem; }
+
+    h2 {
+      font-size: 1.1rem;
+      color: #79c0ff;
+      margin-bottom: 0.75rem;
+      border-bottom: 1px solid #21262d;
+      padding-bottom: 0.4rem;
+    }
+
+    h2::before { content: '## '; color: #484f58; }
+
+    p { margin-bottom: 1rem; color: #c9d1d9; font-size: 0.9rem; }
+
+    .features {
+      list-style: none;
+      padding: 0;
+    }
+
+    .features li {
+      padding: 0.35rem 0;
+      font-size: 0.9rem;
+    }
+
+    .features li::before {
+      content: '✓ ';
+      color: #3fb950;
+    }
+
+    .terminal {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.7;
+    }
+
+    .terminal .prompt { color: #3fb950; }
+    .terminal .cmd { color: #c9d1d9; }
+    .terminal .flag { color: #d2a8ff; }
+    .terminal .string { color: #a5d6ff; }
+    .terminal .comment { color: #484f58; }
+
+    .terminal div { white-space: pre; }
+
+    .footer {
+      margin-top: 3rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid #21262d;
+      color: #484f58;
+      font-size: 0.8rem;
+      text-align: center;
+    }
+
+    @media (max-width: 480px) {
+      .container { padding: 2rem 1rem; }
+      h1 { font-size: 1.8rem; }
+      .terminal { font-size: 0.78rem; padding: 0.75rem 1rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>ChatChain</h1>
+    <p class="slogan">Talk to any LLM from your terminal.</p>
+
+    <div class="hero-buttons">
+      <a class="btn btn-primary" href="https://github.com/joyqi/chatchain/releases/latest">
+        <svg viewBox="0 0 16 16"><path d="M2.75 14A1.75 1.75 0 0 1 1 12.25v-2.5a.75.75 0 0 1 1.5 0v2.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25v-2.5a.75.75 0 0 1 1.5 0v2.5A1.75 1.75 0 0 1 13.25 14ZM7.25 7.689V2a.75.75 0 0 1 1.5 0v5.689l1.97-1.969a.749.749 0 1 1 1.06 1.06l-3.25 3.25a.749.749 0 0 1-1.06 0L4.22 6.78a.749.749 0 1 1 1.06-1.06l1.97 1.969Z"/></svg>
+        Download
+      </a>
+      <a class="btn btn-secondary" href="https://github.com/joyqi/chatchain">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        GitHub
+      </a>
+    </div>
+
+    <div class="demo">
+      <div class="demo-titlebar">
+        <div class="demo-dot"></div>
+        <div class="demo-dot"></div>
+        <div class="demo-dot"></div>
+        <span>chatchain</span>
+      </div>
+      <div class="demo-body" id="demo"></div>
+      <button class="demo-restart" id="demo-replay" style="display:none">&#8635; replay</button>
+    </div>
+
+    <section>
+      <h2>About</h2>
+      <p>
+        ChatChain is a lightweight, cross-platform AI chat CLI built with Go.
+        It supports multiple providers, streaming responses, and an interactive
+        terminal UI — all in a single binary with zero configuration files.
+      </p>
+      <ul class="features">
+        <li>Multi-provider: OpenAI, Anthropic, and Gemini</li>
+        <li>Interactive model selection with filtering</li>
+        <li>Streaming responses with real-time output</li>
+        <li>Non-interactive mode for scripts and pipes</li>
+        <li>Full conversation history within a session</li>
+        <li>Custom API endpoint support</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Install</h2>
+      <div class="terminal">
+        <div><span class="prompt">$</span> <span class="cmd">go install github.com/joyqi/chatchain@latest</span></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Usage</h2>
+      <div class="terminal">
+        <div><span class="comment"># Interactive chat with model selection</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-k</span> <span class="string">sk-xxx</span></div>
+        <div></div>
+        <div><span class="comment"># Specify a model directly</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-k</span> <span class="string">sk-xxx</span> <span class="flag">-m</span> <span class="string">gpt-4o</span></div>
+        <div></div>
+        <div><span class="comment"># Use Anthropic</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">chatchain anthropic</span> <span class="flag">-m</span> <span class="string">claude-sonnet-4-20250514</span></div>
+        <div></div>
+        <div><span class="comment"># Non-interactive one-shot</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-m</span> <span class="string">gpt-4o</span> <span class="flag">-c</span> <span class="string">"Explain quicksort in one paragraph"</span></div>
+        <div></div>
+        <div><span class="comment"># Custom API endpoint</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-u</span> <span class="string">https://your-proxy.com/v1</span> <span class="flag">-k</span> <span class="string">sk-xxx</span></div>
+      </div>
+    </section>
+
+    <div class="footer">MIT License &middot; Built with Go</div>
+  </div>
+
+  <script>
+  (function () {
+    var el = document.getElementById('demo');
+    var replayBtn = document.getElementById('demo-replay');
+    var stopped = false;
+
+    // Script: sequence of actions
+    var script = [
+      { type: 'cmd',   text: '$ chatchain openai -m gpt-4o' },
+      { type: 'pause', ms: 600 },
+      { type: 'system', text: '  Connected to OpenAI  ·  model: gpt-4o' },
+      { type: 'pause', ms: 400 },
+      { type: 'blank' },
+      { type: 'user',  text: 'What is ChatChain?' },
+      { type: 'pause', ms: 800 },
+      { type: 'stream', text: 'ChatChain is a lightweight CLI tool that lets you chat with LLMs directly from your terminal. It supports OpenAI, Anthropic, and Gemini — with streaming responses, interactive model selection, and conversation history.' },
+      { type: 'pause', ms: 1200 },
+      { type: 'blank' },
+      { type: 'user',  text: 'Can I use it in scripts?' },
+      { type: 'pause', ms: 600 },
+      { type: 'stream', text: 'Yes! Use the -c flag for non-interactive mode:\n\n  chatchain openai -m gpt-4o -c "summarize this"\n\nIt prints the response to stdout, so you can pipe it into other commands.' },
+      { type: 'pause', ms: 1000 },
+      { type: 'done' },
+    ];
+
+    function createLine() {
+      var div = document.createElement('div');
+      div.className = 'line';
+      el.appendChild(div);
+      el.scrollTop = el.scrollHeight;
+      return div;
+    }
+
+    function sleep(ms) {
+      return new Promise(function (r) { setTimeout(r, ms); });
+    }
+
+    function typeText(line, text, speed) {
+      return new Promise(function (resolve) {
+        var i = 0;
+        var cursor = document.createElement('span');
+        cursor.className = 'cursor';
+        cursor.textContent = '\u00a0';
+        line.appendChild(cursor);
+
+        function tick() {
+          if (stopped) { resolve(); return; }
+          if (i < text.length) {
+            // Insert character before cursor
+            var ch = text[i];
+            if (ch === '\n') {
+              cursor.remove();
+              line = createLine();
+              line.appendChild(cursor);
+            } else {
+              cursor.insertAdjacentText('beforebegin', ch);
+            }
+            i++;
+            el.scrollTop = el.scrollHeight;
+            setTimeout(tick, speed);
+          } else {
+            cursor.remove();
+            resolve();
+          }
+        }
+        tick();
+      });
+    }
+
+    function streamText(container, text) {
+      // Faster, variable-speed "streaming" that feels like an LLM
+      return new Promise(function (resolve) {
+        var i = 0;
+        var line = container;
+        var cursor = document.createElement('span');
+        cursor.className = 'cursor';
+        cursor.textContent = '\u00a0';
+        line.appendChild(cursor);
+
+        function tick() {
+          if (stopped) { resolve(); return; }
+          if (i < text.length) {
+            var ch = text[i];
+            if (ch === '\n') {
+              cursor.remove();
+              line = createLine();
+              line.appendChild(cursor);
+            } else {
+              cursor.insertAdjacentText('beforebegin', ch);
+            }
+            i++;
+            el.scrollTop = el.scrollHeight;
+            // Variable speed: fast base, slight random jitter, pause at punctuation
+            var delay = 18 + Math.random() * 16;
+            if (ch === '.' || ch === '!' || ch === '?' || ch === '\u2014') delay += 80;
+            else if (ch === ',') delay += 40;
+            else if (ch === ' ') delay += 5;
+            setTimeout(tick, delay);
+          } else {
+            cursor.remove();
+            resolve();
+          }
+        }
+        tick();
+      });
+    }
+
+    async function run() {
+      stopped = false;
+      el.innerHTML = '';
+      replayBtn.style.display = 'none';
+
+      for (var s = 0; s < script.length; s++) {
+        if (stopped) return;
+        var step = script[s];
+
+        if (step.type === 'pause') {
+          await sleep(step.ms);
+
+        } else if (step.type === 'blank') {
+          createLine();
+
+        } else if (step.type === 'cmd') {
+          var cmdLine = createLine();
+          cmdLine.style.color = '#3fb950';
+          await typeText(cmdLine, step.text, 40);
+
+        } else if (step.type === 'system') {
+          var sysLine = createLine();
+          sysLine.className = 'line system';
+          sysLine.textContent = step.text;
+
+        } else if (step.type === 'user') {
+          var uLine = createLine();
+          var label = document.createElement('span');
+          label.className = 'user-label';
+          label.textContent = 'You: ';
+          uLine.appendChild(label);
+          await typeText(uLine, step.text, 55);
+
+        } else if (step.type === 'stream') {
+          var aLine = createLine();
+          var aLabel = document.createElement('span');
+          aLabel.className = 'assistant-label';
+          aLabel.textContent = 'AI: ';
+          aLine.appendChild(aLabel);
+          await streamText(aLine, step.text);
+
+        } else if (step.type === 'done') {
+          replayBtn.style.display = 'block';
+        }
+      }
+    }
+
+    replayBtn.addEventListener('click', function () {
+      stopped = true;
+      setTimeout(run, 50);
+    });
+
+    // Start on load
+    run();
+  })();
+  </script>
+</body>
+</html>
