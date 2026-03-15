@@ -8,21 +8,19 @@ import (
 	"chatchain/chat"
 	"chatchain/provider"
 
-	"github.com/charmbracelet/huh/spinner"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )
 
 var (
-	apiKey  string
-	baseURL string
-	model   string
+	apiKey      string
+	baseURL     string
+	model       string
+	temperature float64
+	chatMessage string
 )
 
-var boldStyle = lipgloss.NewStyle().Bold(true)
-
 var rootCmd = &cobra.Command{
-	Use:   "chatchain [openai|anthropic]",
+	Use:   "chatchain [openai|anthropic|gemini]",
 	Short: "A lightweight cross-platform AI chat CLI",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -36,25 +34,24 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
-		p, err := provider.New(providerType, apiKey, baseURL, model)
+		// Non-interactive mode requires a model
+		if chatMessage != "" && model == "" {
+			return fmt.Errorf("--model/-m is required when using --chat/-c")
+		}
+
+		p, err := provider.New(providerType, apiKey, baseURL, model, temperature)
 		if err != nil {
 			return err
 		}
 
+		// Non-interactive mode: single message, direct response
+		if chatMessage != "" {
+			return chat.Once(context.Background(), p, chatMessage, os.Stdout)
+		}
+
 		// If no model specified, let user select from available models
 		if model == "" {
-			var models []string
-			var fetchErr error
-
-			err := spinner.New().
-				Title("Fetching available models...").
-				Action(func() {
-					models, fetchErr = p.ListModels(context.Background())
-				}).
-				Run()
-			if err != nil {
-				return fmt.Errorf("spinner error: %w", err)
-			}
+			models, fetchErr := chat.FetchModels(context.Background(), p)
 			if fetchErr != nil {
 				return fmt.Errorf("failed to list models: %w", fetchErr)
 			}
@@ -67,9 +64,9 @@ var rootCmd = &cobra.Command{
 				return fmt.Errorf("model selection cancelled: %w", err)
 			}
 
-			fmt.Printf("Using model: %s\n\n", boldStyle.Render(selected))
+			fmt.Printf("Using model: %s\n\n", chat.BoldStyle.Sprint(selected))
 			// Recreate provider with selected model
-			p, err = provider.New(providerType, apiKey, baseURL, selected)
+			p, err = provider.New(providerType, apiKey, baseURL, selected, temperature)
 			if err != nil {
 				return err
 			}
@@ -83,11 +80,14 @@ func init() {
 	rootCmd.Flags().StringVarP(&apiKey, "key", "k", "", "API key (required)")
 	rootCmd.Flags().StringVarP(&baseURL, "url", "u", "", "Base URL (optional)")
 	rootCmd.Flags().StringVarP(&model, "model", "m", "", "Model name (optional, interactive selection if omitted)")
+	rootCmd.Flags().Float64VarP(&temperature, "temperature", "t", 1.0, "Sampling temperature (0.0-2.0)")
+	rootCmd.Flags().StringVarP(&chatMessage, "chat", "c", "", "Send a single message and print the response (non-interactive)")
 }
 
 var providerEnvKeys = map[string]string{
 	"openai":    "OPENAI_API_KEY",
 	"anthropic": "ANTHROPIC_API_KEY",
+	"gemini":    "GOOGLE_API_KEY",
 }
 
 func providerEnvKey(providerType string) string {

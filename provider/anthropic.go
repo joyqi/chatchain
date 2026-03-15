@@ -11,11 +11,12 @@ import (
 )
 
 type AnthropicProvider struct {
-	client *anthropic.Client
-	model  string
+	client      *anthropic.Client
+	model       string
+	temperature float64
 }
 
-func NewAnthropic(apiKey, baseURL, model string) *AnthropicProvider {
+func NewAnthropic(apiKey, baseURL, model string, temperature float64) *AnthropicProvider {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKey),
 	}
@@ -25,8 +26,9 @@ func NewAnthropic(apiKey, baseURL, model string) *AnthropicProvider {
 
 	client := anthropic.NewClient(opts...)
 	return &AnthropicProvider{
-		client: &client,
-		model:  model,
+		client:      &client,
+		model:       model,
+		temperature: temperature,
 	}
 }
 
@@ -44,7 +46,7 @@ func (p *AnthropicProvider) ListModels(ctx context.Context) ([]string, error) {
 	return models, nil
 }
 
-func (p *AnthropicProvider) StreamChat(ctx context.Context, messages []Message, w io.Writer) (string, error) {
+func (p *AnthropicProvider) buildParams(messages []Message) (anthropic.MessageNewParams, []anthropic.MessageParam) {
 	var msgs []anthropic.MessageParam
 	for _, msg := range messages {
 		switch msg.Role {
@@ -54,12 +56,33 @@ func (p *AnthropicProvider) StreamChat(ctx context.Context, messages []Message, 
 			msgs = append(msgs, anthropic.NewAssistantMessage(anthropic.NewTextBlock(msg.Content)))
 		}
 	}
+	params := anthropic.MessageNewParams{
+		Model:       anthropic.Model(p.model),
+		MaxTokens:   4096,
+		Messages:    msgs,
+		Temperature: anthropic.Float(p.temperature),
+	}
+	return params, msgs
+}
 
-	stream := p.client.Messages.NewStreaming(ctx, anthropic.MessageNewParams{
-		Model:     anthropic.Model(p.model),
-		MaxTokens: 4096,
-		Messages:  msgs,
-	})
+func (p *AnthropicProvider) Chat(ctx context.Context, messages []Message) (string, error) {
+	params, _ := p.buildParams(messages)
+	resp, err := p.client.Messages.New(ctx, params)
+	if err != nil {
+		return "", fmt.Errorf("chat error: %w", err)
+	}
+	var result string
+	for _, block := range resp.Content {
+		if block.Type == "text" {
+			result += block.Text
+		}
+	}
+	return result, nil
+}
+
+func (p *AnthropicProvider) StreamChat(ctx context.Context, messages []Message, w io.Writer) (string, error) {
+	params, _ := p.buildParams(messages)
+	stream := p.client.Messages.NewStreaming(ctx, params)
 
 	var full string
 	for stream.Next() {

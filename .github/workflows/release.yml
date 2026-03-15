@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-pkg:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger pkg.go.dev indexing
+        run: |
+          GOPROXY=https://proxy.golang.org
+          MODULE=github.com/joyqi/chatchain
+          VERSION=${{ github.event.release.tag_name }}
+          curl -s "${GOPROXY}/${MODULE}/@v/${VERSION}.info" > /dev/null

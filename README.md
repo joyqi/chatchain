@@ -4,11 +4,12 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 
 ## Features
 
-- **Multi-provider** — OpenAI and Anthropic, with custom base URL support
+- **Multi-provider** — OpenAI, Anthropic and Gemini, with custom base URL support
 - **Interactive model selection** — arrow-key navigation with filtering
 - **Streaming responses** — real-time token output with loading spinner
+- **Non-interactive mode** — single message in, response out, pipe-friendly
 - **Conversation history** — full context maintained within a session
-- **Styled terminal output** — color-coded prompts via [Charm](https://charm.sh) ecosystem
+- **Styled terminal output** — color-coded prompts
 
 ## Install
 
@@ -27,7 +28,7 @@ go build -o chatchain .
 ## Usage
 
 ```bash
-chatchain [openai|anthropic] [flags]
+chatchain [openai|anthropic|gemini] [flags]
 ```
 
 ### Flags
@@ -37,6 +38,8 @@ chatchain [openai|anthropic] [flags]
 | `--key` | `-k` | API key (or set via env var) |
 | `--url` | `-u` | Custom base URL |
 | `--model` | `-m` | Model name (skip interactive selection) |
+| `--temperature` | `-t` | Sampling temperature, 0.0-2.0 (default 1.0) |
+| `--chat` | `-c` | Send a single message and print the response (non-interactive) |
 
 ### Environment Variables
 
@@ -44,6 +47,7 @@ chatchain [openai|anthropic] [flags]
 |----------|----------|
 | `OPENAI_API_KEY` | OpenAI |
 | `ANTHROPIC_API_KEY` | Anthropic |
+| `GOOGLE_API_KEY` | Gemini |
 
 ### Examples
 
@@ -56,6 +60,15 @@ chatchain openai -k sk-xxx -m gpt-4o
 
 # Use Anthropic
 chatchain anthropic -m claude-sonnet-4-20250514
+
+# Use Gemini
+chatchain gemini -m gemini-2.5-flash
+
+# Non-interactive mode (requires -m)
+chatchain openai -m gpt-4o -c "Explain quicksort in one paragraph"
+
+# Adjust temperature
+chatchain anthropic -m claude-sonnet-4-20250514 -t 0.5 -c "Write a haiku"
 
 # Custom API endpoint
 chatchain openai -u https://your-proxy.com/v1 -k sk-xxx
@@ -70,20 +83,23 @@ chatchain/
 │   └── root.go          # CLI definition (cobra)
 ├── chat/
 │   ├── chat.go          # Chat loop, model selection, spinner
-│   └── styles.go        # lipgloss style definitions
+│   └── styles.go        # Terminal style definitions
 └── provider/
     ├── provider.go      # Provider interface
     ├── openai.go        # OpenAI implementation
-    └── anthropic.go     # Anthropic implementation
+    ├── anthropic.go     # Anthropic implementation
+    └── gemini.go        # Gemini implementation
 ```
 
 ## Dependencies
 
 - [cobra](https://github.com/spf13/cobra) — CLI framework
-- [huh](https://github.com/charmbracelet/huh) — Interactive prompts & spinner
-- [lipgloss](https://github.com/charmbracelet/lipgloss) — Terminal styling
+- [fatih/color](https://github.com/fatih/color) — Terminal styling
+- [promptui](https://github.com/manifoldco/promptui) — Interactive prompts
+- [spinner](https://github.com/briandowns/spinner) — Loading spinners
 - [openai-go](https://github.com/openai/openai-go) — OpenAI SDK
 - [anthropic-sdk-go](https://github.com/anthropics/anthropic-sdk-go) — Anthropic SDK
+- [go-genai](https://github.com/googleapis/go-genai) — Google Gemini SDK
 
 ## License
 

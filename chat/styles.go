@@ -1,9 +1,10 @@
 package chat
 
-import "github.com/charmbracelet/lipgloss"
+import "github.com/fatih/color"
 
 var (
-	UserStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true)
-	AssistantStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Bold(true)
-	ErrorStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	UserStyle      = color.New(color.FgCyan, color.Bold)
+	AssistantStyle = color.New(color.FgMagenta, color.Bold)
+	ErrorStyle     = color.New(color.FgRed)
+	BoldStyle      = color.New(color.Bold)
 )

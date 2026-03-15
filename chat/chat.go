@@ -1,55 +1,81 @@
 package chat
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"chatchain/provider"
 
-	"github.com/charmbracelet/huh"
-	"github.com/charmbracelet/huh/spinner"
+	"github.com/briandowns/spinner"
+	"github.com/manifoldco/promptui"
 )
 
 func SelectModel(models []string) (string, error) {
-	options := make([]huh.Option[string], len(models))
-	for i, m := range models {
-		options[i] = huh.NewOption(m, m)
+	prompt := promptui.Select{
+		Label: "Select a model",
+		Items: models,
+		Size:  15,
 	}
 
-	var selected string
-	err := huh.NewSelect[string]().
-		Title("Select a model").
-		Options(options...).
-		Value(&selected).
-		Run()
+	_, result, err := prompt.Run()
 	if err != nil {
 		return "", err
 	}
-	return selected, nil
+	return result, nil
+}
+
+func withSpinner(title string, action func()) {
+	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
+	s.Suffix = " " + title
+	s.Start()
+	action()
+	s.Stop()
+}
+
+func FetchModels(ctx context.Context, p provider.Provider) ([]string, error) {
+	var models []string
+	var fetchErr error
+
+	withSpinner("Fetching available models...", func() {
+		models, fetchErr = p.ListModels(ctx)
+	})
+
+	return models, fetchErr
+}
+
+func Once(ctx context.Context, p provider.Provider, message string, w io.Writer) error {
+	messages := []provider.Message{{Role: "user", Content: message}}
+	reply, err := p.Chat(ctx, messages)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(w, reply)
+	return nil
 }
 
 func Run(p provider.Provider, w io.Writer) error {
 	var history []provider.Message
 	ctx := context.Background()
 
-	fmt.Fprintln(w, "Chat started. Press Ctrl+C or Esc to exit.")
+	fmt.Fprintln(w, "Chat started. Press Ctrl+C to exit.")
 	fmt.Fprintln(w)
 
+	scanner := bufio.NewScanner(os.Stdin)
+
 	for {
-		var input string
-		err := huh.NewInput().
-			Title("You>").
-			Value(&input).
-			Run()
-		if err != nil {
+		UserStyle.Fprint(w, "You> ")
+
+		if !scanner.Scan() {
 			fmt.Fprintln(w, "\nBye!")
 			return nil
 		}
 
-		input = strings.TrimSpace(input)
+		input := strings.TrimSpace(scanner.Text())
 		if input == "" {
 			continue
 		}
@@ -71,31 +97,28 @@ func Run(p provider.Provider, w io.Writer) error {
 		var firstN int
 		var readErr error
 
-		_ = spinner.New().
-			Title("Thinking...").
-			Action(func() {
-				firstN, readErr = pr.Read(firstChunk)
-			}).
-			Run()
+		withSpinner("Thinking...", func() {
+			firstN, readErr = pr.Read(firstChunk)
+		})
 
 		if readErr != nil {
 			<-done
 			if streamErr != nil {
-				fmt.Fprintf(w, "%s\n\n", ErrorStyle.Render(fmt.Sprintf("Error: %v", streamErr)))
+				ErrorStyle.Fprintf(w, "Error: %v\n\n", streamErr)
 			} else {
-				fmt.Fprintf(w, "%s\n\n", ErrorStyle.Render(fmt.Sprintf("Error: %v", readErr)))
+				ErrorStyle.Fprintf(w, "Error: %v\n\n", readErr)
 			}
 			history = history[:len(history)-1]
 			continue
 		}
 
-		fmt.Fprint(w, AssistantStyle.Render("Assistant>")+" ")
+		AssistantStyle.Fprint(w, "Assistant> ")
 		os.Stdout.Write(firstChunk[:firstN])
 		io.Copy(os.Stdout, pr)
 		<-done
 
 		if streamErr != nil {
-			fmt.Fprintf(w, "\n%s\n\n", ErrorStyle.Render(fmt.Sprintf("Error: %v", streamErr)))
+			ErrorStyle.Fprintf(w, "\nError: %v\n\n", streamErr)
 			history = history[:len(history)-1]
 			continue
 		}

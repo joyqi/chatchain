@@ -13,16 +13,19 @@ type Message struct {
 
 type Provider interface {
 	ListModels(ctx context.Context) ([]string, error)
+	Chat(ctx context.Context, messages []Message) (string, error)
 	StreamChat(ctx context.Context, messages []Message, w io.Writer) (string, error)
 }
 
-func New(providerType, apiKey, baseURL, model string) (Provider, error) {
+func New(providerType, apiKey, baseURL, model string, temperature float64) (Provider, error) {
 	switch providerType {
 	case "openai":
-		return NewOpenAI(apiKey, baseURL, model), nil
+		return NewOpenAI(apiKey, baseURL, model, temperature), nil
 	case "anthropic":
-		return NewAnthropic(apiKey, baseURL, model), nil
+		return NewAnthropic(apiKey, baseURL, model, temperature), nil
+	case "gemini":
+		return NewGemini(apiKey, model, temperature), nil
 	default:
-		return nil, fmt.Errorf("unknown provider type: %s (supported: openai, anthropic)", providerType)
+		return nil, fmt.Errorf("unknown provider type: %s (supported: openai, anthropic, gemini)", providerType)
 	}
 }
