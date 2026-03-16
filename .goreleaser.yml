@@ -32,6 +32,7 @@ brews:
       owner: joyqi
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
     homepage: https://github.com/joyqi/chatchain
     description: A lightweight cross-platform AI chat CLI
     license: MIT
