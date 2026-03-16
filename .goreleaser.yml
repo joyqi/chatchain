@@ -16,14 +16,26 @@ builds:
       - -s -w
 
 archives:
-  - format: tar.gz
+  - formats:
+      - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
 
 checksum:
   name_template: "checksums.txt"
+
+brews:
+  - repository:
+      owner: joyqi
+      name: homebrew-tap
+    homepage: https://github.com/joyqi/chatchain
+    description: A lightweight cross-platform AI chat CLI
+    license: MIT
+    install: |
+      bin.install "chatchain"
 
 changelog:
   use: github-native
