@@ -13,10 +13,10 @@ import (
 type AnthropicProvider struct {
 	client      *anthropic.Client
 	model       string
-	temperature float64
+	temperature *float64
 }
 
-func NewAnthropic(apiKey, baseURL, model string, temperature float64) *AnthropicProvider {
+func NewAnthropic(apiKey, baseURL, model string, temperature *float64) *AnthropicProvider {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKey),
 	}
@@ -57,10 +57,12 @@ func (p *AnthropicProvider) buildParams(messages []Message) (anthropic.MessageNe
 		}
 	}
 	params := anthropic.MessageNewParams{
-		Model:       anthropic.Model(p.model),
-		MaxTokens:   4096,
-		Messages:    msgs,
-		Temperature: anthropic.Float(p.temperature),
+		Model:     anthropic.Model(p.model),
+		MaxTokens: 4096,
+		Messages:  msgs,
+	}
+	if p.temperature != nil {
+		params.Temperature = anthropic.Float(*p.temperature)
 	}
 	return params, msgs
 }

@@ -13,10 +13,10 @@ import (
 type OpenAIProvider struct {
 	client      *openai.Client
 	model       string
-	temperature float64
+	temperature *float64
 }
 
-func NewOpenAI(apiKey, baseURL, model string, temperature float64) *OpenAIProvider {
+func NewOpenAI(apiKey, baseURL, model string, temperature *float64) *OpenAIProvider {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKey),
 	}
@@ -48,8 +48,10 @@ func (p *OpenAIProvider) ListModels(ctx context.Context) ([]string, error) {
 
 func (p *OpenAIProvider) buildParams(messages []Message) openai.ChatCompletionNewParams {
 	params := openai.ChatCompletionNewParams{
-		Model:       p.model,
-		Temperature: openai.Float(p.temperature),
+		Model: p.model,
+	}
+	if p.temperature != nil {
+		params.Temperature = openai.Float(*p.temperature)
 	}
 	for _, msg := range messages {
 		switch msg.Role {

@@ -13,11 +13,20 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 
 ## Install
 
+### Homebrew (macOS)
+
+```bash
+brew tap joyqi/tap
+brew install chatchain
+```
+
+### Go
+
 ```bash
 go install github.com/joyqi/chatchain@latest
 ```
 
-Or build from source:
+### Build from source
 
 ```bash
 git clone https://github.com/joyqi/chatchain.git
@@ -38,7 +47,7 @@ chatchain [openai|anthropic|gemini] [flags]
 | `--key` | `-k` | API key (or set via env var) |
 | `--url` | `-u` | Custom base URL |
 | `--model` | `-m` | Model name (skip interactive selection) |
-| `--temperature` | `-t` | Sampling temperature, 0.0-2.0 (default 1.0) |
+| `--temperature` | `-t` | Sampling temperature, 0.0-2.0 (omit to use provider default) |
 | `--chat` | `-c` | Send a single message and print the response (non-interactive) |
 
 ### Environment Variables

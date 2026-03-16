@@ -17,7 +17,7 @@ type Provider interface {
 	StreamChat(ctx context.Context, messages []Message, w io.Writer) (string, error)
 }
 
-func New(providerType, apiKey, baseURL, model string, temperature float64) (Provider, error) {
+func New(providerType, apiKey, baseURL, model string, temperature *float64) (Provider, error) {
 	switch providerType {
 	case "openai":
 		return NewOpenAI(apiKey, baseURL, model, temperature), nil

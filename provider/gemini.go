@@ -12,10 +12,10 @@ import (
 type GeminiProvider struct {
 	client      *genai.Client
 	model       string
-	temperature float64
+	temperature *float64
 }
 
-func NewGemini(apiKey, model string, temperature float64) *GeminiProvider {
+func NewGemini(apiKey, model string, temperature *float64) *GeminiProvider {
 	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
 		APIKey:  apiKey,
 		Backend: genai.BackendGeminiAPI,
@@ -68,10 +68,12 @@ func (p *GeminiProvider) buildContents(messages []Message) []*genai.Content {
 }
 
 func (p *GeminiProvider) config() *genai.GenerateContentConfig {
-	temp := float32(p.temperature)
-	return &genai.GenerateContentConfig{
-		Temperature: &temp,
+	cfg := &genai.GenerateContentConfig{}
+	if p.temperature != nil {
+		temp := float32(*p.temperature)
+		cfg.Temperature = &temp
 	}
+	return cfg
 }
 
 func (p *GeminiProvider) Chat(ctx context.Context, messages []Message) (string, error) {

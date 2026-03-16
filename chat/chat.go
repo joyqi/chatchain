@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -12,6 +11,7 @@ import (
 	"chatchain/provider"
 
 	"github.com/briandowns/spinner"
+	"github.com/chzyer/readline"
 	"github.com/manifoldco/promptui"
 )
 
@@ -59,23 +59,30 @@ func Once(ctx context.Context, p provider.Provider, message string, w io.Writer)
 }
 
 func Run(p provider.Provider, w io.Writer) error {
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:          UserStyle.Sprint("You> "),
+		InterruptPrompt: "^C",
+		EOFPrompt:       "exit",
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize input: %w", err)
+	}
+	defer rl.Close()
+
 	var history []provider.Message
 	ctx := context.Background()
 
 	fmt.Fprintln(w, "Chat started. Press Ctrl+C to exit.")
 	fmt.Fprintln(w)
 
-	scanner := bufio.NewScanner(os.Stdin)
-
 	for {
-		UserStyle.Fprint(w, "You> ")
-
-		if !scanner.Scan() {
+		input, err := rl.Readline()
+		if err != nil { // io.EOF or readline.ErrInterrupt
 			fmt.Fprintln(w, "\nBye!")
 			return nil
 		}
 
-		input := strings.TrimSpace(scanner.Text())
+		input = strings.TrimSpace(input)
 		if input == "" {
 			continue
 		}

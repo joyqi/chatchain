@@ -39,7 +39,12 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("--model/-m is required when using --chat/-c")
 		}
 
-		p, err := provider.New(providerType, apiKey, baseURL, model, temperature)
+		var temp *float64
+		if cmd.Flags().Changed("temperature") {
+			temp = &temperature
+		}
+
+		p, err := provider.New(providerType, apiKey, baseURL, model, temp)
 		if err != nil {
 			return err
 		}
@@ -66,7 +71,7 @@ var rootCmd = &cobra.Command{
 
 			fmt.Printf("Using model: %s\n\n", chat.BoldStyle.Sprint(selected))
 			// Recreate provider with selected model
-			p, err = provider.New(providerType, apiKey, baseURL, selected, temperature)
+			p, err = provider.New(providerType, apiKey, baseURL, selected, temp)
 			if err != nil {
 				return err
 			}
@@ -80,7 +85,7 @@ func init() {
 	rootCmd.Flags().StringVarP(&apiKey, "key", "k", "", "API key (required)")
 	rootCmd.Flags().StringVarP(&baseURL, "url", "u", "", "Base URL (optional)")
 	rootCmd.Flags().StringVarP(&model, "model", "m", "", "Model name (optional, interactive selection if omitted)")
-	rootCmd.Flags().Float64VarP(&temperature, "temperature", "t", 1.0, "Sampling temperature (0.0-2.0)")
+	rootCmd.Flags().Float64VarP(&temperature, "temperature", "t", 0, "Sampling temperature (0.0-2.0)")
 	rootCmd.Flags().StringVarP(&chatMessage, "chat", "c", "", "Send a single message and print the response (non-interactive)")
 }
 
