@@ -64,27 +64,65 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 	return nil
 }
 
-func ReadSystemPrompt() (string, error) {
+func ReadSystemPrompt(w io.Writer) (string, []provider.Message, error) {
 	pf := &pasteFilter{r: os.Stdin}
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          BoldStyle.Sprint("System> "),
 		InterruptPrompt: "^C",
+		AutoComplete:    &importCompleter{},
 		Stdin:           pf,
 	})
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer rl.Close()
 
 	os.Stdout.WriteString("\033[?2004h")
 	defer os.Stdout.WriteString("\033[?2004l")
 
-	input, err := rl.Readline()
-	if err != nil {
-		return "", nil // skip on Ctrl+C / EOF
+	for {
+		input, err := rl.Readline()
+		if err != nil {
+			return "", nil, nil // skip on Ctrl+C / EOF
+		}
+		input = expandPasteTags(strings.TrimSpace(input), pf)
+
+		if input == "/import" || strings.HasPrefix(input, "/import ") {
+			path := strings.TrimSpace(strings.TrimPrefix(input, "/import"))
+			if path == "" {
+				path = "history.md"
+			}
+			imported, err := ImportHistory(path)
+			if err != nil {
+				ErrorStyle.Fprintf(w, "Error: %v\n", err)
+				continue
+			}
+			DimStyle.Fprintf(w, "Imported %d messages from %s\n", len(imported), path)
+			return "", imported, nil
+		}
+
+		return input, nil, nil
 	}
-	input = expandPasteTags(strings.TrimSpace(input), pf)
-	return input, nil
+}
+
+type importCompleter struct{}
+
+func (c *importCompleter) Do(line []rune, pos int) ([][]rune, int) {
+	text := string(line[:pos])
+	if !strings.HasPrefix(text, "/") {
+		return nil, 0
+	}
+	if !strings.Contains(text, " ") {
+		cmd := "/import "
+		if strings.HasPrefix(cmd, text) {
+			return [][]rune{[]rune(cmd[len(text):])}, len([]rune(text))
+		}
+		return nil, 0
+	}
+	if strings.HasPrefix(text, "/import ") {
+		return completeFilePath(text[8:])
+	}
+	return nil, 0
 }
 
 type chatCompleter struct{}
@@ -242,7 +280,7 @@ func expandPasteTags(input string, pf *pasteFilter) string {
 	return input
 }
 
-func Run(p provider.Provider, systemPrompt string, w io.Writer) error {
+func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Message, w io.Writer) error {
 	pf := &pasteFilter{r: os.Stdin}
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          UserStyle.Sprint("You> "),
@@ -262,7 +300,9 @@ func Run(p provider.Provider, systemPrompt string, w io.Writer) error {
 	defer os.Stdout.WriteString("\033[?2004l")
 
 	var history []provider.Message
-	if systemPrompt != "" {
+	if len(importedHistory) > 0 {
+		history = importedHistory
+	} else if systemPrompt != "" {
 		history = append(history, provider.Message{Role: "system", Content: systemPrompt})
 	}
 	ctx := context.Background()

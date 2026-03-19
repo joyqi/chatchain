@@ -88,15 +88,17 @@ var rootCmd = &cobra.Command{
 
 		// Interactive system prompt input when -s is used without a value
 		systemPrompt = strings.TrimSpace(systemPrompt)
+		var importedHistory []provider.Message
 		if cmd.Flags().Changed("system") && systemPrompt == "" {
-			sp, err := chat.ReadSystemPrompt()
+			sp, imported, err := chat.ReadSystemPrompt(os.Stdout)
 			if err != nil {
 				return err
 			}
 			systemPrompt = sp
+			importedHistory = imported
 		}
 
-		return chat.Run(p, systemPrompt, os.Stdout)
+		return chat.Run(p, systemPrompt, importedHistory, os.Stdout)
 	},
 }
 
