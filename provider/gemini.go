@@ -71,7 +71,16 @@ func (p *GeminiProvider) buildContents(messages []Message) ([]*genai.Content, *g
 		case "system":
 			system = genai.NewContentFromText(msg.Content, "user")
 		case "user":
-			contents = append(contents, genai.NewContentFromText(msg.Content, "user"))
+			if len(msg.Attachments) > 0 {
+				var parts []*genai.Part
+				for _, att := range msg.Attachments {
+					parts = append(parts, genai.NewPartFromBytes(att.Data, att.MimeType))
+				}
+				parts = append(parts, genai.NewPartFromText(msg.Content))
+				contents = append(contents, genai.NewContentFromParts(parts, "user"))
+			} else {
+				contents = append(contents, genai.NewContentFromText(msg.Content, "user"))
+			}
 		case "assistant":
 			contents = append(contents, genai.NewContentFromText(msg.Content, "model"))
 		}
@@ -100,18 +109,35 @@ func (p *GeminiProvider) Chat(ctx context.Context, messages []Message) (string, 
 	return resp.Text(), nil
 }
 
-func (p *GeminiProvider) StreamChat(ctx context.Context, messages []Message, w io.Writer) (string, error) {
+func (p *GeminiProvider) StreamChat(ctx context.Context, messages []Message, w io.Writer, reasoningW io.WriteCloser) (string, string, error) {
 	contents, system := p.buildContents(messages)
-	var full string
-	for resp, err := range p.client.Models.GenerateContentStream(ctx, p.model, contents, p.config(system)) {
-		if err != nil {
-			return full, fmt.Errorf("stream error: %w", err)
-		}
-		chunk := resp.Text()
-		if chunk != "" {
-			fmt.Fprint(w, chunk)
-			full += chunk
+	var full, thinkFull string
+	reasoningClosed := false
+	closeReasoning := func() {
+		if !reasoningClosed {
+			reasoningW.Close()
+			reasoningClosed = true
 		}
 	}
-	return full, nil
+
+	for resp, err := range p.client.Models.GenerateContentStream(ctx, p.model, contents, p.config(system)) {
+		if err != nil {
+			closeReasoning()
+			return full, thinkFull, fmt.Errorf("stream error: %w", err)
+		}
+		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
+			for _, part := range resp.Candidates[0].Content.Parts {
+				if part.Thought {
+					fmt.Fprint(reasoningW, part.Text)
+					thinkFull += part.Text
+				} else if part.Text != "" {
+					closeReasoning()
+					fmt.Fprint(w, part.Text)
+					full += part.Text
+				}
+			}
+		}
+	}
+	closeReasoning()
+	return full, thinkFull, nil
 }

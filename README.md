@@ -1,12 +1,13 @@
 # ChatChain
 
-A lightweight, cross-platform AI chat CLI built with Go. Supports multiple providers, streaming responses, and an interactive terminal UI.
+A lightweight, cross-platform AI chat CLI built with Go. Supports multiple providers, streaming responses, file attachments, and an interactive terminal UI.
 
 ## Features
 
 - **Multi-provider** — OpenAI, OpenAI Responses API, Anthropic, Gemini and Vertex AI, with custom base URL support
 - **Interactive model selection** — arrow-key navigation with filtering
 - **Streaming responses** — real-time token output with loading spinner
+- **File attachments** — send images, PDFs, and text files alongside messages with Tab-completion for file paths
 - **Non-interactive mode** — single message in, response out, pipe-friendly
 - **Conversation history** — full context maintained within a session
 - **System prompt** — set via flag or interactive input
@@ -61,6 +62,26 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 | `ANTHROPIC_API_KEY` | Anthropic |
 | `GOOGLE_API_KEY` | Gemini / Vertex AI |
 
+### Chat Commands
+
+In interactive mode, the following commands are available:
+
+| Command | Description |
+|---------|-------------|
+| `/file <path>` | Attach a file (image, PDF, or text). Supports Tab completion for file paths. |
+| `/files` | List all currently attached files |
+| `/clear` | Remove all attached files |
+
+Attached files are sent with your next message, then cleared automatically.
+
+#### Supported File Types
+
+| Type | Extensions |
+|------|-----------|
+| Images | `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp` |
+| Documents | `.pdf` |
+| Text | `.txt`, `.md`, `.go`, `.py`, `.js`, `.ts`, `.json`, `.yaml`, `.html`, `.css`, `.sql`, `.csv`, and more |
+
 ### Examples
 
 ```bash
@@ -98,6 +119,20 @@ chatchain anthropic -m claude-sonnet-4-20250514 -t 0.5 -c "Write a haiku"
 chatchain openai -u https://your-proxy.com/v1 -k sk-xxx
 ```
 
+### File Attachment Example
+
+```
+You> /file photo.png
+  Attached: photo.png (image/png, 245760 bytes)
+You> /file report.pdf
+  Attached: report.pdf (application/pdf, 102400 bytes)
+You> /files
+  [1] photo.png (image/png, 240.0 KB)
+  [2] report.pdf (application/pdf, 100.0 KB)
+You> Summarize the report and describe the photo
+Assistant> ...
+```
+
 ## Project Structure
 
 ```
@@ -106,10 +141,11 @@ chatchain/
 ├── cmd/
 │   └── root.go          # CLI definition (cobra)
 ├── chat/
-│   ├── chat.go          # Chat loop, model selection, spinner
+│   ├── chat.go          # Chat loop, model selection, completion, spinner
+│   ├── file.go          # File attachment reading and MIME detection
 │   └── styles.go        # Terminal style definitions
 └── provider/
-    ├── provider.go      # Provider interface
+    ├── provider.go      # Provider interface + Attachment type
     ├── openai.go          # OpenAI Chat Completions implementation
     ├── openresponses.go   # OpenAI Responses API implementation
     ├── anthropic.go       # Anthropic implementation
@@ -122,6 +158,7 @@ chatchain/
 - [cobra](https://github.com/spf13/cobra) — CLI framework
 - [fatih/color](https://github.com/fatih/color) — Terminal styling
 - [promptui](https://github.com/manifoldco/promptui) — Interactive prompts
+- [readline](https://github.com/chzyer/readline) — Line editing with tab completion
 - [spinner](https://github.com/briandowns/spinner) — Loading spinners
 - [openai-go](https://github.com/openai/openai-go) — OpenAI SDK
 - [anthropic-sdk-go](https://github.com/anthropics/anthropic-sdk-go) — Anthropic SDK

@@ -2,13 +2,16 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/responses"
 )
 
@@ -64,7 +67,32 @@ func (p *OpenResponsesProvider) buildParams(messages []Message) responses.Respon
 		case "system":
 			params.Instructions = openai.String(msg.Content)
 		case "user":
-			input = append(input, responses.ResponseInputItemParamOfMessage(msg.Content, responses.EasyInputMessageRoleUser))
+			if len(msg.Attachments) > 0 {
+				var content responses.ResponseInputMessageContentListParam
+				for _, att := range msg.Attachments {
+					if strings.HasPrefix(att.MimeType, "image/") {
+						dataURL := "data:" + att.MimeType + ";base64," + base64.StdEncoding.EncodeToString(att.Data)
+						content = append(content, responses.ResponseInputContentUnionParam{
+							OfInputImage: &responses.ResponseInputImageParam{
+								ImageURL: param.NewOpt(dataURL),
+								Detail:   responses.ResponseInputImageDetailAuto,
+							},
+						})
+					} else {
+						b64 := base64.StdEncoding.EncodeToString(att.Data)
+						content = append(content, responses.ResponseInputContentUnionParam{
+							OfInputFile: &responses.ResponseInputFileParam{
+								FileData: param.NewOpt(b64),
+								Filename: param.NewOpt(att.Filename),
+							},
+						})
+					}
+				}
+				content = append(content, responses.ResponseInputContentParamOfInputText(msg.Content))
+				input = append(input, responses.ResponseInputItemParamOfMessage(content, responses.EasyInputMessageRoleUser))
+			} else {
+				input = append(input, responses.ResponseInputItemParamOfMessage(msg.Content, responses.EasyInputMessageRoleUser))
+			}
 		case "assistant":
 			input = append(input, responses.ResponseInputItemParamOfMessage(msg.Content, responses.EasyInputMessageRoleAssistant))
 		}
@@ -81,20 +109,40 @@ func (p *OpenResponsesProvider) Chat(ctx context.Context, messages []Message) (s
 	return resp.OutputText(), nil
 }
 
-func (p *OpenResponsesProvider) StreamChat(ctx context.Context, messages []Message, w io.Writer) (string, error) {
+func (p *OpenResponsesProvider) StreamChat(ctx context.Context, messages []Message, w io.Writer, reasoningW io.WriteCloser) (string, string, error) {
 	stream := p.client.Responses.NewStreaming(ctx, p.buildParams(messages))
-	var full string
+	var full, thinkFull string
+	reasoningClosed := false
+	closeReasoning := func() {
+		if !reasoningClosed {
+			reasoningW.Close()
+			reasoningClosed = true
+		}
+	}
 
 	for stream.Next() {
 		evt := stream.Current()
-		if evt.Delta != "" {
+		switch evt.Type {
+		case "response.reasoning_summary_text.delta":
+			fmt.Fprint(reasoningW, evt.Delta)
+			thinkFull += evt.Delta
+		case "response.output_text.delta":
+			closeReasoning()
 			fmt.Fprint(w, evt.Delta)
 			full += evt.Delta
+		default:
+			if evt.Delta != "" && evt.Type == "" {
+				// Fallback for untyped deltas
+				closeReasoning()
+				fmt.Fprint(w, evt.Delta)
+				full += evt.Delta
+			}
 		}
 	}
+	closeReasoning()
 	if err := stream.Err(); err != nil {
-		return full, fmt.Errorf("stream error: %w", err)
+		return full, thinkFull, fmt.Errorf("stream error: %w", err)
 	}
 
-	return full, nil
+	return full, thinkFull, nil
 }

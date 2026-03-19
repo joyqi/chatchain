@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ChatChain — CLI AI Chat Tool</title>
-  <meta name="description" content="A lightweight, cross-platform CLI tool to chat with any LLM from your terminal. Supports OpenAI, Anthropic, and Gemini providers.">
+  <meta name="description" content="A lightweight, cross-platform CLI tool to chat with any LLM from your terminal. Supports OpenAI, Anthropic, Gemini, file attachments, and streaming responses.">
 
   <!-- Favicon -->
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
@@ -12,14 +12,14 @@
   <!-- Open Graph -->
   <meta property="og:type" content="website">
   <meta property="og:title" content="ChatChain">
-  <meta property="og:description" content="Talk to any LLM from your terminal. Supports OpenAI, Anthropic, and Gemini providers with streaming responses.">
+  <meta property="og:description" content="Talk to any LLM from your terminal. Supports OpenAI, Anthropic, Gemini, file attachments, and streaming responses.">
   <meta property="og:image" content="https://chatchain.io/og.png">
   <meta property="og:url" content="https://chatchain.io/">
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="ChatChain">
-  <meta name="twitter:description" content="Talk to any LLM from your terminal. Supports OpenAI, Anthropic, and Gemini providers with streaming responses.">
+  <meta name="twitter:description" content="Talk to any LLM from your terminal. Supports OpenAI, Anthropic, Gemini, file attachments, and streaming responses.">
   <meta name="twitter:image" content="https://chatchain.io/og.png">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -53,7 +53,7 @@
 
     .slogan::before { content: '> '; color: #484f58; }
 
-    /* ── Hero buttons ── */
+    /* -- Hero buttons -- */
     .hero-buttons {
       display: flex;
       gap: 0.75rem;
@@ -102,7 +102,7 @@
       flex-shrink: 0;
     }
 
-    /* ── Demo animation ── */
+    /* -- Demo animation -- */
     .demo {
       margin-bottom: 2.5rem;
       background: #161b22;
@@ -194,19 +194,87 @@
 
     p { margin-bottom: 1rem; color: #c9d1d9; font-size: 0.9rem; }
 
-    .features {
-      list-style: none;
-      padding: 0;
+    /* -- Feature cards -- */
+    .feature-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
     }
 
-    .features li {
-      padding: 0.35rem 0;
-      font-size: 0.9rem;
+    .feature-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 1rem 1.1rem;
+      transition: border-color 0.15s;
     }
 
-    .features li::before {
-      content: '✓ ';
-      color: #3fb950;
+    .feature-card:hover {
+      border-color: #484f58;
+    }
+
+    .feature-card .icon {
+      font-size: 1.3rem;
+      margin-bottom: 0.4rem;
+      display: block;
+    }
+
+    .feature-card h3 {
+      color: #e6edf3;
+      font-size: 0.85rem;
+      margin-bottom: 0.3rem;
+    }
+
+    .feature-card p {
+      color: #8b949e;
+      font-size: 0.8rem;
+      margin: 0;
+      line-height: 1.5;
+    }
+
+    /* -- Provider logos -- */
+    .providers {
+      display: flex;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+      margin-bottom: 1rem;
+      align-items: center;
+    }
+
+    .provider-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 0.4rem 0.8rem;
+      font-size: 0.8rem;
+      color: #c9d1d9;
+    }
+
+    .provider-tag .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    /* -- File types -- */
+    .file-types {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      margin-top: 0.5rem;
+    }
+
+    .file-badge {
+      background: #1c2128;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      padding: 0.2rem 0.5rem;
+      font-size: 0.75rem;
+      color: #8b949e;
     }
 
     .terminal {
@@ -225,8 +293,40 @@
     .terminal .flag { color: #d2a8ff; }
     .terminal .string { color: #a5d6ff; }
     .terminal .comment { color: #484f58; }
+    .terminal .user-label { color: #58a6ff; font-weight: bold; }
+    .terminal .dim { color: #484f58; }
 
     .terminal div { white-space: pre; }
+
+    /* -- Flags table -- */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 1rem;
+      font-size: 0.85rem;
+    }
+
+    th {
+      text-align: left;
+      color: #8b949e;
+      font-weight: normal;
+      border-bottom: 1px solid #30363d;
+      padding: 0.5rem 0.75rem;
+    }
+
+    td {
+      padding: 0.45rem 0.75rem;
+      border-bottom: 1px solid #21262d;
+      color: #c9d1d9;
+    }
+
+    td code {
+      background: #1c2128;
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      color: #79c0ff;
+    }
 
     .footer {
       margin-top: 3rem;
@@ -240,6 +340,7 @@
     @media (max-width: 480px) {
       .container { padding: 2rem 1rem; }
       h1 { font-size: 1.8rem; }
+      .feature-grid { grid-template-columns: 1fr; }
       .terminal { font-size: 0.78rem; padding: 0.75rem 1rem; }
     }
   </style>
@@ -272,20 +373,83 @@
     </div>
 
     <section>
-      <h2>About</h2>
-      <p>
-        ChatChain is a lightweight, cross-platform AI chat CLI built with Go.
-        It supports multiple providers, streaming responses, and an interactive
-        terminal UI — all in a single binary with zero configuration files.
-      </p>
-      <ul class="features">
-        <li>Multi-provider: OpenAI, OpenAI Responses API, Anthropic, Gemini, and Vertex AI</li>
-        <li>Interactive model selection with filtering</li>
-        <li>Streaming responses with real-time output</li>
-        <li>Non-interactive mode for scripts and pipes</li>
-        <li>Full conversation history within a session</li>
-        <li>Custom API endpoint support</li>
-      </ul>
+      <h2>Features</h2>
+      <div class="feature-grid">
+        <div class="feature-card">
+          <span class="icon">&#127760;</span>
+          <h3>Multi-Provider</h3>
+          <p>OpenAI, Anthropic, Gemini, Vertex AI, and OpenAI Responses API. Switch with a single argument.</p>
+        </div>
+        <div class="feature-card">
+          <span class="icon">&#9889;</span>
+          <h3>Streaming Responses</h3>
+          <p>Tokens appear in real-time as the model generates them, with a loading spinner while waiting.</p>
+        </div>
+        <div class="feature-card">
+          <span class="icon">&#128206;</span>
+          <h3>File Attachments</h3>
+          <p>Send images, PDFs, and code files alongside messages. Tab-completion for file paths.</p>
+        </div>
+        <div class="feature-card">
+          <span class="icon">&#128172;</span>
+          <h3>Interactive Chat</h3>
+          <p>Full conversation history, interactive model selection, and color-coded terminal output.</p>
+        </div>
+        <div class="feature-card">
+          <span class="icon">&#128295;</span>
+          <h3>Script-Friendly</h3>
+          <p>Non-interactive mode with <code>-c</code> flag. Pipe output to other commands.</p>
+        </div>
+        <div class="feature-card">
+          <span class="icon">&#128736;</span>
+          <h3>Fully Configurable</h3>
+          <p>Custom API endpoints, temperature control, system prompts, and verbose debug mode.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Providers</h2>
+      <div class="providers">
+        <span class="provider-tag"><span class="dot" style="background:#10a37f"></span> OpenAI</span>
+        <span class="provider-tag"><span class="dot" style="background:#d97706"></span> Anthropic</span>
+        <span class="provider-tag"><span class="dot" style="background:#4285f4"></span> Gemini</span>
+        <span class="provider-tag"><span class="dot" style="background:#ea4335"></span> Vertex AI</span>
+        <span class="provider-tag"><span class="dot" style="background:#10a37f"></span> OpenAI Responses</span>
+      </div>
+      <p>Each provider uses its official SDK. Pass your API key via flag or environment variable (<code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, <code>GOOGLE_API_KEY</code>).</p>
+    </section>
+
+    <section>
+      <h2>File Attachments</h2>
+      <p>Attach files in interactive mode with the <code>/file</code> command. Tab-completion helps you navigate paths. Files are sent with your next message, then cleared automatically.</p>
+      <div class="terminal">
+        <div><span class="user-label">You></span> /file ~/photos/sunset.png</div>
+        <div><span class="dim">  Attached: sunset.png (image/png, 245760 bytes)</span></div>
+        <div><span class="user-label">You></span> /file report.pdf</div>
+        <div><span class="dim">  Attached: report.pdf (application/pdf, 102400 bytes)</span></div>
+        <div><span class="user-label">You></span> Summarize the report and describe the photo</div>
+      </div>
+      <p>Supported file types:</p>
+      <div class="file-types">
+        <span class="file-badge">.jpg</span>
+        <span class="file-badge">.png</span>
+        <span class="file-badge">.gif</span>
+        <span class="file-badge">.webp</span>
+        <span class="file-badge">.pdf</span>
+        <span class="file-badge">.txt</span>
+        <span class="file-badge">.md</span>
+        <span class="file-badge">.go</span>
+        <span class="file-badge">.py</span>
+        <span class="file-badge">.js</span>
+        <span class="file-badge">.ts</span>
+        <span class="file-badge">.json</span>
+        <span class="file-badge">.yaml</span>
+        <span class="file-badge">.html</span>
+        <span class="file-badge">.css</span>
+        <span class="file-badge">.sql</span>
+        <span class="file-badge">.csv</span>
+      </div>
     </section>
 
     <section>
@@ -307,23 +471,41 @@
         <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-k</span> <span class="string">sk-xxx</span></div>
         <div></div>
         <div><span class="comment"># Specify a model directly</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-k</span> <span class="string">sk-xxx</span> <span class="flag">-m</span> <span class="string">gpt-4o</span></div>
-        <div></div>
-        <div><span class="comment"># Use Anthropic</span></div>
         <div><span class="prompt">$</span> <span class="cmd">chatchain anthropic</span> <span class="flag">-m</span> <span class="string">claude-sonnet-4-20250514</span></div>
         <div></div>
-        <div><span class="comment"># Use Vertex AI</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">chatchain vertexai</span> <span class="flag">-m</span> <span class="string">gemini-2.5-flash</span> <span class="flag">-c</span> <span class="string">"Hello"</span></div>
-        <div></div>
-        <div><span class="comment"># Use OpenAI Responses API</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">chatchain openresponses</span> <span class="flag">-m</span> <span class="string">gpt-4o</span> <span class="flag">-c</span> <span class="string">"Hello"</span></div>
-        <div></div>
         <div><span class="comment"># Non-interactive one-shot</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-m</span> <span class="string">gpt-4o</span> <span class="flag">-c</span> <span class="string">"Explain quicksort in one paragraph"</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-m</span> <span class="string">gpt-4o</span> <span class="flag">-c</span> <span class="string">"Explain quicksort"</span></div>
+        <div></div>
+        <div><span class="comment"># System prompt</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-m</span> <span class="string">gpt-4o</span> <span class="flag">-s</span> <span class="string">'You are a translator'</span> <span class="flag">-c</span> <span class="string">"Hello"</span></div>
         <div></div>
         <div><span class="comment"># Custom API endpoint</span></div>
         <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-u</span> <span class="string">https://your-proxy.com/v1</span> <span class="flag">-k</span> <span class="string">sk-xxx</span></div>
       </div>
+    </section>
+
+    <section>
+      <h2>Flags</h2>
+      <table>
+        <tr><th>Flag</th><th>Description</th></tr>
+        <tr><td><code>-k</code></td><td>API key (or set via env var)</td></tr>
+        <tr><td><code>-u</code></td><td>Custom base URL</td></tr>
+        <tr><td><code>-m</code></td><td>Model name (skip interactive selection)</td></tr>
+        <tr><td><code>-t</code></td><td>Sampling temperature (0.0-2.0)</td></tr>
+        <tr><td><code>-c</code></td><td>Non-interactive: send a single message</td></tr>
+        <tr><td><code>-s</code></td><td>System prompt (omit value for interactive input)</td></tr>
+        <tr><td><code>-v</code></td><td>Verbose: print HTTP request/response bodies</td></tr>
+      </table>
+    </section>
+
+    <section>
+      <h2>Chat Commands</h2>
+      <table>
+        <tr><th>Command</th><th>Description</th></tr>
+        <tr><td><code>/file &lt;path&gt;</code></td><td>Attach a file (with Tab completion for paths)</td></tr>
+        <tr><td><code>/files</code></td><td>List currently attached files</td></tr>
+        <tr><td><code>/clear</code></td><td>Remove all attached files</td></tr>
+      </table>
     </section>
 
     <div class="footer">MIT License &middot; Built with Go</div>
@@ -335,21 +517,25 @@
     var replayBtn = document.getElementById('demo-replay');
     var stopped = false;
 
-    // Script: sequence of actions
     var script = [
       { type: 'cmd',   text: '$ chatchain openai -m gpt-4o' },
       { type: 'pause', ms: 600 },
-      { type: 'system', text: '  Connected to OpenAI  ·  model: gpt-4o' },
+      { type: 'system', text: 'Chat started. Press Ctrl+C to exit.' },
+      { type: 'system', text: 'Commands: /file <path> - attach file, /files - list attached, /clear - remove all' },
       { type: 'pause', ms: 400 },
       { type: 'blank' },
       { type: 'user',  text: 'What is ChatChain?' },
       { type: 'pause', ms: 800 },
-      { type: 'stream', text: 'ChatChain is a lightweight CLI tool that lets you chat with LLMs directly from your terminal. It supports OpenAI, Anthropic, and Gemini — with streaming responses, interactive model selection, and conversation history.' },
+      { type: 'stream', text: 'ChatChain is a lightweight CLI tool that lets you chat with LLMs directly from your terminal. It supports OpenAI, Anthropic, Gemini, and Vertex AI \u2014 with streaming responses, file attachments, and conversation history.' },
       { type: 'pause', ms: 1200 },
       { type: 'blank' },
-      { type: 'user',  text: 'Can I use it in scripts?' },
+      { type: 'file',  text: '/file screenshot.png' },
+      { type: 'pause', ms: 300 },
+      { type: 'dim',   text: '  Attached: screenshot.png (image/png, 128204 bytes)' },
+      { type: 'pause', ms: 400 },
+      { type: 'user',  text: 'What do you see in this image?' },
       { type: 'pause', ms: 600 },
-      { type: 'stream', text: 'Yes! Use the -c flag for non-interactive mode:\n\n  chatchain openai -m gpt-4o -c "summarize this"\n\nIt prints the response to stdout, so you can pipe it into other commands.' },
+      { type: 'stream', text: 'The screenshot shows a terminal window running ChatChain. I can see the interactive chat interface with color-coded prompts \u2014 cyan for the user and magenta for the assistant.' },
       { type: 'pause', ms: 1000 },
       { type: 'done' },
     ];
@@ -377,7 +563,6 @@
         function tick() {
           if (stopped) { resolve(); return; }
           if (i < text.length) {
-            // Insert character before cursor
             var ch = text[i];
             if (ch === '\n') {
               cursor.remove();
@@ -399,7 +584,6 @@
     }
 
     function streamText(container, text) {
-      // Faster, variable-speed "streaming" that feels like an LLM
       return new Promise(function (resolve) {
         var i = 0;
         var line = container;
@@ -421,7 +605,6 @@
             }
             i++;
             el.scrollTop = el.scrollHeight;
-            // Variable speed: fast base, slight random jitter, pause at punctuation
             var delay = 18 + Math.random() * 16;
             if (ch === '.' || ch === '!' || ch === '?' || ch === '\u2014') delay += 80;
             else if (ch === ',') delay += 40;
@@ -465,15 +648,28 @@
           var uLine = createLine();
           var label = document.createElement('span');
           label.className = 'user-label';
-          label.textContent = 'You: ';
+          label.textContent = 'You> ';
           uLine.appendChild(label);
           await typeText(uLine, step.text, 55);
+
+        } else if (step.type === 'file') {
+          var fLine = createLine();
+          var fLabel = document.createElement('span');
+          fLabel.className = 'user-label';
+          fLabel.textContent = 'You> ';
+          fLine.appendChild(fLabel);
+          await typeText(fLine, step.text, 45);
+
+        } else if (step.type === 'dim') {
+          var dLine = createLine();
+          dLine.className = 'line dim';
+          dLine.textContent = step.text;
 
         } else if (step.type === 'stream') {
           var aLine = createLine();
           var aLabel = document.createElement('span');
           aLabel.className = 'assistant-label';
-          aLabel.textContent = 'AI: ';
+          aLabel.textContent = 'Assistant> ';
           aLine.appendChild(aLabel);
           await streamText(aLine, step.text);
 
@@ -488,7 +684,6 @@
       setTimeout(run, 50);
     });
 
-    // Start on load
     run();
   })();
   </script>

@@ -7,15 +7,26 @@ import (
 	"net/http"
 )
 
+type Attachment struct {
+	Filename string // basename
+	MimeType string // e.g. "image/png"
+	Data     []byte // raw file bytes
+}
+
 type Message struct {
-	Role    string // "user" or "assistant"
-	Content string
+	Role        string // "user" or "assistant"
+	Content     string
+	Reasoning   string       // thinking/reasoning text (display/save only)
+	Attachments []Attachment // nil when no files
 }
 
 type Provider interface {
 	ListModels(ctx context.Context) ([]string, error)
 	Chat(ctx context.Context, messages []Message) (string, error)
-	StreamChat(ctx context.Context, messages []Message, w io.Writer) (string, error)
+	// StreamChat streams content to w and reasoning to reasoning.
+	// The provider MUST close reasoning when thinking is done (before first content write).
+	// Returns (content, reasoning_text, error).
+	StreamChat(ctx context.Context, messages []Message, w io.Writer, reasoning io.WriteCloser) (string, string, error)
 }
 
 func New(providerType, apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) (Provider, error) {

@@ -2,10 +2,12 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -58,7 +60,26 @@ func (p *AnthropicProvider) buildParams(messages []Message) (anthropic.MessageNe
 		case "system":
 			system = append(system, anthropic.TextBlockParam{Text: msg.Content})
 		case "user":
-			msgs = append(msgs, anthropic.NewUserMessage(anthropic.NewTextBlock(msg.Content)))
+			if len(msg.Attachments) > 0 {
+				var blocks []anthropic.ContentBlockParamUnion
+				for _, att := range msg.Attachments {
+					switch {
+					case strings.HasPrefix(att.MimeType, "image/"):
+						blocks = append(blocks, anthropic.NewImageBlockBase64(att.MimeType, base64.StdEncoding.EncodeToString(att.Data)))
+					case att.MimeType == "application/pdf":
+						blocks = append(blocks, anthropic.NewDocumentBlock(anthropic.Base64PDFSourceParam{
+							Data: base64.StdEncoding.EncodeToString(att.Data),
+						}))
+					default:
+						// Text files: inline as text block
+						blocks = append(blocks, anthropic.NewTextBlock("[File: "+att.Filename+"]\n"+string(att.Data)))
+					}
+				}
+				blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
+				msgs = append(msgs, anthropic.NewUserMessage(blocks...))
+			} else {
+				msgs = append(msgs, anthropic.NewUserMessage(anthropic.NewTextBlock(msg.Content)))
+			}
 		case "assistant":
 			msgs = append(msgs, anthropic.NewAssistantMessage(anthropic.NewTextBlock(msg.Content)))
 		}
@@ -90,24 +111,37 @@ func (p *AnthropicProvider) Chat(ctx context.Context, messages []Message) (strin
 	return result, nil
 }
 
-func (p *AnthropicProvider) StreamChat(ctx context.Context, messages []Message, w io.Writer) (string, error) {
+func (p *AnthropicProvider) StreamChat(ctx context.Context, messages []Message, w io.Writer, reasoningW io.WriteCloser) (string, string, error) {
 	params, _ := p.buildParams(messages)
 	stream := p.client.Messages.NewStreaming(ctx, params)
 
-	var full string
+	var full, thinkFull string
+	reasoningClosed := false
+	closeReasoning := func() {
+		if !reasoningClosed {
+			reasoningW.Close()
+			reasoningClosed = true
+		}
+	}
+
 	for stream.Next() {
 		evt := stream.Current()
 		switch evt.Type {
 		case "content_block_delta":
-			if evt.Delta.Type == "text_delta" {
+			if evt.Delta.Type == "thinking_delta" {
+				fmt.Fprint(reasoningW, evt.Delta.Thinking)
+				thinkFull += evt.Delta.Thinking
+			} else if evt.Delta.Type == "text_delta" {
+				closeReasoning()
 				fmt.Fprint(w, evt.Delta.Text)
 				full += evt.Delta.Text
 			}
 		}
 	}
+	closeReasoning()
 	if err := stream.Err(); err != nil {
-		return full, fmt.Errorf("stream error: %w", err)
+		return full, thinkFull, fmt.Errorf("stream error: %w", err)
 	}
 
-	return full, nil
+	return full, thinkFull, nil
 }
