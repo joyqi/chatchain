@@ -71,6 +71,7 @@ In interactive mode, the following commands are available:
 | `/file <path>` | Attach a file (image, PDF, or text). Supports Tab completion for file paths. |
 | `/files` | List all currently attached files |
 | `/clear` | Remove all attached files |
+| `/save [path]` | Save conversation history to a Markdown file (default: `history.md`) |
 
 Attached files are sent with your next message, then cleared automatically.
 
