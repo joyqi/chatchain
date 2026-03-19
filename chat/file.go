@@ -128,6 +128,73 @@ func SaveHistory(messages []provider.Message, path string) error {
 	return nil
 }
 
+func ImportHistory(path string) ([]provider.Message, error) {
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("cannot resolve home dir: %w", err)
+		}
+		path = filepath.Join(home, path[2:])
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read file: %w", err)
+	}
+
+	var messages []provider.Message
+	var currentRole string
+	var currentContent strings.Builder
+
+	flush := func() {
+		if currentRole == "" {
+			return
+		}
+		text := strings.TrimSpace(currentContent.String())
+		if text != "" {
+			messages = append(messages, provider.Message{Role: currentRole, Content: text})
+		}
+		currentRole = ""
+		currentContent.Reset()
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		// Skip [Attached: ...] lines
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[Attached:") && strings.HasSuffix(trimmed, "]") {
+			continue
+		}
+
+		if strings.HasPrefix(line, "System> ") {
+			flush()
+			currentRole = "system"
+			currentContent.WriteString(strings.TrimPrefix(line, "System> "))
+		} else if strings.HasPrefix(line, "You> ") {
+			flush()
+			currentRole = "user"
+			currentContent.WriteString(strings.TrimPrefix(line, "You> "))
+		} else if strings.HasPrefix(line, "Assistant> ") {
+			flush()
+			currentRole = "assistant"
+			currentContent.WriteString(strings.TrimPrefix(line, "Assistant> "))
+		} else if strings.HasPrefix(line, "Reasoning> ") {
+			// Skip reasoning blocks
+			flush()
+			currentRole = ""
+		} else if currentRole != "" {
+			currentContent.WriteString("\n")
+			currentContent.WriteString(line)
+		}
+	}
+	flush()
+
+	if len(messages) == 0 {
+		return nil, fmt.Errorf("no messages found in %s", path)
+	}
+
+	return messages, nil
+}
+
 func FormatAttachmentList(attachments []provider.Attachment) string {
 	if len(attachments) == 0 {
 		return "No files attached."

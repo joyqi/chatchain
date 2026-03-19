@@ -12,7 +12,7 @@ import (
 	"chatchain/provider"
 
 	"github.com/briandowns/spinner"
-	"github.com/chzyer/readline"
+	"github.com/ergochat/readline"
 	"github.com/manifoldco/promptui"
 	"golang.org/x/term"
 )
@@ -99,7 +99,7 @@ func (c *chatCompleter) Do(line []rune, pos int) ([][]rune, int) {
 
 	// Command completion (no space yet)
 	if !strings.Contains(text, " ") {
-		commands := []string{"/file ", "/files ", "/clear ", "/save "}
+		commands := []string{"/file ", "/files ", "/clear ", "/save ", "/import "}
 		var candidates [][]rune
 		for _, cmd := range commands {
 			if strings.HasPrefix(cmd, text) {
@@ -115,6 +115,9 @@ func (c *chatCompleter) Do(line []rune, pos int) ([][]rune, int) {
 	}
 	if strings.HasPrefix(text, "/save ") {
 		return completeFilePath(text[6:])
+	}
+	if strings.HasPrefix(text, "/import ") {
+		return completeFilePath(text[8:])
 	}
 
 	return nil, 0
@@ -265,7 +268,7 @@ func Run(p provider.Provider, systemPrompt string, w io.Writer) error {
 	ctx := context.Background()
 
 	fmt.Fprintln(w, "Chat started. Press Ctrl+C to exit.")
-	fmt.Fprintln(w, "Commands: /file <path>, /files, /clear, /save <path>")
+	fmt.Fprintln(w, "Commands: /file <path>, /files, /clear, /save <path>, /import <path>")
 	fmt.Fprintln(w)
 
 	var pendingAttachments []provider.Attachment
@@ -315,6 +318,21 @@ func Run(p provider.Provider, systemPrompt string, w io.Writer) error {
 				ErrorStyle.Fprintf(w, "Error: %v\n", err)
 			} else {
 				DimStyle.Fprintf(w, "Conversation saved to %s\n", path)
+			}
+			continue
+		}
+		if input == "/import" || strings.HasPrefix(input, "/import ") {
+			path := strings.TrimSpace(strings.TrimPrefix(input, "/import"))
+			if path == "" {
+				path = "history.md"
+			}
+			imported, err := ImportHistory(path)
+			if err != nil {
+				ErrorStyle.Fprintf(w, "Error: %v\n", err)
+			} else {
+				history = imported
+				pendingAttachments = nil
+				DimStyle.Fprintf(w, "Imported %d messages from %s\n", len(imported), path)
 			}
 			continue
 		}
