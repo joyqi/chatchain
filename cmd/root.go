@@ -20,7 +20,7 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "chatchain [openai|anthropic|gemini]",
+	Use:   "chatchain [openai|anthropic|gemini|vertexai|openresponses]",
 	Short: "A lightweight cross-platform AI chat CLI",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -90,9 +90,11 @@ func init() {
 }
 
 var providerEnvKeys = map[string]string{
-	"openai":    "OPENAI_API_KEY",
-	"anthropic": "ANTHROPIC_API_KEY",
-	"gemini":    "GOOGLE_API_KEY",
+	"openai":        "OPENAI_API_KEY",
+	"anthropic":     "ANTHROPIC_API_KEY",
+	"gemini":        "GOOGLE_API_KEY",
+	"vertexai":      "GOOGLE_API_KEY",
+	"openresponses": "OPENAI_API_KEY",
 }
 
 func providerEnvKey(providerType string) string {

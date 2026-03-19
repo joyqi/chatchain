@@ -3,20 +3,20 @@ module chatchain
 go 1.24.2
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.26.0
+	github.com/anthropics/anthropic-sdk-go v1.27.1
 	github.com/briandowns/spinner v1.23.2
+	github.com/chzyer/readline v1.5.1
 	github.com/fatih/color v1.18.0
 	github.com/manifoldco/promptui v0.9.0
-	github.com/openai/openai-go v1.12.0
+	github.com/openai/openai-go/v3 v3.29.0
 	github.com/spf13/cobra v1.10.2
-	google.golang.org/genai v1.50.0
+	google.golang.org/genai v1.51.0
 )
 
 require (
 	cloud.google.com/go v0.116.0 // indirect
 	cloud.google.com/go/auth v0.9.3 // indirect
 	cloud.google.com/go/compute/metadata v0.5.0 // indirect
-	github.com/chzyer/readline v1.5.1 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/google/s2a-go v0.1.8 // indirect

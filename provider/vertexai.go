@@ -9,33 +9,33 @@ import (
 	"google.golang.org/genai"
 )
 
-type GeminiProvider struct {
+type VertexAIProvider struct {
 	client      *genai.Client
 	model       string
 	temperature *float64
 }
 
-func NewGemini(apiKey, baseURL, model string, temperature *float64) *GeminiProvider {
+func NewVertexAI(apiKey, baseURL, model string, temperature *float64) *VertexAIProvider {
 	cfg := &genai.ClientConfig{
 		APIKey:  apiKey,
-		Backend: genai.BackendGeminiAPI,
+		Backend: genai.BackendVertexAI,
 	}
 	if baseURL != "" {
-		cfg.HTTPOptions = genai.HTTPOptions{BaseURL: baseURL}
+		cfg.HTTPOptions = genai.HTTPOptions{BaseURL: baseURL, APIVersion: "v1"}
 	}
 	client, err := genai.NewClient(context.Background(), cfg)
 	if err != nil {
-		panic(fmt.Sprintf("failed to create Gemini client: %v", err))
+		panic(fmt.Sprintf("failed to create VertexAI client: %v", err))
 	}
 
-	return &GeminiProvider{
+	return &VertexAIProvider{
 		client:      client,
 		model:       model,
 		temperature: temperature,
 	}
 }
 
-func (p *GeminiProvider) ListModels(ctx context.Context) ([]string, error) {
+func (p *VertexAIProvider) ListModels(ctx context.Context) ([]string, error) {
 	page, err := p.client.Models.List(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list models: %w", err)
@@ -59,7 +59,7 @@ func (p *GeminiProvider) ListModels(ctx context.Context) ([]string, error) {
 	return models, nil
 }
 
-func (p *GeminiProvider) buildContents(messages []Message) []*genai.Content {
+func (p *VertexAIProvider) buildContents(messages []Message) []*genai.Content {
 	var contents []*genai.Content
 	for _, msg := range messages {
 		var role genai.Role = "user"
@@ -71,7 +71,7 @@ func (p *GeminiProvider) buildContents(messages []Message) []*genai.Content {
 	return contents
 }
 
-func (p *GeminiProvider) config() *genai.GenerateContentConfig {
+func (p *VertexAIProvider) config() *genai.GenerateContentConfig {
 	cfg := &genai.GenerateContentConfig{}
 	if p.temperature != nil {
 		temp := float32(*p.temperature)
@@ -80,7 +80,7 @@ func (p *GeminiProvider) config() *genai.GenerateContentConfig {
 	return cfg
 }
 
-func (p *GeminiProvider) Chat(ctx context.Context, messages []Message) (string, error) {
+func (p *VertexAIProvider) Chat(ctx context.Context, messages []Message) (string, error) {
 	resp, err := p.client.Models.GenerateContent(ctx, p.model, p.buildContents(messages), p.config())
 	if err != nil {
 		return "", fmt.Errorf("chat error: %w", err)
@@ -88,7 +88,7 @@ func (p *GeminiProvider) Chat(ctx context.Context, messages []Message) (string, 
 	return resp.Text(), nil
 }
 
-func (p *GeminiProvider) StreamChat(ctx context.Context, messages []Message, w io.Writer) (string, error) {
+func (p *VertexAIProvider) StreamChat(ctx context.Context, messages []Message, w io.Writer) (string, error) {
 	var full string
 	for resp, err := range p.client.Models.GenerateContentStream(ctx, p.model, p.buildContents(messages), p.config()) {
 		if err != nil {

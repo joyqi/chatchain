@@ -24,8 +24,12 @@ func New(providerType, apiKey, baseURL, model string, temperature *float64) (Pro
 	case "anthropic":
 		return NewAnthropic(apiKey, baseURL, model, temperature), nil
 	case "gemini":
-		return NewGemini(apiKey, model, temperature), nil
+		return NewGemini(apiKey, baseURL, model, temperature), nil
+	case "openresponses":
+		return NewOpenResponses(apiKey, baseURL, model, temperature), nil
+	case "vertexai":
+		return NewVertexAI(apiKey, baseURL, model, temperature), nil
 	default:
-		return nil, fmt.Errorf("unknown provider type: %s (supported: openai, anthropic, gemini)", providerType)
+		return nil, fmt.Errorf("unknown provider type: %s (supported: openai, anthropic, gemini, vertexai, openresponses)", providerType)
 	}
 }

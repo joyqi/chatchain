@@ -4,7 +4,7 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 
 ## Features
 
-- **Multi-provider** — OpenAI, Anthropic and Gemini, with custom base URL support
+- **Multi-provider** — OpenAI, OpenAI Responses API, Anthropic, Gemini and Vertex AI, with custom base URL support
 - **Interactive model selection** — arrow-key navigation with filtering
 - **Streaming responses** — real-time token output with loading spinner
 - **Non-interactive mode** — single message in, response out, pipe-friendly
@@ -37,7 +37,7 @@ go build -o chatchain .
 ## Usage
 
 ```bash
-chatchain [openai|anthropic|gemini] [flags]
+chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 ```
 
 ### Flags
@@ -54,9 +54,9 @@ chatchain [openai|anthropic|gemini] [flags]
 
 | Variable | Provider |
 |----------|----------|
-| `OPENAI_API_KEY` | OpenAI |
+| `OPENAI_API_KEY` | OpenAI / OpenResponses |
 | `ANTHROPIC_API_KEY` | Anthropic |
-| `GOOGLE_API_KEY` | Gemini |
+| `GOOGLE_API_KEY` | Gemini / Vertex AI |
 
 ### Examples
 
@@ -72,6 +72,12 @@ chatchain anthropic -m claude-sonnet-4-20250514
 
 # Use Gemini
 chatchain gemini -m gemini-2.5-flash
+
+# Use Vertex AI (with custom endpoint)
+chatchain vertexai -u https://your-proxy.com/api/vertex-ai -m gemini-2.5-flash -c "Hello"
+
+# Use OpenAI Responses API
+chatchain openresponses -m gpt-4o -c "Hello"
 
 # Non-interactive mode (requires -m)
 chatchain openai -m gpt-4o -c "Explain quicksort in one paragraph"
@@ -95,9 +101,11 @@ chatchain/
 │   └── styles.go        # Terminal style definitions
 └── provider/
     ├── provider.go      # Provider interface
-    ├── openai.go        # OpenAI implementation
-    ├── anthropic.go     # Anthropic implementation
-    └── gemini.go        # Gemini implementation
+    ├── openai.go          # OpenAI Chat Completions implementation
+    ├── openresponses.go   # OpenAI Responses API implementation
+    ├── anthropic.go       # Anthropic implementation
+    ├── gemini.go          # Gemini implementation
+    └── vertexai.go        # Vertex AI implementation
 ```
 
 ## Dependencies
