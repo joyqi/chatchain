@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"sort"
 
 	"google.golang.org/genai"
@@ -15,13 +16,16 @@ type GeminiProvider struct {
 	temperature *float64
 }
 
-func NewGemini(apiKey, baseURL, model string, temperature *float64) *GeminiProvider {
+func NewGemini(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *GeminiProvider {
 	cfg := &genai.ClientConfig{
 		APIKey:  apiKey,
 		Backend: genai.BackendGeminiAPI,
 	}
 	if baseURL != "" {
 		cfg.HTTPOptions = genai.HTTPOptions{BaseURL: baseURL}
+	}
+	if httpClient != nil {
+		cfg.HTTPClient = httpClient
 	}
 	client, err := genai.NewClient(context.Background(), cfg)
 	if err != nil {

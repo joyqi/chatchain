@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"sort"
 
 	"github.com/openai/openai-go/v3"
@@ -16,12 +17,15 @@ type OpenAIProvider struct {
 	temperature *float64
 }
 
-func NewOpenAI(apiKey, baseURL, model string, temperature *float64) *OpenAIProvider {
+func NewOpenAI(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *OpenAIProvider {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKey),
 	}
 	if baseURL != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))
+	}
+	if httpClient != nil {
+		opts = append(opts, option.WithHTTPClient(httpClient))
 	}
 
 	client := openai.NewClient(opts...)

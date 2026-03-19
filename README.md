@@ -51,6 +51,7 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 | `--temperature` | `-t` | Sampling temperature, 0.0-2.0 (omit to use provider default) |
 | `--chat` | `-c` | Send a single message and print the response (non-interactive) |
 | `--system` | `-s` | System prompt (omit value for interactive input) |
+| `--verbose` | `-v` | Print HTTP request/response bodies for debugging |
 
 ### Environment Variables
 

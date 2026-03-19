@@ -7,4 +7,5 @@ var (
 	AssistantStyle = color.New(color.FgMagenta, color.Bold)
 	ErrorStyle     = color.New(color.FgRed)
 	BoldStyle      = color.New(color.Bold)
+	DimStyle       = color.New(color.Faint)
 )

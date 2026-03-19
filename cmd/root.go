@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 
@@ -19,6 +20,7 @@ var (
 	temperature  float64
 	chatMessage  string
 	systemPrompt string
+	verbose      bool
 )
 
 var rootCmd = &cobra.Command{
@@ -46,7 +48,12 @@ var rootCmd = &cobra.Command{
 			temp = &temperature
 		}
 
-		p, err := provider.New(providerType, apiKey, baseURL, model, temp)
+		var httpClient *http.Client
+		if verbose {
+			httpClient = chat.NewVerboseHTTPClient()
+		}
+
+		p, err := provider.New(providerType, apiKey, baseURL, model, temp, httpClient)
 		if err != nil {
 			return err
 		}
@@ -73,7 +80,7 @@ var rootCmd = &cobra.Command{
 
 			fmt.Printf("Using model: %s\n\n", chat.BoldStyle.Sprint(selected))
 			// Recreate provider with selected model
-			p, err = provider.New(providerType, apiKey, baseURL, selected, temp)
+			p, err = provider.New(providerType, apiKey, baseURL, selected, temp, httpClient)
 			if err != nil {
 				return err
 			}
@@ -101,6 +108,7 @@ func init() {
 	rootCmd.Flags().StringVarP(&chatMessage, "chat", "c", "", "Send a single message and print the response (non-interactive)")
 	rootCmd.Flags().StringVarP(&systemPrompt, "system", "s", "", "System prompt (omit value for interactive input)")
 	rootCmd.Flags().Lookup("system").NoOptDefVal = " "
+	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print request and response bodies for debugging")
 }
 
 var providerEnvKeys = map[string]string{

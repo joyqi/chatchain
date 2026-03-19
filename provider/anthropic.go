@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"sort"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -16,12 +17,15 @@ type AnthropicProvider struct {
 	temperature *float64
 }
 
-func NewAnthropic(apiKey, baseURL, model string, temperature *float64) *AnthropicProvider {
+func NewAnthropic(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *AnthropicProvider {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKey),
 	}
 	if baseURL != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))
+	}
+	if httpClient != nil {
+		opts = append(opts, option.WithHTTPClient(httpClient))
 	}
 
 	client := anthropic.NewClient(opts...)

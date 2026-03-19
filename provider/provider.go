@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 )
 
 type Message struct {
@@ -17,18 +18,18 @@ type Provider interface {
 	StreamChat(ctx context.Context, messages []Message, w io.Writer) (string, error)
 }
 
-func New(providerType, apiKey, baseURL, model string, temperature *float64) (Provider, error) {
+func New(providerType, apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) (Provider, error) {
 	switch providerType {
 	case "openai":
-		return NewOpenAI(apiKey, baseURL, model, temperature), nil
+		return NewOpenAI(apiKey, baseURL, model, temperature, httpClient), nil
 	case "anthropic":
-		return NewAnthropic(apiKey, baseURL, model, temperature), nil
+		return NewAnthropic(apiKey, baseURL, model, temperature, httpClient), nil
 	case "gemini":
-		return NewGemini(apiKey, baseURL, model, temperature), nil
+		return NewGemini(apiKey, baseURL, model, temperature, httpClient), nil
 	case "openresponses":
-		return NewOpenResponses(apiKey, baseURL, model, temperature), nil
+		return NewOpenResponses(apiKey, baseURL, model, temperature, httpClient), nil
 	case "vertexai":
-		return NewVertexAI(apiKey, baseURL, model, temperature), nil
+		return NewVertexAI(apiKey, baseURL, model, temperature, httpClient), nil
 	default:
 		return nil, fmt.Errorf("unknown provider type: %s (supported: openai, anthropic, gemini, vertexai, openresponses)", providerType)
 	}

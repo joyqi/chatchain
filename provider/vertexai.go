@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"sort"
 
 	"google.golang.org/genai"
@@ -15,13 +16,16 @@ type VertexAIProvider struct {
 	temperature *float64
 }
 
-func NewVertexAI(apiKey, baseURL, model string, temperature *float64) *VertexAIProvider {
+func NewVertexAI(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *VertexAIProvider {
 	cfg := &genai.ClientConfig{
 		APIKey:  apiKey,
 		Backend: genai.BackendVertexAI,
 	}
 	if baseURL != "" {
 		cfg.HTTPOptions = genai.HTTPOptions{BaseURL: baseURL, APIVersion: "v1"}
+	}
+	if httpClient != nil {
+		cfg.HTTPClient = httpClient
 	}
 	client, err := genai.NewClient(context.Background(), cfg)
 	if err != nil {
