@@ -65,20 +65,26 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 }
 
 func ReadSystemPrompt() (string, error) {
+	pf := &pasteFilter{r: os.Stdin}
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          BoldStyle.Sprint("System> "),
 		InterruptPrompt: "^C",
+		Stdin:           pf,
 	})
 	if err != nil {
 		return "", err
 	}
 	defer rl.Close()
 
+	os.Stdout.WriteString("\033[?2004h")
+	defer os.Stdout.WriteString("\033[?2004l")
+
 	input, err := rl.Readline()
 	if err != nil {
 		return "", nil // skip on Ctrl+C / EOF
 	}
-	return strings.TrimSpace(input), nil
+	input = expandPasteTags(strings.TrimSpace(input), pf)
+	return input, nil
 }
 
 type chatCompleter struct{}
@@ -204,17 +210,53 @@ func calcMaxItems(candidates [][]rune, partial string) int {
 	return maxRows * colNum
 }
 
+// expandPasteTags finds paste preview tags like [#1 foo... 5 lines]
+// in the input and replaces them with the actual pasted content.
+func expandPasteTags(input string, pf *pasteFilter) string {
+	for {
+		start := strings.Index(input, "[#")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(input[start:], "]")
+		if end < 0 {
+			break
+		}
+		end += start
+
+		tag := input[start+1 : end] // e.g. "#1 Hello world... 5 lines"
+		// Extract the #N prefix to look up the paste.
+		if spaceIdx := strings.Index(tag, " "); spaceIdx > 0 {
+			tagKey := tag[:spaceIdx+1] // "#1 "
+			if text := pf.ConsumePaste(tagKey); text != "" {
+				input = input[:start] + text + input[end+1:]
+				continue
+			}
+		}
+		// Not a paste tag or not found — skip past it.
+		break
+	}
+	return input
+}
+
 func Run(p provider.Provider, systemPrompt string, w io.Writer) error {
+	pf := &pasteFilter{r: os.Stdin}
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          UserStyle.Sprint("You> "),
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
 		AutoComplete:    &chatCompleter{},
+		Stdin:           pf,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize input: %w", err)
 	}
 	defer rl.Close()
+
+	// Enable bracketed paste mode AFTER readline init, so readline's
+	// terminal setup doesn't override it.
+	os.Stdout.WriteString("\033[?2004h")
+	defer os.Stdout.WriteString("\033[?2004l")
 
 	var history []provider.Message
 	if systemPrompt != "" {
@@ -239,6 +281,9 @@ func Run(p provider.Provider, systemPrompt string, w io.Writer) error {
 		if input == "" {
 			continue
 		}
+
+		// Expand paste tags: [#1 first few chars... N lines] → full pasted text
+		input = expandPasteTags(input, pf)
 
 		// Handle commands
 		if strings.HasPrefix(input, "/file ") {
