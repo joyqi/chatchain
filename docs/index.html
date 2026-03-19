@@ -506,6 +506,7 @@
         <tr><td><code>/files</code></td><td>List currently attached files</td></tr>
         <tr><td><code>/clear</code></td><td>Remove all attached files</td></tr>
         <tr><td><code>/save [path]</code></td><td>Save conversation to Markdown (default: <code>history.md</code>)</td></tr>
+        <tr><td><code>/import [path]</code></td><td>Import conversation from a saved Markdown file (default: <code>history.md</code>)</td></tr>
       </table>
     </section>
 
@@ -522,7 +523,7 @@
       { type: 'cmd',   text: '$ chatchain openai -m gpt-4o' },
       { type: 'pause', ms: 600 },
       { type: 'system', text: 'Chat started. Press Ctrl+C to exit.' },
-      { type: 'system', text: 'Commands: /file <path> - attach file, /files - list attached, /clear - remove all' },
+      { type: 'system', text: 'Commands: /file <path>, /files, /clear, /save <path>, /import <path>' },
       { type: 'pause', ms: 400 },
       { type: 'blank' },
       { type: 'user',  text: 'What is ChatChain?' },

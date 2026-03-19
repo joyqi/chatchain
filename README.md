@@ -72,6 +72,7 @@ In interactive mode, the following commands are available:
 | `/files` | List all currently attached files |
 | `/clear` | Remove all attached files |
 | `/save [path]` | Save conversation history to a Markdown file (default: `history.md`) |
+| `/import [path]` | Import conversation history from a saved Markdown file (default: `history.md`) |
 
 Attached files are sent with your next message, then cleared automatically.
 
@@ -159,7 +160,7 @@ chatchain/
 - [cobra](https://github.com/spf13/cobra) — CLI framework
 - [fatih/color](https://github.com/fatih/color) — Terminal styling
 - [promptui](https://github.com/manifoldco/promptui) — Interactive prompts
-- [readline](https://github.com/chzyer/readline) — Line editing with tab completion
+- [readline](https://github.com/ergochat/readline) — Line editing with tab completion (CJK-aware)
 - [spinner](https://github.com/briandowns/spinner) — Loading spinners
 - [openai-go](https://github.com/openai/openai-go) — OpenAI SDK
 - [anthropic-sdk-go](https://github.com/anthropics/anthropic-sdk-go) — Anthropic SDK
