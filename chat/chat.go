@@ -306,8 +306,11 @@ func Run(p provider.Provider, systemPrompt string, w io.Writer) error {
 			DimStyle.Fprintln(w, "Attachments cleared.")
 			continue
 		}
-		if strings.HasPrefix(input, "/save ") {
-			path := strings.TrimSpace(input[6:])
+		if input == "/save" || strings.HasPrefix(input, "/save ") {
+			path := strings.TrimSpace(strings.TrimPrefix(input, "/save"))
+			if path == "" {
+				path = "history.md"
+			}
 			if err := SaveHistory(history, path); err != nil {
 				ErrorStyle.Fprintf(w, "Error: %v\n", err)
 			} else {
