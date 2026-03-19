@@ -9,6 +9,7 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 - **Streaming responses** — real-time token output with loading spinner
 - **Non-interactive mode** — single message in, response out, pipe-friendly
 - **Conversation history** — full context maintained within a session
+- **System prompt** — set via flag or interactive input
 - **Styled terminal output** — color-coded prompts
 
 ## Install
@@ -49,6 +50,7 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 | `--model` | `-m` | Model name (skip interactive selection) |
 | `--temperature` | `-t` | Sampling temperature, 0.0-2.0 (omit to use provider default) |
 | `--chat` | `-c` | Send a single message and print the response (non-interactive) |
+| `--system` | `-s` | System prompt (omit value for interactive input) |
 
 ### Environment Variables
 
@@ -78,6 +80,12 @@ chatchain vertexai -u https://your-proxy.com/api/vertex-ai -m gemini-2.5-flash -
 
 # Use OpenAI Responses API
 chatchain openresponses -m gpt-4o -c "Hello"
+
+# With system prompt
+chatchain openai -m gpt-4o -s 'You are a helpful translator' -c "Translate to French: hello"
+
+# Interactive system prompt input (prompts System> after model selection)
+chatchain openai -m gpt-4o -s
 
 # Non-interactive mode (requires -m)
 chatchain openai -m gpt-4o -c "Explain quicksort in one paragraph"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"chatchain/chat"
 	"chatchain/provider"
@@ -12,11 +13,12 @@ import (
 )
 
 var (
-	apiKey      string
-	baseURL     string
-	model       string
-	temperature float64
-	chatMessage string
+	apiKey       string
+	baseURL      string
+	model        string
+	temperature  float64
+	chatMessage  string
+	systemPrompt string
 )
 
 var rootCmd = &cobra.Command{
@@ -51,7 +53,7 @@ var rootCmd = &cobra.Command{
 
 		// Non-interactive mode: single message, direct response
 		if chatMessage != "" {
-			return chat.Once(context.Background(), p, chatMessage, os.Stdout)
+			return chat.Once(context.Background(), p, chatMessage, systemPrompt, os.Stdout)
 		}
 
 		// If no model specified, let user select from available models
@@ -77,7 +79,17 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
-		return chat.Run(p, os.Stdout)
+		// Interactive system prompt input when -s is used without a value
+		systemPrompt = strings.TrimSpace(systemPrompt)
+		if cmd.Flags().Changed("system") && systemPrompt == "" {
+			sp, err := chat.ReadSystemPrompt()
+			if err != nil {
+				return err
+			}
+			systemPrompt = sp
+		}
+
+		return chat.Run(p, systemPrompt, os.Stdout)
 	},
 }
 
@@ -87,6 +99,8 @@ func init() {
 	rootCmd.Flags().StringVarP(&model, "model", "m", "", "Model name (optional, interactive selection if omitted)")
 	rootCmd.Flags().Float64VarP(&temperature, "temperature", "t", 0, "Sampling temperature (0.0-2.0)")
 	rootCmd.Flags().StringVarP(&chatMessage, "chat", "c", "", "Send a single message and print the response (non-interactive)")
+	rootCmd.Flags().StringVarP(&systemPrompt, "system", "s", "", "System prompt (omit value for interactive input)")
+	rootCmd.Flags().Lookup("system").NoOptDefVal = " "
 }
 
 var providerEnvKeys = map[string]string{

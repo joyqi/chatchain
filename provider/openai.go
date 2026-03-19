@@ -55,6 +55,8 @@ func (p *OpenAIProvider) buildParams(messages []Message) openai.ChatCompletionNe
 	}
 	for _, msg := range messages {
 		switch msg.Role {
+		case "system":
+			params.Messages = append(params.Messages, openai.SystemMessage(msg.Content))
 		case "user":
 			params.Messages = append(params.Messages, openai.UserMessage(msg.Content))
 		case "assistant":

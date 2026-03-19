@@ -48,8 +48,11 @@ func (p *AnthropicProvider) ListModels(ctx context.Context) ([]string, error) {
 
 func (p *AnthropicProvider) buildParams(messages []Message) (anthropic.MessageNewParams, []anthropic.MessageParam) {
 	var msgs []anthropic.MessageParam
+	var system []anthropic.TextBlockParam
 	for _, msg := range messages {
 		switch msg.Role {
+		case "system":
+			system = append(system, anthropic.TextBlockParam{Text: msg.Content})
 		case "user":
 			msgs = append(msgs, anthropic.NewUserMessage(anthropic.NewTextBlock(msg.Content)))
 		case "assistant":
@@ -60,6 +63,7 @@ func (p *AnthropicProvider) buildParams(messages []Message) (anthropic.MessageNe
 		Model:     anthropic.Model(p.model),
 		MaxTokens: 4096,
 		Messages:  msgs,
+		System:    system,
 	}
 	if p.temperature != nil {
 		params.Temperature = anthropic.Float(*p.temperature)

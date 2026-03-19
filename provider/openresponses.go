@@ -57,6 +57,8 @@ func (p *OpenResponsesProvider) buildParams(messages []Message) responses.Respon
 	var input responses.ResponseInputParam
 	for _, msg := range messages {
 		switch msg.Role {
+		case "system":
+			params.Instructions = openai.String(msg.Content)
 		case "user":
 			input = append(input, responses.ResponseInputItemParamOfMessage(msg.Content, responses.EasyInputMessageRoleUser))
 		case "assistant":

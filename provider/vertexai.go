@@ -59,29 +59,37 @@ func (p *VertexAIProvider) ListModels(ctx context.Context) ([]string, error) {
 	return models, nil
 }
 
-func (p *VertexAIProvider) buildContents(messages []Message) []*genai.Content {
+func (p *VertexAIProvider) buildContents(messages []Message) ([]*genai.Content, *genai.Content) {
 	var contents []*genai.Content
+	var system *genai.Content
 	for _, msg := range messages {
-		var role genai.Role = "user"
-		if msg.Role == "assistant" {
-			role = "model"
+		switch msg.Role {
+		case "system":
+			system = genai.NewContentFromText(msg.Content, "user")
+		case "user":
+			contents = append(contents, genai.NewContentFromText(msg.Content, "user"))
+		case "assistant":
+			contents = append(contents, genai.NewContentFromText(msg.Content, "model"))
 		}
-		contents = append(contents, genai.NewContentFromText(msg.Content, role))
 	}
-	return contents
+	return contents, system
 }
 
-func (p *VertexAIProvider) config() *genai.GenerateContentConfig {
+func (p *VertexAIProvider) config(system *genai.Content) *genai.GenerateContentConfig {
 	cfg := &genai.GenerateContentConfig{}
 	if p.temperature != nil {
 		temp := float32(*p.temperature)
 		cfg.Temperature = &temp
 	}
+	if system != nil {
+		cfg.SystemInstruction = system
+	}
 	return cfg
 }
 
 func (p *VertexAIProvider) Chat(ctx context.Context, messages []Message) (string, error) {
-	resp, err := p.client.Models.GenerateContent(ctx, p.model, p.buildContents(messages), p.config())
+	contents, system := p.buildContents(messages)
+	resp, err := p.client.Models.GenerateContent(ctx, p.model, contents, p.config(system))
 	if err != nil {
 		return "", fmt.Errorf("chat error: %w", err)
 	}
@@ -89,8 +97,9 @@ func (p *VertexAIProvider) Chat(ctx context.Context, messages []Message) (string
 }
 
 func (p *VertexAIProvider) StreamChat(ctx context.Context, messages []Message, w io.Writer) (string, error) {
+	contents, system := p.buildContents(messages)
 	var full string
-	for resp, err := range p.client.Models.GenerateContentStream(ctx, p.model, p.buildContents(messages), p.config()) {
+	for resp, err := range p.client.Models.GenerateContentStream(ctx, p.model, contents, p.config(system)) {
 		if err != nil {
 			return full, fmt.Errorf("stream error: %w", err)
 		}

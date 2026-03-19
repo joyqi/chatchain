@@ -48,8 +48,12 @@ func FetchModels(ctx context.Context, p provider.Provider) ([]string, error) {
 	return models, fetchErr
 }
 
-func Once(ctx context.Context, p provider.Provider, message string, w io.Writer) error {
-	messages := []provider.Message{{Role: "user", Content: message}}
+func Once(ctx context.Context, p provider.Provider, message string, systemPrompt string, w io.Writer) error {
+	var messages []provider.Message
+	if systemPrompt != "" {
+		messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
+	}
+	messages = append(messages, provider.Message{Role: "user", Content: message})
 	reply, err := p.Chat(ctx, messages)
 	if err != nil {
 		return err
@@ -58,7 +62,24 @@ func Once(ctx context.Context, p provider.Provider, message string, w io.Writer)
 	return nil
 }
 
-func Run(p provider.Provider, w io.Writer) error {
+func ReadSystemPrompt() (string, error) {
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:          BoldStyle.Sprint("System> "),
+		InterruptPrompt: "^C",
+	})
+	if err != nil {
+		return "", err
+	}
+	defer rl.Close()
+
+	input, err := rl.Readline()
+	if err != nil {
+		return "", nil // skip on Ctrl+C / EOF
+	}
+	return strings.TrimSpace(input), nil
+}
+
+func Run(p provider.Provider, systemPrompt string, w io.Writer) error {
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          UserStyle.Sprint("You> "),
 		InterruptPrompt: "^C",
@@ -70,6 +91,9 @@ func Run(p provider.Provider, w io.Writer) error {
 	defer rl.Close()
 
 	var history []provider.Message
+	if systemPrompt != "" {
+		history = append(history, provider.Message{Role: "system", Content: systemPrompt})
+	}
 	ctx := context.Background()
 
 	fmt.Fprintln(w, "Chat started. Press Ctrl+C to exit.")
