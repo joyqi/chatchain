@@ -40,7 +40,7 @@ var rootCmd = &cobra.Command{
 
 		// Non-interactive mode requires a model
 		if chatMessage != "" && model == "" {
-			return fmt.Errorf("--model/-m is required when using --chat/-c")
+			return fmt.Errorf("--model/-M is required when using --message/-m")
 		}
 
 		var temp *float64
@@ -105,9 +105,9 @@ var rootCmd = &cobra.Command{
 func init() {
 	rootCmd.Flags().StringVarP(&apiKey, "key", "k", "", "API key (required)")
 	rootCmd.Flags().StringVarP(&baseURL, "url", "u", "", "Base URL (optional)")
-	rootCmd.Flags().StringVarP(&model, "model", "m", "", "Model name (optional, interactive selection if omitted)")
+	rootCmd.Flags().StringVarP(&model, "model", "M", "", "Model name (optional, interactive selection if omitted)")
 	rootCmd.Flags().Float64VarP(&temperature, "temperature", "t", 0, "Sampling temperature (0.0-2.0)")
-	rootCmd.Flags().StringVarP(&chatMessage, "chat", "c", "", "Send a single message and print the response (non-interactive)")
+	rootCmd.Flags().StringVarP(&chatMessage, "message", "m", "", "Send a single message and print the response (non-interactive)")
 	rootCmd.Flags().StringVarP(&systemPrompt, "system", "s", "", "System prompt (omit value for interactive input)")
 	rootCmd.Flags().Lookup("system").NoOptDefVal = " "
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print request and response bodies for debugging")

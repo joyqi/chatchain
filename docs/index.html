@@ -398,7 +398,7 @@
         <div class="feature-card">
           <span class="icon">&#128295;</span>
           <h3>Script-Friendly</h3>
-          <p>Non-interactive mode with <code>-c</code> flag. Pipe output to other commands.</p>
+          <p>Non-interactive mode with <code>-m</code> flag. Pipe output to other commands.</p>
         </div>
         <div class="feature-card">
           <span class="icon">&#128736;</span>
@@ -471,13 +471,13 @@
         <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-k</span> <span class="string">sk-xxx</span></div>
         <div></div>
         <div><span class="comment"># Specify a model directly</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">chatchain anthropic</span> <span class="flag">-m</span> <span class="string">claude-sonnet-4-20250514</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">chatchain anthropic</span> <span class="flag">-M</span> <span class="string">claude-sonnet-4-20250514</span></div>
         <div></div>
         <div><span class="comment"># Non-interactive one-shot</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-m</span> <span class="string">gpt-4o</span> <span class="flag">-c</span> <span class="string">"Explain quicksort"</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-M</span> <span class="string">gpt-4o</span> <span class="flag">-m</span> <span class="string">"Explain quicksort"</span></div>
         <div></div>
         <div><span class="comment"># System prompt</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-m</span> <span class="string">gpt-4o</span> <span class="flag">-s</span> <span class="string">'You are a translator'</span> <span class="flag">-c</span> <span class="string">"Hello"</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-M</span> <span class="string">gpt-4o</span> <span class="flag">-s</span> <span class="string">'You are a translator'</span> <span class="flag">-m</span> <span class="string">"Hello"</span></div>
         <div></div>
         <div><span class="comment"># Custom API endpoint</span></div>
         <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-u</span> <span class="string">https://your-proxy.com/v1</span> <span class="flag">-k</span> <span class="string">sk-xxx</span></div>
@@ -487,14 +487,14 @@
     <section>
       <h2>Flags</h2>
       <table>
-        <tr><th>Flag</th><th>Description</th></tr>
-        <tr><td><code>-k</code></td><td>API key (or set via env var)</td></tr>
-        <tr><td><code>-u</code></td><td>Custom base URL</td></tr>
-        <tr><td><code>-m</code></td><td>Model name (skip interactive selection)</td></tr>
-        <tr><td><code>-t</code></td><td>Sampling temperature (0.0-2.0)</td></tr>
-        <tr><td><code>-c</code></td><td>Non-interactive: send a single message</td></tr>
-        <tr><td><code>-s</code></td><td>System prompt (omit value for interactive input)</td></tr>
-        <tr><td><code>-v</code></td><td>Verbose: print HTTP request/response bodies</td></tr>
+        <tr><th>Flag</th><th>Short</th><th>Description</th></tr>
+        <tr><td><code>--key</code></td><td><code>-k</code></td><td>API key (or set via env var)</td></tr>
+        <tr><td><code>--url</code></td><td><code>-u</code></td><td>Custom base URL</td></tr>
+        <tr><td><code>--model</code></td><td><code>-M</code></td><td>Model name (skip interactive selection)</td></tr>
+        <tr><td><code>--temperature</code></td><td><code>-t</code></td><td>Sampling temperature (0.0-2.0)</td></tr>
+        <tr><td><code>--message</code></td><td><code>-m</code></td><td>Non-interactive: send a single message</td></tr>
+        <tr><td><code>--system</code></td><td><code>-s</code></td><td>System prompt (omit value for interactive input)</td></tr>
+        <tr><td><code>--verbose</code></td><td><code>-v</code></td><td>Verbose: print HTTP request/response bodies</td></tr>
       </table>
     </section>
 
@@ -520,7 +520,7 @@
     var stopped = false;
 
     var script = [
-      { type: 'cmd',   text: '$ chatchain openai -m gpt-4o' },
+      { type: 'cmd',   text: '$ chatchain openai -M gpt-4o' },
       { type: 'pause', ms: 600 },
       { type: 'system', text: 'Chat started. Press Ctrl+C to exit.' },
       { type: 'system', text: 'Commands: /file <path>, /files, /clear, /save <path>, /import <path>' },

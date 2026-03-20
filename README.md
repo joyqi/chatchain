@@ -48,9 +48,9 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 |------|-------|-------------|
 | `--key` | `-k` | API key (or set via env var) |
 | `--url` | `-u` | Custom base URL |
-| `--model` | `-m` | Model name (skip interactive selection) |
+| `--model` | `-M` | Model name (skip interactive selection) |
 | `--temperature` | `-t` | Sampling temperature, 0.0-2.0 (omit to use provider default) |
-| `--chat` | `-c` | Send a single message and print the response (non-interactive) |
+| `--message` | `-m` | Send a single message and print the response (non-interactive) |
 | `--system` | `-s` | System prompt (omit value for interactive input) |
 | `--verbose` | `-v` | Print HTTP request/response bodies for debugging |
 
@@ -91,31 +91,31 @@ Attached files are sent with your next message, then cleared automatically.
 chatchain openai -k sk-xxx
 
 # Specify model directly
-chatchain openai -k sk-xxx -m gpt-4o
+chatchain openai -k sk-xxx -M gpt-4o
 
 # Use Anthropic
-chatchain anthropic -m claude-sonnet-4-20250514
+chatchain anthropic -M claude-sonnet-4-20250514
 
 # Use Gemini
-chatchain gemini -m gemini-2.5-flash
+chatchain gemini -M gemini-2.5-flash
 
 # Use Vertex AI (with custom endpoint)
-chatchain vertexai -u https://your-proxy.com/api/vertex-ai -m gemini-2.5-flash -c "Hello"
+chatchain vertexai -u https://your-proxy.com/api/vertex-ai -M gemini-2.5-flash -m "Hello"
 
 # Use OpenAI Responses API
-chatchain openresponses -m gpt-4o -c "Hello"
+chatchain openresponses -M gpt-4o -m "Hello"
 
 # With system prompt
-chatchain openai -m gpt-4o -s 'You are a helpful translator' -c "Translate to French: hello"
+chatchain openai -M gpt-4o -s 'You are a helpful translator' -m "Translate to French: hello"
 
 # Interactive system prompt input (prompts System> after model selection)
-chatchain openai -m gpt-4o -s
+chatchain openai -M gpt-4o -s
 
-# Non-interactive mode (requires -m)
-chatchain openai -m gpt-4o -c "Explain quicksort in one paragraph"
+# Non-interactive mode (requires -M)
+chatchain openai -M gpt-4o -m "Explain quicksort in one paragraph"
 
 # Adjust temperature
-chatchain anthropic -m claude-sonnet-4-20250514 -t 0.5 -c "Write a haiku"
+chatchain anthropic -M claude-sonnet-4-20250514 -t 0.5 -m "Write a haiku"
 
 # Custom API endpoint
 chatchain openai -u https://your-proxy.com/v1 -k sk-xxx
