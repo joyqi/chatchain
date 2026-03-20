@@ -307,8 +307,8 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 	}
 	ctx := context.Background()
 
-	fmt.Fprintln(w, "Chat started. Press Ctrl+C to exit.")
-	fmt.Fprintln(w, "Commands: /file <path>, /files, /clear, /save <path>, /import <path>")
+	DimStyle.Fprintln(w, "Chat started. Press Ctrl+C to exit.")
+	DimStyle.Fprintln(w, "Commands: /file <path>, /files, /clear, /save <path>, /import <path>")
 	fmt.Fprintln(w)
 
 	var pendingAttachments []provider.Attachment
