@@ -49,7 +49,7 @@ go install github.com/joyqi/chatchain@latest
 | Flag | Description |
 |------|-------------|
 | `-M, --model <model>` | Specify model (e.g., `gpt-4o`, `claude-sonnet-4-20250514`) |
-| `-m, --message <msg>` | Non-interactive mode: send a single message and exit |
+| `-m, --message <msg>` | Non-interactive mode: send a single message and exit (use `-` to read from stdin) |
 | `-s, --system <prompt>` | Set system prompt |
 | `-t, --temperature <val>` | Set temperature (0.0–2.0) |
 | `-k, --key <key>` | API key (overrides env var) |
@@ -92,6 +92,8 @@ chatchain anthropic -M claude-sonnet-4-20250514 -s "You are a helpful coding ass
 echo "Summarize this text" | chatchain gemini -M gemini-2.0-flash -m -
 ```
 
+Note: `-m -` (dash) reads the message from stdin.
+
 ### With temperature
 
 ```bash
@@ -101,6 +103,6 @@ chatchain openai -M gpt-4o -t 0.7 -m "Write a haiku about programming"
 ## Important Notes
 
 - Always use `-m` for non-interactive mode (otherwise it opens an interactive TUI)
-- The `-m` flag with value `-` reads the message from stdin
+- Use `-m -` to read the message from stdin
 - If no `-M` is specified, ChatChain will prompt for model selection interactively (avoid this in automation)
 - API keys are read from environment variables by default; use `-k` only if the env var is not set

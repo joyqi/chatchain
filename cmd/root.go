@@ -59,8 +59,8 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("API key is required: use -k/--key or set %s", envKey)
 		}
 
-		// Non-interactive mode: read from stdin if -m is used without a value
-		if cmd.Flags().Changed("message") && chatMessage == "" {
+		// Non-interactive mode: read from stdin when -m -
+		if chatMessage == "-" {
 			data, err := io.ReadAll(os.Stdin)
 			if err != nil {
 				return fmt.Errorf("failed to read from stdin: %w", err)
@@ -140,8 +140,7 @@ func init() {
 	rootCmd.Flags().StringVarP(&baseURL, "url", "u", "", "Base URL (optional)")
 	rootCmd.Flags().StringVarP(&model, "model", "M", "", "Model name (optional, interactive selection if omitted)")
 	rootCmd.Flags().Float64VarP(&temperature, "temperature", "t", 0, "Sampling temperature (0.0-2.0)")
-	rootCmd.Flags().StringVarP(&chatMessage, "message", "m", "", "Send a single message and print the response (non-interactive, reads from stdin if omitted)")
-	rootCmd.Flags().Lookup("message").NoOptDefVal = " "
+	rootCmd.Flags().StringVarP(&chatMessage, "message", "m", "", "Send a single message and print the response (non-interactive, use '-' to read from stdin)")
 	rootCmd.Flags().StringVarP(&systemPrompt, "system", "s", "", "System prompt (omit value for interactive input)")
 	rootCmd.Flags().Lookup("system").NoOptDefVal = " "
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print request and response bodies for debugging")
