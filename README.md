@@ -50,7 +50,7 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 | `--url` | `-u` | Custom base URL |
 | `--model` | `-M` | Model name (skip interactive selection) |
 | `--temperature` | `-t` | Sampling temperature, 0.0-2.0 (omit to use provider default) |
-| `--message` | `-m` | Send a single message and print the response (non-interactive) |
+| `--message` | `-m` | Send a single message and print the response (non-interactive, reads from stdin if value omitted) |
 | `--system` | `-s` | System prompt (omit value for interactive input) |
 | `--verbose` | `-v` | Print HTTP request/response bodies for debugging |
 
@@ -119,6 +119,10 @@ chatchain anthropic -M claude-sonnet-4-20250514 -t 0.5 -m "Write a haiku"
 
 # Custom API endpoint
 chatchain openai -u https://your-proxy.com/v1 -k sk-xxx
+
+# Read message from stdin (pipe-friendly)
+echo "Explain quicksort" | chatchain openai -M gpt-4o -m
+cat prompt.txt | chatchain openai -M gpt-4o -m
 ```
 
 ### File Attachment Example

@@ -398,7 +398,7 @@
         <div class="feature-card">
           <span class="icon">&#128295;</span>
           <h3>Script-Friendly</h3>
-          <p>Non-interactive mode with <code>-m</code> flag. Pipe output to other commands.</p>
+          <p>Non-interactive mode with <code>-m</code> flag. Reads from stdin when no value given &mdash; pipe-friendly.</p>
         </div>
         <div class="feature-card">
           <span class="icon">&#128736;</span>
@@ -492,7 +492,7 @@
         <tr><td><code>--url</code></td><td><code>-u</code></td><td>Custom base URL</td></tr>
         <tr><td><code>--model</code></td><td><code>-M</code></td><td>Model name (skip interactive selection)</td></tr>
         <tr><td><code>--temperature</code></td><td><code>-t</code></td><td>Sampling temperature (0.0-2.0)</td></tr>
-        <tr><td><code>--message</code></td><td><code>-m</code></td><td>Non-interactive: send a single message</td></tr>
+        <tr><td><code>--message</code></td><td><code>-m</code></td><td>Non-interactive: send a single message (reads from stdin if value omitted)</td></tr>
         <tr><td><code>--system</code></td><td><code>-s</code></td><td>System prompt (omit value for interactive input)</td></tr>
         <tr><td><code>--verbose</code></td><td><code>-v</code></td><td>Verbose: print HTTP request/response bodies</td></tr>
       </table>
