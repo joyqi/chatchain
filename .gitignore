@@ -30,6 +30,6 @@ go.work.sum
 # Editor/IDE
 .idea/
 .vscode/
-chatchain
+/chatchain
 .claude/
 CLAUDE.md
