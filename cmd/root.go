@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"chatchain/chat"
+	"chatchain/config"
 	"chatchain/provider"
 
 	"github.com/spf13/cobra"
@@ -22,6 +23,7 @@ var (
 	chatMessage  string
 	systemPrompt string
 	verbose      bool
+	configPath   string
 )
 
 var rootCmd = &cobra.Command{
@@ -29,14 +31,32 @@ var rootCmd = &cobra.Command{
 	Short: "A lightweight cross-platform AI chat CLI",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		providerType := args[0]
+		cfg := config.Load(configPath)
+		providerType, pc := cfg.Get(args[0])
+
+		// Priority: CLI flag > env var > config file
+		if !cmd.Flags().Changed("key") {
+			envKey := providerEnvKey(providerType)
+			if envVal := os.Getenv(envKey); envVal != "" {
+				apiKey = envVal
+			} else if pc.Key != "" {
+				apiKey = pc.Key
+			}
+		}
+		if !cmd.Flags().Changed("url") && baseURL == "" {
+			if pc.URL != "" {
+				baseURL = pc.URL
+			}
+		}
+		if !cmd.Flags().Changed("model") && model == "" {
+			if pc.Model != "" {
+				model = pc.Model
+			}
+		}
 
 		if apiKey == "" {
 			envKey := providerEnvKey(providerType)
-			apiKey = os.Getenv(envKey)
-			if apiKey == "" {
-				return fmt.Errorf("API key is required: use -k/--key or set %s", envKey)
-			}
+			return fmt.Errorf("API key is required: use -k/--key or set %s", envKey)
 		}
 
 		// Non-interactive mode: read from stdin if -m is used without a value
@@ -125,6 +145,7 @@ func init() {
 	rootCmd.Flags().StringVarP(&systemPrompt, "system", "s", "", "System prompt (omit value for interactive input)")
 	rootCmd.Flags().Lookup("system").NoOptDefVal = " "
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print request and response bodies for debugging")
+	rootCmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to config file (default: ~/.chatchain.yaml)")
 }
 
 var providerEnvKeys = map[string]string{

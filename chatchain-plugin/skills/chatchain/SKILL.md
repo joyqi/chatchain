@@ -54,7 +54,23 @@ go install github.com/joyqi/chatchain@latest
 | `-t, --temperature <val>` | Set temperature (0.0–2.0) |
 | `-k, --key <key>` | API key (overrides env var) |
 | `-u, --url <url>` | Custom API base URL |
+| `-c, --config <path>` | Path to config file (default: `~/.chatchain.yaml`) |
 | `-v, --verbose` | Show raw API responses |
+
+## Config File
+
+ChatChain supports a YAML config file (`~/.chatchain.yaml`) for persistent API keys, default models, and custom provider aliases. Priority: CLI flag > env var > config file.
+
+```yaml
+providers:
+  deepseek:
+    type: openai
+    key: sk-deepseek-xxx
+    url: https://api.deepseek.com/v1
+    model: deepseek-chat
+```
+
+With a config like this, `chatchain deepseek -m "hello"` works as a provider alias.
 
 ## Usage
 

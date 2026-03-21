@@ -11,6 +11,7 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 - **Non-interactive mode** — single message in, response out, pipe-friendly
 - **Conversation history** — full context maintained within a session
 - **System prompt** — set via flag or interactive input
+- **Config file** — persistent API keys, default models, and custom provider aliases via `~/.chatchain.yaml`
 - **Styled terminal output** — color-coded prompts
 
 ## Install
@@ -36,6 +37,43 @@ cd chatchain
 go build -o chatchain .
 ```
 
+## Claude Code Plugin
+
+ChatChain provides a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin, allowing you to call other LLMs directly within Claude Code.
+
+### Plugin Install
+
+```bash
+# Add the marketplace
+/plugin marketplace add joyqi/chatchain
+
+# Install the plugin
+/plugin install chatchain@chatchain-marketplace
+```
+
+### Plugin Usage
+
+**Slash command** — manually ask another LLM:
+
+```
+/chatchain:ask openai gpt-4o "What is the meaning of life?"
+/chatchain:ask anthropic claude-sonnet-4-20250514 "Explain monads"
+/chatchain:ask gemini "Write a haiku"
+```
+
+**Agent skill** — Claude automatically uses ChatChain when you ask it to query another LLM:
+
+```
+> Use chatchain to ask GPT what is 1+1
+> Ask Gemini to explain quicksort via chatchain
+```
+
+### Local Testing
+
+```bash
+claude --plugin-dir ./chatchain-plugin
+```
+
 ## Usage
 
 ```bash
@@ -52,6 +90,7 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 | `--temperature` | `-t` | Sampling temperature, 0.0-2.0 (omit to use provider default) |
 | `--message` | `-m` | Send a single message and print the response (non-interactive, reads from stdin if value omitted) |
 | `--system` | `-s` | System prompt (omit value for interactive input) |
+| `--config` | `-c` | Path to config file (default: `~/.chatchain.yaml`) |
 | `--verbose` | `-v` | Print HTTP request/response bodies for debugging |
 
 ### Environment Variables
@@ -61,6 +100,56 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 | `OPENAI_API_KEY` | OpenAI / OpenResponses |
 | `ANTHROPIC_API_KEY` | Anthropic |
 | `GOOGLE_API_KEY` | Gemini / Vertex AI |
+
+### Config File
+
+ChatChain supports YAML config files for persistent settings and custom provider aliases.
+
+#### Config Lookup Order
+
+1. `~/.chatchain.yaml` or `~/.chatchain.yml` (global)
+2. `./.chatchain.yaml` or `./.chatchain.yml` (project-local, merges over global)
+3. `-c/--config <path>` (explicit, highest priority, used alone)
+
+Same-name providers in later files override earlier ones.
+
+#### Priority
+
+For individual values: **CLI flag > env var > config file**.
+
+#### Example
+
+```yaml
+# ~/.chatchain.yaml
+providers:
+  openai:
+    key: sk-official
+    model: gpt-4o
+
+  deepseek:                  # custom alias
+    type: openai             # underlying provider type
+    key: sk-deepseek-xxx
+    url: https://api.deepseek.com/v1
+    model: deepseek-chat
+
+  claude:
+    type: anthropic
+    key: sk-ant-xxx
+    model: claude-sonnet-4-20250514
+```
+
+With this config:
+
+```bash
+# Use the "deepseek" alias — resolves to OpenAI provider with DeepSeek's key/URL/model
+chatchain deepseek -m "hello"
+
+# Config key used, no need for -k
+chatchain openai -m "hi" -M gpt-4o
+
+# CLI flag overrides config
+chatchain openai -k sk-override -m "hi" -M gpt-4o
+```
 
 ### Chat Commands
 
@@ -123,6 +212,9 @@ chatchain openai -u https://your-proxy.com/v1 -k sk-xxx
 # Read message from stdin (pipe-friendly)
 echo "Explain quicksort" | chatchain openai -M gpt-4o -m
 cat prompt.txt | chatchain openai -M gpt-4o -m
+
+# Use a provider alias from config
+chatchain deepseek -m "Explain quicksort"
 ```
 
 ### File Attachment Example
@@ -139,43 +231,6 @@ You> Summarize the report and describe the photo
 Assistant> ...
 ```
 
-## Claude Code Plugin
-
-ChatChain provides a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin, allowing you to call other LLMs directly within Claude Code.
-
-### Install
-
-```bash
-# Add the marketplace
-/plugin marketplace add joyqi/chatchain
-
-# Install the plugin
-/plugin install chatchain@chatchain-marketplace
-```
-
-### Usage
-
-**Slash command** — manually ask another LLM:
-
-```
-/chatchain:ask openai gpt-4o "What is the meaning of life?"
-/chatchain:ask anthropic claude-sonnet-4-20250514 "Explain monads"
-/chatchain:ask gemini "Write a haiku"
-```
-
-**Agent skill** — Claude automatically uses ChatChain when you ask it to query another LLM:
-
-```
-> Use chatchain to ask GPT what is 1+1
-> Ask Gemini to explain quicksort via chatchain
-```
-
-### Local Testing
-
-```bash
-claude --plugin-dir ./chatchain-plugin
-```
-
 ## Project Structure
 
 ```
@@ -183,6 +238,8 @@ chatchain/
 ├── main.go              # Entry point
 ├── cmd/
 │   └── root.go          # CLI definition (cobra)
+├── config/
+│   └── config.go        # Config file loading and merging
 ├── chat/
 │   ├── chat.go          # Chat loop, model selection, completion, spinner
 │   ├── file.go          # File attachment reading and MIME detection

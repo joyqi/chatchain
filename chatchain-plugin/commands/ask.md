@@ -13,7 +13,7 @@ Parse the user's arguments and call ChatChain CLI.
 
 `$ARGUMENTS` should be in the format: `<provider> [model] <message>`
 
-Supported providers: `openai`, `anthropic`, `gemini`, `vertexai`, `openresponses`
+Supported providers: `openai`, `anthropic`, `gemini`, `vertexai`, `openresponses`, or any custom alias defined in `~/.chatchain.yaml`
 
 If no model is specified, use these defaults:
 - openai: `gpt-4o`
