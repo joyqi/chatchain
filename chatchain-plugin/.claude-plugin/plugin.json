@@ -1,0 +1,10 @@
+{
+  "name": "chatchain",
+  "description": "Chat with multiple LLM providers (OpenAI, Anthropic, Gemini, Vertex AI) via ChatChain CLI",
+  "version": "1.3.1",
+  "author": { "name": "joyqi" },
+  "homepage": "https://chatchain.io",
+  "repository": "https://github.com/joyqi/chatchain",
+  "license": "MIT",
+  "keywords": ["llm", "openai", "anthropic", "gemini", "chat"]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "chatchain-marketplace",
+  "owner": { "name": "joyqi" },
+  "plugins": [
+    {
+      "name": "chatchain",
+      "source": "./chatchain-plugin",
+      "description": "Chat with multiple LLM providers via ChatChain CLI"
+    }
+  ]
+}

@@ -405,6 +405,11 @@
           <h3>Fully Configurable</h3>
           <p>Custom API endpoints, temperature control, system prompts, and verbose debug mode.</p>
         </div>
+        <div class="feature-card">
+          <span class="icon">&#129302;</span>
+          <h3>Claude Code Plugin</h3>
+          <p>Use as a Claude Code plugin to call other LLMs directly within your coding workflow.</p>
+        </div>
       </div>
     </section>
 
@@ -508,6 +513,22 @@
         <tr><td><code>/save [path]</code></td><td>Save conversation to Markdown (default: <code>history.md</code>)</td></tr>
         <tr><td><code>/import [path]</code></td><td>Import conversation from a saved Markdown file (default: <code>history.md</code>)</td></tr>
       </table>
+    </section>
+
+    <section>
+      <h2>Claude Code Plugin</h2>
+      <p>ChatChain works as a <a href="https://docs.anthropic.com/en/docs/claude-code" style="color:#58a6ff">Claude Code</a> plugin. Install it to call other LLMs directly within Claude Code.</p>
+      <div class="terminal">
+        <div><span class="comment"># Add the marketplace and install</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">/plugin marketplace add joyqi/chatchain</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">/plugin install chatchain@chatchain-marketplace</span></div>
+        <div></div>
+        <div><span class="comment"># Use the slash command</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">/chatchain:ask openai gpt-4o</span> <span class="string">"What is 1+1?"</span></div>
+        <div></div>
+        <div><span class="comment"># Or let Claude auto-detect when to use it</span></div>
+        <div><span class="prompt">></span> <span class="cmd">Use chatchain to ask Gemini to explain quicksort</span></div>
+      </div>
     </section>
 
     <div class="footer">MIT License &middot; Built with Go</div>

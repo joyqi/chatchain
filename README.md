@@ -139,6 +139,43 @@ You> Summarize the report and describe the photo
 Assistant> ...
 ```
 
+## Claude Code Plugin
+
+ChatChain provides a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin, allowing you to call other LLMs directly within Claude Code.
+
+### Install
+
+```bash
+# Add the marketplace
+/plugin marketplace add joyqi/chatchain
+
+# Install the plugin
+/plugin install chatchain@chatchain-marketplace
+```
+
+### Usage
+
+**Slash command** — manually ask another LLM:
+
+```
+/chatchain:ask openai gpt-4o "What is the meaning of life?"
+/chatchain:ask anthropic claude-sonnet-4-20250514 "Explain monads"
+/chatchain:ask gemini "Write a haiku"
+```
+
+**Agent skill** — Claude automatically uses ChatChain when you ask it to query another LLM:
+
+```
+> Use chatchain to ask GPT what is 1+1
+> Ask Gemini to explain quicksort via chatchain
+```
+
+### Local Testing
+
+```bash
+claude --plugin-dir ./chatchain-plugin
+```
+
 ## Project Structure
 
 ```
