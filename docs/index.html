@@ -398,12 +398,12 @@
         <div class="feature-card">
           <span class="icon">&#128295;</span>
           <h3>Script-Friendly</h3>
-          <p>Non-interactive mode with <code>-m</code> flag. Reads from stdin when no value given &mdash; pipe-friendly.</p>
+          <p>Non-interactive mode with <code>-m</code> flag. Use <code>-m -</code> to read from stdin &mdash; pipe-friendly.</p>
         </div>
         <div class="feature-card">
           <span class="icon">&#128736;</span>
-          <h3>Fully Configurable</h3>
-          <p>Custom API endpoints, temperature control, system prompts, and verbose debug mode.</p>
+          <h3>Config File</h3>
+          <p>Persistent API keys, default models, and custom provider aliases via <code>~/.chatchain.yaml</code>.</p>
         </div>
         <div class="feature-card">
           <span class="icon">&#129302;</span>
@@ -470,6 +470,22 @@
     </section>
 
     <section>
+      <h2>Claude Code Plugin</h2>
+      <p>ChatChain works as a <a href="https://docs.anthropic.com/en/docs/claude-code" style="color:#58a6ff">Claude Code</a> plugin. Install it to call other LLMs directly within Claude Code.</p>
+      <div class="terminal">
+        <div><span class="comment"># Add the marketplace and install</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">/plugin marketplace add joyqi/chatchain</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">/plugin install chatchain@chatchain-marketplace</span></div>
+        <div></div>
+        <div><span class="comment"># Use the slash command</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">/chatchain:ask openai gpt-4o</span> <span class="string">"What is 1+1?"</span></div>
+        <div></div>
+        <div><span class="comment"># Or let Claude auto-detect when to use it</span></div>
+        <div><span class="prompt">></span> <span class="cmd">Use chatchain to ask Gemini to explain quicksort</span></div>
+      </div>
+    </section>
+
+    <section>
       <h2>Usage</h2>
       <div class="terminal">
         <div><span class="comment"># Interactive chat with model selection</span></div>
@@ -497,10 +513,30 @@
         <tr><td><code>--url</code></td><td><code>-u</code></td><td>Custom base URL</td></tr>
         <tr><td><code>--model</code></td><td><code>-M</code></td><td>Model name (skip interactive selection)</td></tr>
         <tr><td><code>--temperature</code></td><td><code>-t</code></td><td>Sampling temperature (0.0-2.0)</td></tr>
-        <tr><td><code>--message</code></td><td><code>-m</code></td><td>Non-interactive: send a single message (reads from stdin if value omitted)</td></tr>
+        <tr><td><code>--message</code></td><td><code>-m</code></td><td>Non-interactive: send a single message (use <code>-</code> to read from stdin)</td></tr>
         <tr><td><code>--system</code></td><td><code>-s</code></td><td>System prompt (omit value for interactive input)</td></tr>
+        <tr><td><code>--config</code></td><td><code>-c</code></td><td>Path to config file (default: <code>~/.chatchain.yaml</code>)</td></tr>
         <tr><td><code>--verbose</code></td><td><code>-v</code></td><td>Verbose: print HTTP request/response bodies</td></tr>
       </table>
+    </section>
+
+    <section>
+      <h2>Config File</h2>
+      <p>Save API keys, default models, and custom provider aliases in <code>~/.chatchain.yaml</code>. Priority: CLI flag > env var > config file.</p>
+      <div class="terminal">
+        <div><span class="comment"># ~/.chatchain.yaml</span></div>
+        <div><span class="flag">providers</span><span class="dim">:</span></div>
+        <div>  <span class="flag">openai</span><span class="dim">:</span></div>
+        <div>    <span class="dim">key:</span> <span class="string">sk-official</span></div>
+        <div>    <span class="dim">model:</span> <span class="string">gpt-4o</span></div>
+        <div></div>
+        <div>  <span class="flag">deepseek</span><span class="dim">:</span>              <span class="comment"># custom alias</span></div>
+        <div>    <span class="dim">type:</span> <span class="string">openai</span>       <span class="comment"># underlying provider</span></div>
+        <div>    <span class="dim">key:</span> <span class="string">sk-deepseek-xxx</span></div>
+        <div>    <span class="dim">url:</span> <span class="string">https://api.deepseek.com/v1</span></div>
+        <div>    <span class="dim">model:</span> <span class="string">deepseek-chat</span></div>
+      </div>
+      <p>With this config, <code>chatchain deepseek -m "hello"</code> uses the OpenAI provider with DeepSeek's key, URL, and model. Config files are loaded from <code>~/</code> (global) and <code>./</code> (project-local), or via <code>-c &lt;path&gt;</code>.</p>
     </section>
 
     <section>
@@ -513,22 +549,6 @@
         <tr><td><code>/save [path]</code></td><td>Save conversation to Markdown (default: <code>history.md</code>)</td></tr>
         <tr><td><code>/import [path]</code></td><td>Import conversation from a saved Markdown file (default: <code>history.md</code>)</td></tr>
       </table>
-    </section>
-
-    <section>
-      <h2>Claude Code Plugin</h2>
-      <p>ChatChain works as a <a href="https://docs.anthropic.com/en/docs/claude-code" style="color:#58a6ff">Claude Code</a> plugin. Install it to call other LLMs directly within Claude Code.</p>
-      <div class="terminal">
-        <div><span class="comment"># Add the marketplace and install</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">/plugin marketplace add joyqi/chatchain</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">/plugin install chatchain@chatchain-marketplace</span></div>
-        <div></div>
-        <div><span class="comment"># Use the slash command</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">/chatchain:ask openai gpt-4o</span> <span class="string">"What is 1+1?"</span></div>
-        <div></div>
-        <div><span class="comment"># Or let Claude auto-detect when to use it</span></div>
-        <div><span class="prompt">></span> <span class="cmd">Use chatchain to ask Gemini to explain quicksort</span></div>
-      </div>
     </section>
 
     <div class="footer">MIT License &middot; Built with Go</div>
