@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 
 	"chatchain/chat"
@@ -24,14 +25,25 @@ var (
 	systemPrompt string
 	verbose      bool
 	configPath   string
+	list         bool
 )
 
 var rootCmd = &cobra.Command{
 	Use:   "chatchain [openai|anthropic|gemini|vertexai|openresponses]",
 	Short: "A lightweight cross-platform AI chat CLI",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg := config.Load(configPath)
+
+		// List mode: no provider arg → list providers; with provider arg → list models
+		if list {
+			return runList(cmd, cfg, args)
+		}
+
+		if len(args) == 0 {
+			return fmt.Errorf("provider argument is required (e.g. openai, anthropic, gemini), or use -l to list available providers")
+		}
+
 		providerType, pc := cfg.Get(args[0])
 
 		// Priority: CLI flag > env var > config file
@@ -143,8 +155,104 @@ func init() {
 	rootCmd.Flags().StringVarP(&chatMessage, "message", "m", "", "Send a single message and print the response (non-interactive, use '-' to read from stdin)")
 	rootCmd.Flags().StringVarP(&systemPrompt, "system", "s", "", "System prompt (omit value for interactive input)")
 	rootCmd.Flags().Lookup("system").NoOptDefVal = " "
+	rootCmd.Flags().BoolVarP(&list, "list", "l", false, "List configured providers, or models for a given provider")
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print request and response bodies for debugging")
 	rootCmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to config file (default: ~/.chatchain.yaml)")
+}
+
+// hasAPIKey checks if a provider has a usable API key from env or config.
+func hasAPIKey(providerType string, pc config.ProviderConfig) bool {
+	if pc.Key != "" {
+		return true
+	}
+	envKey := providerEnvKey(providerType)
+	return os.Getenv(envKey) != ""
+}
+
+func runList(cmd *cobra.Command, cfg *config.Config, args []string) error {
+	if len(args) == 0 {
+		var available []string
+		for name := range cfg.Providers {
+			providerType, pc := cfg.Get(name)
+			if !hasAPIKey(providerType, pc) {
+				continue
+			}
+			info := name
+			if providerType != name {
+				info += fmt.Sprintf(" (type: %s", providerType)
+				if pc.URL != "" {
+					info += fmt.Sprintf(", url: %s", pc.URL)
+				}
+				if pc.Model != "" {
+					info += fmt.Sprintf(", model: %s", pc.Model)
+				}
+				info += ")"
+			} else if pc.Model != "" {
+				info += fmt.Sprintf(" (default model: %s)", pc.Model)
+			}
+			available = append(available, info)
+		}
+		sort.Strings(available)
+
+		if len(available) == 0 {
+			fmt.Println("No providers configured. Set API keys via environment variables or ~/.chatchain.yaml")
+			return nil
+		}
+
+		fmt.Println("Available providers:")
+		for _, info := range available {
+			fmt.Printf("  %s\n", info)
+		}
+		return nil
+	}
+
+	// List models for a specific provider
+	providerType, pc := cfg.Get(args[0])
+
+	// Priority: CLI flag > env var > config file
+	if !cmd.Flags().Changed("key") {
+		envKey := providerEnvKey(providerType)
+		if envVal := os.Getenv(envKey); envVal != "" {
+			apiKey = envVal
+		} else if pc.Key != "" {
+			apiKey = pc.Key
+		}
+	}
+	if !cmd.Flags().Changed("url") && baseURL == "" {
+		if pc.URL != "" {
+			baseURL = pc.URL
+		}
+	}
+
+	if apiKey == "" {
+		envKey := providerEnvKey(providerType)
+		return fmt.Errorf("API key is required to list models: use -k/--key or set %s", envKey)
+	}
+
+	var httpClient *http.Client
+	if verbose {
+		httpClient = chat.NewVerboseHTTPClient()
+	}
+
+	p, err := provider.New(providerType, apiKey, baseURL, "", nil, httpClient)
+	if err != nil {
+		return err
+	}
+
+	models, err := chat.FetchModels(context.Background(), p)
+	if err != nil {
+		return fmt.Errorf("failed to list models: %w", err)
+	}
+	if len(models) == 0 {
+		fmt.Println("No models available.")
+		return nil
+	}
+
+	fmt.Printf("Models for %s:\n", args[0])
+	for _, m := range models {
+		fmt.Printf("  %s\n", m)
+	}
+	return nil
 }
 
 var providerEnvKeys = map[string]string{

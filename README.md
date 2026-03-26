@@ -90,6 +90,7 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 | `--temperature` | `-t` | Sampling temperature, 0.0-2.0 (omit to use provider default) |
 | `--message` | `-m` | Send a single message and print the response (non-interactive, use `-` to read from stdin) |
 | `--system` | `-s` | System prompt (omit value for interactive input) |
+| `--list` | `-l` | List configured providers, or models for a given provider |
 | `--config` | `-c` | Path to config file (default: `~/.chatchain.yaml`) |
 | `--verbose` | `-v` | Print HTTP request/response bodies for debugging |
 
@@ -215,6 +216,13 @@ cat prompt.txt | chatchain openai -M gpt-4o -m -
 
 # Use a provider alias from config
 chatchain deepseek -m "Explain quicksort"
+
+# List all configured providers and aliases
+chatchain -l
+
+# List available models for a provider
+chatchain -l openai
+chatchain -l deepseek
 ```
 
 ### File Attachment Example
