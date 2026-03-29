@@ -65,6 +65,11 @@ var rootCmd = &cobra.Command{
 				model = pc.Model
 			}
 		}
+		if !cmd.Flags().Changed("system") && systemPrompt == "" {
+			if pc.System != "" {
+				systemPrompt = pc.System
+			}
+		}
 
 		if apiKey == "" {
 			envKey := providerEnvKey(providerType)

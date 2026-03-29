@@ -9,10 +9,11 @@ import (
 
 // ProviderConfig holds per-provider settings from the config file.
 type ProviderConfig struct {
-	Type  string `yaml:"type"`
-	Key   string `yaml:"key"`
-	URL   string `yaml:"url"`
-	Model string `yaml:"model"`
+	Type   string `yaml:"type"`
+	Key    string `yaml:"key"`
+	URL    string `yaml:"url"`
+	Model  string `yaml:"model"`
+	System string `yaml:"system"`
 }
 
 // Config is the top-level config file structure.

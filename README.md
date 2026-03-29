@@ -132,6 +132,7 @@ providers:
     key: sk-deepseek-xxx
     url: https://api.deepseek.com/v1
     model: deepseek-chat
+    system: "You are a helpful coding assistant"
 
   claude:
     type: anthropic

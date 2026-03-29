@@ -97,6 +97,7 @@ providers:
     key: sk-deepseek-xxx
     url: https://api.deepseek.com/v1
     model: deepseek-chat
+    system: "You are a helpful coding assistant"
 ```
 
 With a config like this, `chatchain deepseek -m "hello"` works as a provider alias.
