@@ -63,6 +63,7 @@ func (p *OpenClawProvider) ensureConnected(ctx context.Context) error {
 
 	client := gateway.NewClient(
 		gateway.WithToken(p.token),
+		gateway.WithScopes(protocol.ScopeOperatorRead),
 		gateway.WithCaps("thinking-events"),
 		gateway.WithOnEvent(p.handleEvent),
 	)
