@@ -10,7 +10,11 @@ import (
 	"strings"
 	"sync"
 
+	"net/url"
+	"path/filepath"
+
 	"github.com/a3tai/openclaw-go/gateway"
+	"github.com/a3tai/openclaw-go/identity"
 	"github.com/a3tai/openclaw-go/protocol"
 	"github.com/fatih/color"
 )
@@ -59,6 +63,16 @@ func NewOpenClaw(token, wsURL, agentID string, verbose bool) *OpenClawProvider {
 	}
 }
 
+// isLoopbackURL checks if the WebSocket URL points to a local address.
+func isLoopbackURL(wsURL string) bool {
+	u, err := url.Parse(wsURL)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
 func (p *OpenClawProvider) ensureConnected(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -67,14 +81,8 @@ func (p *OpenClawProvider) ensureConnected(ctx context.Context) error {
 		return nil
 	}
 
-	client := gateway.NewClient(
+	opts := []gateway.Option{
 		gateway.WithToken(p.token),
-		gateway.WithClientInfo(protocol.ClientInfo{
-			ID:       "openclaw-tui",
-			Version:  "1.0.0",
-			Platform: "go",
-			Mode:     protocol.ClientModeUI,
-		}),
 		gateway.WithRole(protocol.RoleOperator),
 		gateway.WithScopes(
 			protocol.ScopeOperatorAdmin,
@@ -83,18 +91,57 @@ func (p *OpenClawProvider) ensureConnected(ctx context.Context) error {
 		),
 		gateway.WithCaps("thinking-events"),
 		gateway.WithOnEvent(p.handleEvent),
-	)
+	}
+
+	// Local gateway: use device identity from ~/.openclaw (like openclaw CLI)
+	// Remote gateway: present as TUI client (requires dangerouslyDisableDeviceAuth)
+	if isLoopbackURL(p.wsURL) {
+		if id, deviceToken, ok := loadOpenClawIdentity(p.verbose); ok {
+			opts = append(opts, gateway.WithIdentity(id, deviceToken))
+		}
+	} else {
+		opts = append(opts, gateway.WithClientInfo(protocol.ClientInfo{
+			ID:       "openclaw-tui",
+			Version:  "1.0.0",
+			Platform: "go",
+			Mode:     protocol.ClientModeUI,
+		}))
+	}
+
+	client := gateway.NewClient(opts...)
 
 	if err := client.Connect(ctx, p.wsURL); err != nil {
 		return fmt.Errorf("failed to connect to OpenClaw gateway: %w", err)
 	}
 
 	if p.verbose {
-		dimLog( "Connected to %s\n", p.wsURL)
+		dimLog("Connected to %s\n", p.wsURL)
 	}
 
 	p.client = client
 	return nil
+}
+
+// loadOpenClawIdentity loads the device identity and token from ~/.openclaw.
+func loadOpenClawIdentity(verbose bool) (*identity.Identity, string, bool) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, "", false
+	}
+	identityDir := filepath.Join(home, ".openclaw")
+	store, err := identity.NewStore(identityDir)
+	if err != nil {
+		return nil, "", false
+	}
+	id, err := store.LoadOrGenerate()
+	if err != nil {
+		return nil, "", false
+	}
+	deviceToken := store.LoadDeviceToken()
+	if verbose {
+		dimLog("Using device identity from %s\n", identityDir)
+	}
+	return id, deviceToken, true
 }
 
 func (p *OpenClawProvider) handleEvent(e protocol.Event) {
