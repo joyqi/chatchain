@@ -63,6 +63,12 @@ func (p *OpenClawProvider) ensureConnected(ctx context.Context) error {
 
 	client := gateway.NewClient(
 		gateway.WithToken(p.token),
+		gateway.WithClientInfo(protocol.ClientInfo{
+			ID:       "openclaw-tui",
+			Version:  "1.0.0",
+			Platform: "go",
+			Mode:     protocol.ClientModeUI,
+		}),
 		gateway.WithRole(protocol.RoleOperator),
 		gateway.WithScopes(
 			protocol.ScopeOperatorAdmin,
