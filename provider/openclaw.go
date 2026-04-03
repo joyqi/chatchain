@@ -93,9 +93,13 @@ func (p *OpenClawProvider) ensureConnected(ctx context.Context) error {
 
 func (p *OpenClawProvider) handleEvent(e protocol.Event) {
 	switch e.EventName {
-	case protocol.EventChat:
+	case protocol.EventChat, "session.message":
 		var evt protocol.ChatEvent
 		if err := json.Unmarshal(e.Payload, &evt); err != nil {
+			return
+		}
+		// session.message events with empty state are full message echoes, not streaming deltas
+		if evt.State == "" {
 			return
 		}
 		if p.verbose {
@@ -165,6 +169,18 @@ func (p *OpenClawProvider) ensureSession(ctx context.Context) error {
 		p.sessionKey = ""
 		return fmt.Errorf("failed to create session: %w", err)
 	}
+
+	// Subscribe to session message events (required for receiving thinking/reasoning events)
+	if _, err := p.client.SessionsMessagesSubscribe(ctx, protocol.SessionsMessagesSubscribeParams{
+		Key: p.sessionKey,
+	}); err != nil {
+		if p.verbose {
+			dimLog("→ sessions.messages.subscribe failed: %v\n", err)
+		}
+	} else if p.verbose {
+		dimLog("→ sessions.messages.subscribe {key:%s}\n", p.sessionKey)
+	}
+
 	return nil
 }
 
@@ -288,9 +304,12 @@ func (p *OpenClawProvider) StreamChat(ctx context.Context, messages []Message, w
 			case "delta":
 				closeReasoning()
 				text := extractDeltaText(ce.Message)
-				if text != "" {
-					fmt.Fprint(w, text)
-					full += text
+				// OpenClaw deltas are cumulative (full content so far), not incremental.
+				// Extract only the new portion since last delta.
+				if len(text) > len(full) {
+					delta := text[len(full):]
+					fmt.Fprint(w, delta)
+					full = text
 				}
 
 			case "final":
