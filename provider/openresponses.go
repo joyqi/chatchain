@@ -130,6 +130,8 @@ func (p *OpenResponsesProvider) StreamChat(ctx context.Context, messages []Messa
 			closeReasoning()
 			fmt.Fprint(w, evt.Delta)
 			full += evt.Delta
+		case "response.completed":
+			// Stream complete — stop reading
 		default:
 			if evt.Delta != "" && evt.Type == "" {
 				// Fallback for untyped deltas
@@ -141,6 +143,11 @@ func (p *OpenResponsesProvider) StreamChat(ctx context.Context, messages []Messa
 	}
 	closeReasoning()
 	if err := stream.Err(); err != nil {
+		// Some providers close the stream without [DONE] after response.completed,
+		// causing JSON parse errors. Ignore if we already got content or reasoning.
+		if full != "" || thinkFull != "" {
+			return full, thinkFull, nil
+		}
 		return full, thinkFull, fmt.Errorf("stream error: %w", err)
 	}
 

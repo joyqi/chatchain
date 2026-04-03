@@ -433,11 +433,15 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			// Now read first content chunk
 			firstN, readErr = contentPr.Read(firstChunk)
 			if readErr != nil {
+				// Reasoning-only response (no text content) — treat as valid
 				<-done
 				if streamErr != nil {
 					ErrorStyle.Fprintf(w, "Error: %v\n\n", streamErr)
+					history = history[:len(history)-1]
+					continue
 				}
-				history = history[:len(history)-1]
+				fmt.Fprintln(w)
+				history = append(history, provider.Message{Role: "assistant", Content: thinking, Reasoning: thinking})
 				continue
 			}
 		}
