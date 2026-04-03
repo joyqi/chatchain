@@ -5,7 +5,7 @@ description: >
   Use this skill whenever the user wants to ask, query, chat with, or get answers from another AI model,
   including: "ask GPT...", "let Gemini explain...", "what does Claude think about...",
   "compare answers from different models", "get a second opinion from another LLM",
-  or any request that involves calling OpenAI, Anthropic, Gemini, or Vertex AI models.
+  or any request that involves calling OpenAI, Anthropic, Gemini, Vertex AI, or OpenClaw models.
 allowed-tools:
   - Bash(chatchain *)
 ---
@@ -83,6 +83,7 @@ chatchain <provider> -M <model> -m "<message>"
 | Gemini | `gemini` | `GOOGLE_API_KEY` | Gemini models |
 | Vertex AI | `vertexai` | — | Uses Google Cloud ADC |
 | OpenAI Responses | `openresponses` | `OPENAI_API_KEY` | OpenAI Responses API |
+| OpenClaw | `openclaw` | `OPENCLAW_GATEWAY_TOKEN` | OpenClaw Gateway via WebSocket (requires `-u` for gateway URL) |
 
 Custom aliases may also be configured in `~/.chatchain.yaml` (e.g. `deepseek`, `chatgpt`). Always run `chatchain -l` to see the full list.
 

@@ -41,7 +41,9 @@ func New(providerType, apiKey, baseURL, model string, temperature *float64, http
 		return NewOpenResponses(apiKey, baseURL, model, temperature, httpClient), nil
 	case "vertexai":
 		return NewVertexAI(apiKey, baseURL, model, temperature, httpClient), nil
+	case "openclaw":
+		return NewOpenClaw(apiKey, baseURL, model, httpClient != nil), nil
 	default:
-		return nil, fmt.Errorf("unknown provider type: %s (supported: openai, anthropic, gemini, vertexai, openresponses)", providerType)
+		return nil, fmt.Errorf("unknown provider type: %s (supported: openai, anthropic, gemini, vertexai, openresponses, openclaw)", providerType)
 	}
 }
