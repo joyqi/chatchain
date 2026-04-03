@@ -138,6 +138,11 @@ func (p *OpenClawProvider) handleEvent(e protocol.Event) {
 		if ok {
 			ch <- openClawEvent{thinking: raw.Data.Delta}
 		}
+
+	default:
+		if p.verbose {
+			dimLog("← event:%s %s\n", e.EventName, truncate(string(e.Payload), 200))
+		}
 	}
 }
 
