@@ -11,8 +11,8 @@ import (
 	"sync"
 
 	"github.com/a3tai/openclaw-go/gateway"
-	"github.com/fatih/color"
 	"github.com/a3tai/openclaw-go/protocol"
+	"github.com/fatih/color"
 )
 
 type openClawEvent struct {
@@ -63,6 +63,12 @@ func (p *OpenClawProvider) ensureConnected(ctx context.Context) error {
 
 	client := gateway.NewClient(
 		gateway.WithToken(p.token),
+		gateway.WithRole(protocol.RoleOperator),
+		gateway.WithScopes(
+			protocol.ScopeOperatorAdmin,
+			protocol.ScopeOperatorRead,
+			protocol.ScopeOperatorWrite,
+		),
 		gateway.WithCaps("thinking-events"),
 		gateway.WithOnEvent(p.handleEvent),
 	)

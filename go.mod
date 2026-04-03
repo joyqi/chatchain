@@ -3,6 +3,7 @@ module chatchain
 go 1.24.2
 
 require (
+	github.com/a3tai/openclaw-go v1.20260325.0
 	github.com/anthropics/anthropic-sdk-go v1.27.1
 	github.com/briandowns/spinner v1.23.2
 	github.com/ergochat/readline v0.1.3
@@ -12,13 +13,13 @@ require (
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/term v0.33.0
 	google.golang.org/genai v1.51.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
 	cloud.google.com/go v0.116.0 // indirect
 	cloud.google.com/go/auth v0.9.3 // indirect
 	cloud.google.com/go/compute/metadata v0.5.0 // indirect
-	github.com/a3tai/openclaw-go v1.20260325.0 // indirect
 	github.com/chzyer/readline v1.5.1 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
@@ -42,5 +43,4 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240903143218-8af14fe29dc1 // indirect
 	google.golang.org/grpc v1.66.2 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
