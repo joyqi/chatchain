@@ -265,10 +265,10 @@ func (p *OpenClawProvider) StreamChat(ctx context.Context, messages []Message, w
 			switch ce.State {
 			case "delta":
 				closeReasoning()
-				var delta string
-				if err := json.Unmarshal(ce.Message, &delta); err == nil {
-					fmt.Fprint(w, delta)
-					full += delta
+				text := extractDeltaText(ce.Message)
+				if text != "" {
+					fmt.Fprint(w, text)
+					full += text
 				}
 
 			case "final":
@@ -289,6 +289,34 @@ func (p *OpenClawProvider) StreamChat(ctx context.Context, messages []Message, w
 			}
 		}
 	}
+}
+
+// extractDeltaText extracts text from a ChatEvent delta message.
+// The message can be a plain JSON string or a structured object:
+// {"role":"assistant","content":[{"type":"text","text":"..."}],...}
+func extractDeltaText(raw json.RawMessage) string {
+	// Try plain string first
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	// Try structured message
+	var msg struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(raw, &msg) == nil {
+		var text string
+		for _, c := range msg.Content {
+			if c.Type == "text" {
+				text += c.Text
+			}
+		}
+		return text
+	}
+	return ""
 }
 
 var dimStyle = color.New(color.Faint)
