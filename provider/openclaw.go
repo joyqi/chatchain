@@ -32,9 +32,15 @@ type OpenClawProvider struct {
 	listeners  map[string]chan openClawEvent
 }
 
+const defaultOpenClawURL = "ws://localhost:18789/ws"
+
 func NewOpenClaw(token, wsURL, agentID string, verbose bool) *OpenClawProvider {
-	// Normalize URL: http → ws, https → wss, append /ws if missing
+	// Default to local gateway when no URL specified
 	u := wsURL
+	if u == "" {
+		u = defaultOpenClawURL
+	}
+	// Normalize URL: http → ws, https → wss, append /ws if missing
 	if strings.HasPrefix(u, "http://") {
 		u = "ws://" + u[len("http://"):]
 	} else if strings.HasPrefix(u, "https://") {
