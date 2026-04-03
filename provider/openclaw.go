@@ -99,10 +99,13 @@ func (p *OpenClawProvider) handleEvent(e protocol.Event) {
 			return
 		}
 		if p.verbose {
-			dimLog( "← event:chat {state:%s, runId:%s}\n", evt.State, evt.RunID)
+			dimLog("← event:chat {state:%s, runId:%s}\n", evt.State, evt.RunID)
 		}
 		p.eventMu.Lock()
 		ch, ok := p.listeners[evt.RunID]
+		if !ok {
+			ch, ok = p.listeners["__pending__"]
+		}
 		p.eventMu.Unlock()
 		if ok {
 			ch <- openClawEvent{chatEvent: &evt}
@@ -124,10 +127,13 @@ func (p *OpenClawProvider) handleEvent(e protocol.Event) {
 			return
 		}
 		if p.verbose {
-			dimLog( "← event:agent {stream:thinking, runId:%s}\n", raw.RunID)
+			dimLog("← event:agent {stream:thinking, runId:%s}\n", raw.RunID)
 		}
 		p.eventMu.Lock()
 		ch, ok := p.listeners[raw.RunID]
+		if !ok {
+			ch, ok = p.listeners["__pending__"]
+		}
 		p.eventMu.Unlock()
 		if ok {
 			ch <- openClawEvent{thinking: raw.Data.Delta}
@@ -207,8 +213,16 @@ func (p *OpenClawProvider) StreamChat(ctx context.Context, messages []Message, w
 
 	idempotencyKey := fmt.Sprintf("cc-%08x", rand.Int31())
 
+	// Register a catch-all listener before ChatSend to avoid losing early
+	// thinking events that arrive before we know the runID.
+	ch := make(chan openClawEvent, 64)
+	const pendingKey = "__pending__"
+	p.eventMu.Lock()
+	p.listeners[pendingKey] = ch
+	p.eventMu.Unlock()
+
 	if p.verbose {
-		dimLog( "→ chat.send {sessionKey:%s, message:%q}\n", p.sessionKey, truncate(lastMsg, 80))
+		dimLog("→ chat.send {sessionKey:%s, message:%q}\n", p.sessionKey, truncate(lastMsg, 80))
 	}
 
 	resp, err := p.client.ChatSend(ctx, protocol.ChatSendParams{
@@ -217,14 +231,17 @@ func (p *OpenClawProvider) StreamChat(ctx context.Context, messages []Message, w
 		IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
+		p.eventMu.Lock()
+		delete(p.listeners, pendingKey)
+		p.eventMu.Unlock()
 		return "", "", fmt.Errorf("chat send error: %w", err)
 	}
 
 	runID := resp.RunID
 
-	// Register listener
-	ch := make(chan openClawEvent, 64)
+	// Swap pending listener to the real runID
 	p.eventMu.Lock()
+	delete(p.listeners, pendingKey)
 	p.listeners[runID] = ch
 	p.eventMu.Unlock()
 
