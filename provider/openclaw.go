@@ -63,7 +63,6 @@ func (p *OpenClawProvider) ensureConnected(ctx context.Context) error {
 
 	client := gateway.NewClient(
 		gateway.WithToken(p.token),
-		gateway.WithScopes(protocol.ScopeOperatorRead),
 		gateway.WithCaps("thinking-events"),
 		gateway.WithOnEvent(p.handleEvent),
 	)
@@ -152,12 +151,14 @@ func (p *OpenClawProvider) ListModels(ctx context.Context) ([]string, error) {
 	}
 
 	if p.verbose {
-		dimLog( "→ agents.list\n")
+		dimLog("→ agents.list\n")
 	}
 
 	result, err := p.client.AgentsList(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list agents: %w", err)
+		// AgentsList requires operator.read scope which the token may not have.
+		// Return a helpful error suggesting to use -M to specify the agent directly.
+		return nil, fmt.Errorf("failed to list agents (token may lack operator.read scope): %w\n  Tip: use -M <agent-id> to specify the agent directly (e.g. -M main)", err)
 	}
 
 	var agents []string
