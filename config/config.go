@@ -16,9 +16,18 @@ type ProviderConfig struct {
 	System string `yaml:"system"`
 }
 
+// MCPServerConfig holds settings for an MCP tool server.
+type MCPServerConfig struct {
+	Command string            `yaml:"command"`
+	Args    []string          `yaml:"args"`
+	URL     string            `yaml:"url"`
+	Env     map[string]string `yaml:"env"`
+}
+
 // Config is the top-level config file structure.
 type Config struct {
-	Providers map[string]ProviderConfig `yaml:"providers"`
+	Providers  map[string]ProviderConfig  `yaml:"providers"`
+	MCPServers map[string]MCPServerConfig `yaml:"mcp_servers"`
 }
 
 // Load reads and merges config files. Priority: explicitPath > local > global.
@@ -73,7 +82,7 @@ func findConfigFile(dir string) string {
 	return ""
 }
 
-// loadFile reads a single config file and merges its providers into c.
+// loadFile reads a single config file and merges its entries into c.
 func (c *Config) loadFile(path string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -85,5 +94,11 @@ func (c *Config) loadFile(path string) {
 	}
 	for name, pc := range fc.Providers {
 		c.Providers[name] = pc
+	}
+	if c.MCPServers == nil && len(fc.MCPServers) > 0 {
+		c.MCPServers = make(map[string]MCPServerConfig)
+	}
+	for name, sc := range fc.MCPServers {
+		c.MCPServers[name] = sc
 	}
 }

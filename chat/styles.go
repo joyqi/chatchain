@@ -8,4 +8,6 @@ var (
 	ErrorStyle     = color.New(color.FgRed)
 	BoldStyle      = color.New(color.Bold)
 	DimStyle       = color.New(color.Faint)
+	CodeStyle      = color.New(color.FgCyan)
+	CodeBlockStyle = color.New(color.FgGreen)
 )

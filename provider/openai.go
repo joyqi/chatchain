@@ -12,7 +12,11 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/shared"
 )
+
+// Compile-time check that OpenAIProvider implements ToolProvider.
+var _ ToolProvider = (*OpenAIProvider)(nil)
 
 type OpenAIProvider struct {
 	client      *openai.Client
@@ -87,7 +91,26 @@ func (p *OpenAIProvider) buildParams(messages []Message) openai.ChatCompletionNe
 				params.Messages = append(params.Messages, openai.UserMessage(msg.Content))
 			}
 		case "assistant":
-			params.Messages = append(params.Messages, openai.AssistantMessage(msg.Content))
+			if len(msg.ToolCalls) > 0 {
+				assistant := openai.AssistantMessage(msg.Content)
+				for _, tc := range msg.ToolCalls {
+					argsJSON, _ := json.Marshal(tc.Arguments)
+					assistant.OfAssistant.ToolCalls = append(assistant.OfAssistant.ToolCalls, openai.ChatCompletionMessageToolCallUnionParam{
+						OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
+							ID: tc.ID,
+							Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
+								Name:      tc.Name,
+								Arguments: string(argsJSON),
+							},
+						},
+					})
+				}
+				params.Messages = append(params.Messages, assistant)
+			} else {
+				params.Messages = append(params.Messages, openai.AssistantMessage(msg.Content))
+			}
+		case "tool":
+			params.Messages = append(params.Messages, openai.ToolMessage(msg.Content, msg.ToolCallID))
 		}
 	}
 	return params
@@ -105,7 +128,29 @@ func (p *OpenAIProvider) Chat(ctx context.Context, messages []Message) (string, 
 }
 
 func (p *OpenAIProvider) StreamChat(ctx context.Context, messages []Message, w io.Writer, reasoningW io.WriteCloser) (string, string, error) {
-	stream := p.client.Chat.Completions.NewStreaming(ctx, p.buildParams(messages))
+	content, reasoning, _, err := p.streamChatInternal(ctx, messages, nil, w, reasoningW)
+	return content, reasoning, err
+}
+
+func (p *OpenAIProvider) StreamChatWithTools(ctx context.Context, messages []Message, tools []ToolDef, w io.Writer, reasoningW io.WriteCloser) (string, string, []ToolCall, error) {
+	return p.streamChatInternal(ctx, messages, tools, w, reasoningW)
+}
+
+func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Message, tools []ToolDef, w io.Writer, reasoningW io.WriteCloser) (string, string, []ToolCall, error) {
+	params := p.buildParams(messages)
+
+	// Add tool definitions if provided
+	if len(tools) > 0 {
+		for _, t := range tools {
+			params.Tools = append(params.Tools, openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
+				Name:        t.Name,
+				Description: openai.String(t.Description),
+				Parameters:  shared.FunctionParameters(t.InputSchema),
+			}))
+		}
+	}
+
+	stream := p.client.Chat.Completions.NewStreaming(ctx, params)
 	var full, thinkFull string
 	reasoningClosed := false
 	closeReasoning := func() {
@@ -115,9 +160,22 @@ func (p *OpenAIProvider) StreamChat(ctx context.Context, messages []Message, w i
 		}
 	}
 
+	// Accumulate tool calls: index → {id, name, arguments}
+	type toolCallAcc struct {
+		id   string
+		name string
+		args strings.Builder
+	}
+	toolCallMap := make(map[int]*toolCallAcc)
+	var finishReason string
+
 	for stream.Next() {
 		evt := stream.Current()
 		for _, choice := range evt.Choices {
+			if choice.FinishReason != "" {
+				finishReason = choice.FinishReason
+			}
+
 			// Check for reasoning field in raw JSON (DeepSeek and compatible models)
 			var extra struct {
 				Reasoning *string `json:"reasoning"`
@@ -125,6 +183,28 @@ func (p *OpenAIProvider) StreamChat(ctx context.Context, messages []Message, w i
 			if err := json.Unmarshal([]byte(choice.Delta.RawJSON()), &extra); err == nil && extra.Reasoning != nil && *extra.Reasoning != "" {
 				fmt.Fprint(reasoningW, *extra.Reasoning)
 				thinkFull += *extra.Reasoning
+			}
+
+			// Accumulate tool call deltas
+			for _, tc := range choice.Delta.ToolCalls {
+				idx := int(tc.Index)
+				if idx < 0 {
+					idx = 0
+				}
+				acc, ok := toolCallMap[idx]
+				if !ok {
+					acc = &toolCallAcc{}
+					toolCallMap[idx] = acc
+				}
+				if tc.ID != "" {
+					acc.id = tc.ID
+				}
+				if tc.Function.Name != "" {
+					acc.name += tc.Function.Name
+				}
+				if tc.Function.Arguments != "" {
+					acc.args.WriteString(tc.Function.Arguments)
+				}
 			}
 
 			chunk := choice.Delta.Content
@@ -137,8 +217,29 @@ func (p *OpenAIProvider) StreamChat(ctx context.Context, messages []Message, w i
 	}
 	closeReasoning()
 	if err := stream.Err(); err != nil {
-		return full, thinkFull, fmt.Errorf("stream error: %w", err)
+		return full, thinkFull, nil, fmt.Errorf("stream error: %w", err)
 	}
 
-	return full, thinkFull, nil
+	// If model requested tool calls, parse and return them
+	if finishReason == "tool_calls" && len(toolCallMap) > 0 {
+		var toolCalls []ToolCall
+		for i := 0; i < len(toolCallMap); i++ {
+			acc, ok := toolCallMap[i]
+			if !ok {
+				continue
+			}
+			var args map[string]any
+			if argsStr := acc.args.String(); argsStr != "" {
+				json.Unmarshal([]byte(argsStr), &args)
+			}
+			toolCalls = append(toolCalls, ToolCall{
+				ID:        acc.id,
+				Name:      acc.name,
+				Arguments: args,
+			})
+		}
+		return full, thinkFull, toolCalls, nil
+	}
+
+	return full, thinkFull, nil, nil
 }

@@ -11,6 +11,7 @@ import (
 
 	"chatchain/chat"
 	"chatchain/config"
+	mcpmgr "chatchain/mcp"
 	"chatchain/provider"
 
 	"github.com/spf13/cobra"
@@ -26,6 +27,7 @@ var (
 	verbose      bool
 	configPath   string
 	list         bool
+	mcpFlags     []string
 )
 
 var rootCmd = &cobra.Command{
@@ -108,9 +110,26 @@ var rootCmd = &cobra.Command{
 			return err
 		}
 
+		// Build MCP server configs from CLI flags + config file
+		mcpConfigs := buildMCPConfigs(cfg)
+		var mgr *mcpmgr.Manager
+		if len(mcpConfigs) > 0 {
+			var logf mcpmgr.LogFunc
+			if verbose {
+				logf = func(format string, args ...any) {
+					chat.DimStyle.Fprintf(os.Stderr, format, args...)
+				}
+			}
+			mgr, err = mcpmgr.NewManager(context.Background(), mcpConfigs, logf)
+			if err != nil {
+				return fmt.Errorf("MCP setup failed: %w", err)
+			}
+			defer mgr.Close()
+		}
+
 		// Non-interactive mode: single message, direct response
 		if chatMessage != "" {
-			return chat.Once(context.Background(), p, chatMessage, systemPrompt, os.Stdout)
+			return chat.Once(context.Background(), p, chatMessage, systemPrompt, mgr, os.Stdout)
 		}
 
 		// If no model specified, let user select from available models
@@ -148,7 +167,7 @@ var rootCmd = &cobra.Command{
 			importedHistory = imported
 		}
 
-		return chat.Run(p, systemPrompt, importedHistory, os.Stdout)
+		return chat.Run(p, systemPrompt, importedHistory, mgr, os.Stdout)
 	},
 }
 
@@ -163,6 +182,7 @@ func init() {
 	rootCmd.Flags().BoolVarP(&list, "list", "l", false, "List configured providers, or models for a given provider")
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print request and response bodies for debugging")
 	rootCmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to config file (default: ~/.chatchain.yaml)")
+	rootCmd.Flags().StringArrayVar(&mcpFlags, "mcp", nil, "MCP server (command string or URL, repeatable)")
 }
 
 // hasAPIKey checks if a provider has a usable API key from env or config.
@@ -274,6 +294,28 @@ func providerEnvKey(providerType string) string {
 		return key
 	}
 	return "API_KEY"
+}
+
+func buildMCPConfigs(cfg *config.Config) []mcpmgr.ServerConfig {
+	var configs []mcpmgr.ServerConfig
+
+	// From config file
+	for name, sc := range cfg.MCPServers {
+		configs = append(configs, mcpmgr.ServerConfig{
+			Name:    name,
+			Command: sc.Command,
+			Args:    sc.Args,
+			URL:     sc.URL,
+			Env:     sc.Env,
+		})
+	}
+
+	// From CLI flags
+	for _, flag := range mcpFlags {
+		configs = append(configs, mcpmgr.ParseMCPFlag(flag))
+	}
+
+	return configs
 }
 
 func Execute() {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	mcpmgr "chatchain/mcp"
 	"chatchain/provider"
 
 	"github.com/briandowns/spinner"
@@ -50,12 +51,25 @@ func FetchModels(ctx context.Context, p provider.Provider) ([]string, error) {
 	return models, fetchErr
 }
 
-func Once(ctx context.Context, p provider.Provider, message string, systemPrompt string, w io.Writer) error {
+func Once(ctx context.Context, p provider.Provider, message string, systemPrompt string, mgr *mcpmgr.Manager, w io.Writer) error {
 	var messages []provider.Message
 	if systemPrompt != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
 	}
 	messages = append(messages, provider.Message{Role: "user", Content: message})
+
+	tp, isToolProvider := p.(provider.ToolProvider)
+	tools := mgr.Tools()
+
+	if isToolProvider && len(tools) > 0 {
+		reply, _, err := executeWithTools(ctx, tp, mgr, &messages, tools, w)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(w, reply)
+		return nil
+	}
+
 	reply, err := p.Chat(ctx, messages)
 	if err != nil {
 		return err
@@ -137,7 +151,7 @@ func (c *chatCompleter) Do(line []rune, pos int) ([][]rune, int) {
 
 	// Command completion (no space yet)
 	if !strings.Contains(text, " ") {
-		commands := []string{"/file ", "/files ", "/clear ", "/save ", "/import "}
+		commands := []string{"/file ", "/files ", "/clear ", "/save ", "/import ", "/mcp "}
 		var candidates [][]rune
 		for _, cmd := range commands {
 			if strings.HasPrefix(cmd, text) {
@@ -280,7 +294,7 @@ func expandPasteTags(input string, pf *pasteFilter) string {
 	return input
 }
 
-func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Message, w io.Writer) error {
+func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Message, mgr *mcpmgr.Manager, w io.Writer) error {
 	pf := &pasteFilter{r: os.Stdin}
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          UserStyle.Sprint("You> "),
@@ -308,8 +322,11 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 	ctx := context.Background()
 
 	DimStyle.Fprintln(w, "Chat started. Press Ctrl+C to exit.")
-	DimStyle.Fprintln(w, "Commands: /file <path>, /files, /clear, /save <path>, /import <path>")
+	DimStyle.Fprintln(w, "Commands: /file <path>, /files, /clear, /save <path>, /import <path>, /mcp")
 	fmt.Fprintln(w)
+
+	tp, isToolProvider := p.(provider.ToolProvider)
+	tools := mgr.Tools()
 
 	var pendingAttachments []provider.Attachment
 
@@ -376,21 +393,132 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			}
 			continue
 		}
+		if input == "/mcp" || strings.HasPrefix(input, "/mcp ") {
+			printMCPStatus(mgr, w)
+			continue
+		}
 
 		msg := provider.Message{Role: "user", Content: input, Attachments: pendingAttachments}
 		pendingAttachments = nil
 		history = append(history, msg)
 
+		// Use tool-call loop if provider supports tools and MCP tools are available
+		if isToolProvider && len(tools) > 0 {
+			reply, thinking, err := executeWithTools(ctx, tp, mgr, &history, tools, w)
+			if err != nil {
+				ErrorStyle.Fprintf(w, "Error: %v\n\n", err)
+				history = history[:len(history)-1]
+				continue
+			}
+			fmt.Fprintln(w)
+			fmt.Fprintln(w)
+			history = append(history, provider.Message{Role: "assistant", Content: reply, Reasoning: thinking})
+			continue
+		}
+
+		// Standard streaming path (no tools)
+		reply, thinking, streamErr := streamResponse(ctx, p, history, w)
+		if streamErr != nil {
+			ErrorStyle.Fprintf(w, "Error: %v\n\n", streamErr)
+			history = history[:len(history)-1]
+			continue
+		}
+
+		fmt.Fprintln(w)
+		fmt.Fprintln(w)
+		history = append(history, provider.Message{Role: "assistant", Content: reply, Reasoning: thinking})
+	}
+}
+
+// streamResponse handles the standard streaming display (reasoning + content pipes).
+// Returns (content, reasoning, error).
+func streamResponse(ctx context.Context, p provider.Provider, history []provider.Message, w io.Writer) (string, string, error) {
+	reasonPr, reasonPw := io.Pipe()
+	contentPr, contentPw := io.Pipe()
+	var reply, thinking string
+	var streamErr error
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		defer contentPw.Close()
+		reply, thinking, streamErr = p.StreamChat(ctx, history, contentPw, reasonPw)
+	}()
+
+	firstChunk := make([]byte, 4096)
+	var firstN int
+	var readErr error
+	hasReasoning := false
+
+	withSpinner("Thinking...", func() {
+		firstN, readErr = reasonPr.Read(firstChunk)
+		if readErr != nil {
+			readErr = nil
+			firstN, readErr = contentPr.Read(firstChunk)
+		} else {
+			hasReasoning = true
+		}
+	})
+
+	if readErr != nil {
+		<-done
+		if streamErr != nil {
+			return "", "", streamErr
+		}
+		return "", "", readErr
+	}
+
+	if hasReasoning {
+		DimStyle.Fprint(w, "Reasoning> ")
+		os.Stdout.WriteString("\033[2m")
+		os.Stdout.Write(firstChunk[:firstN])
+		io.Copy(os.Stdout, reasonPr)
+		os.Stdout.WriteString("\033[0m")
+		fmt.Fprintln(w)
+
+		firstN, readErr = contentPr.Read(firstChunk)
+		if readErr != nil {
+			<-done
+			if streamErr != nil {
+				return "", "", streamErr
+			}
+			// Reasoning-only response
+			return thinking, thinking, nil
+		}
+	}
+
+	AssistantStyle.Fprint(w, "Assistant> ")
+	mdw := newMarkdownWriter(os.Stdout)
+	mdw.Write(firstChunk[:firstN])
+	io.Copy(mdw, contentPr)
+	mdw.Flush()
+	<-done
+
+	if streamErr != nil {
+		return "", "", streamErr
+	}
+
+	return reply, thinking, nil
+}
+
+// executeWithTools runs the tool-call loop: calls the model, executes any tool
+// calls via MCP, feeds results back, and repeats until the model produces a
+// final text response.
+func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr.Manager, history *[]provider.Message, tools []provider.ToolDef, w io.Writer) (string, string, error) {
+	const maxIterations = 20
+
+	for i := 0; i < maxIterations; i++ {
 		reasonPr, reasonPw := io.Pipe()
 		contentPr, contentPw := io.Pipe()
-		var reply, thinking string
+		var content, reasoning string
+		var toolCalls []provider.ToolCall
 		var streamErr error
 		done := make(chan struct{})
 
 		go func() {
 			defer close(done)
 			defer contentPw.Close()
-			reply, thinking, streamErr = p.StreamChat(ctx, history, contentPw, reasonPw)
+			content, reasoning, toolCalls, streamErr = tp.StreamChatWithTools(ctx, *history, tools, contentPw, reasonPw)
 		}()
 
 		firstChunk := make([]byte, 4096)
@@ -398,11 +526,9 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		var readErr error
 		hasReasoning := false
 
-		// Spinner blocks until first byte from reasoning or content
 		withSpinner("Thinking...", func() {
 			firstN, readErr = reasonPr.Read(firstChunk)
 			if readErr != nil {
-				// No reasoning (EOF), try content
 				readErr = nil
 				firstN, readErr = contentPr.Read(firstChunk)
 			} else {
@@ -413,16 +539,16 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		if readErr != nil {
 			<-done
 			if streamErr != nil {
-				ErrorStyle.Fprintf(w, "Error: %v\n\n", streamErr)
-			} else {
-				ErrorStyle.Fprintf(w, "Error: %v\n\n", readErr)
+				return "", "", streamErr
 			}
-			history = history[:len(history)-1]
-			continue
+			// EOF on content pipe might mean tool calls with no text
+			if len(toolCalls) > 0 {
+				goto handleToolCalls
+			}
+			return "", "", readErr
 		}
 
 		if hasReasoning {
-			// Display reasoning in dim style
 			DimStyle.Fprint(w, "Reasoning> ")
 			os.Stdout.WriteString("\033[2m")
 			os.Stdout.Write(firstChunk[:firstN])
@@ -430,35 +556,121 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			os.Stdout.WriteString("\033[0m")
 			fmt.Fprintln(w)
 
-			// Now read first content chunk
 			firstN, readErr = contentPr.Read(firstChunk)
 			if readErr != nil {
-				// Reasoning-only response (no text content) — treat as valid
 				<-done
 				if streamErr != nil {
-					ErrorStyle.Fprintf(w, "Error: %v\n\n", streamErr)
-					history = history[:len(history)-1]
-					continue
+					return "", "", streamErr
 				}
-				fmt.Fprintln(w)
-				history = append(history, provider.Message{Role: "assistant", Content: thinking, Reasoning: thinking})
-				continue
+				if len(toolCalls) > 0 {
+					goto handleToolCalls
+				}
+				// Reasoning-only response
+				return reasoning, reasoning, nil
 			}
 		}
 
-		AssistantStyle.Fprint(w, "Assistant> ")
-		os.Stdout.Write(firstChunk[:firstN])
-		io.Copy(os.Stdout, contentPr)
+		// Stream content to display
+		if firstN > 0 {
+			AssistantStyle.Fprint(w, "Assistant> ")
+			mdw := newMarkdownWriter(os.Stdout)
+			mdw.Write(firstChunk[:firstN])
+			io.Copy(mdw, contentPr)
+			mdw.Flush()
+		} else {
+			io.Copy(io.Discard, contentPr)
+		}
 		<-done
 
 		if streamErr != nil {
-			ErrorStyle.Fprintf(w, "\nError: %v\n\n", streamErr)
-			history = history[:len(history)-1]
-			continue
+			return "", "", streamErr
 		}
 
+		if len(toolCalls) == 0 {
+			// Final text response
+			return content, reasoning, nil
+		}
+
+	handleToolCalls:
+		if content != "" {
+			fmt.Fprintln(w)
+		}
+
+		// Append assistant message with tool calls to history
+		*history = append(*history, provider.Message{
+			Role:      "assistant",
+			Content:   content,
+			ToolCalls: toolCalls,
+		})
+
+		// Execute each tool call via MCP
+		for _, tc := range toolCalls {
+			DimStyle.Fprintf(w, "[calling tool: %s]\n", tc.Name)
+
+			resultText, isError, callErr := mgr.CallTool(ctx, tc.Name, tc.Arguments)
+			if callErr != nil {
+				resultText = fmt.Sprintf("Error calling tool: %v", callErr)
+				isError = true
+			}
+
+			// Show result to user (truncated for display)
+			if isError {
+				ErrorStyle.Fprintf(w, "[tool error: %s]\n", truncate(resultText, 500))
+			} else {
+				DimStyle.Fprintf(w, "[tool result: %s]\n", truncate(resultText, 500))
+			}
+
+			// Append tool result message
+			*history = append(*history, provider.Message{
+				Role:       "tool",
+				Content:    resultText,
+				ToolCallID: tc.ID,
+				IsError:    isError,
+			})
+		}
 		fmt.Fprintln(w)
-		fmt.Fprintln(w)
-		history = append(history, provider.Message{Role: "assistant", Content: reply, Reasoning: thinking})
+		// Loop back for next model call
+	}
+
+	return "", "", fmt.Errorf("tool call loop exceeded %d iterations", maxIterations)
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+func printMCPStatus(mgr *mcpmgr.Manager, w io.Writer) {
+	servers := mgr.Servers()
+	if len(servers) == 0 {
+		DimStyle.Fprintln(w, "No MCP servers configured.")
+		return
+	}
+
+	totalTools := 0
+	for _, s := range servers {
+		totalTools += s.ToolCount
+	}
+	fmt.Fprintf(w, "MCP servers: %d, total tools: %d\n", len(servers), totalTools)
+	fmt.Fprintln(w)
+
+	for _, s := range servers {
+		status := ErrorStyle.Sprint("disconnected")
+		if s.Connected {
+			status = BoldStyle.Sprint("connected")
+		}
+		fmt.Fprintf(w, "  %s [%s]\n", BoldStyle.Sprint(s.Name), status)
+		DimStyle.Fprintf(w, "    Endpoint: %s\n", s.Endpoint)
+		DimStyle.Fprintf(w, "    Tools (%d):", s.ToolCount)
+		if s.ToolCount == 0 {
+			DimStyle.Fprintln(w, " (none)")
+		} else {
+			fmt.Fprintln(w)
+			for _, name := range s.Tools {
+				DimStyle.Fprintf(w, "      - %s\n", name)
+			}
+		}
 	}
 }
