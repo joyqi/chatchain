@@ -622,10 +622,11 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 
 			// Append tool result message
 			*history = append(*history, provider.Message{
-				Role:       "tool",
-				Content:    resultText,
-				ToolCallID: tc.ID,
-				IsError:    isError,
+				Role:         "tool",
+				Content:      resultText,
+				ToolCallID:   tc.ID,
+				ToolCallName: tc.Name,
+				IsError:      isError,
 			})
 		}
 		fmt.Fprintln(w)
@@ -663,14 +664,10 @@ func printMCPStatus(mgr *mcpmgr.Manager, w io.Writer) {
 		}
 		fmt.Fprintf(w, "  %s [%s]\n", BoldStyle.Sprint(s.Name), status)
 		DimStyle.Fprintf(w, "    Endpoint: %s\n", s.Endpoint)
-		DimStyle.Fprintf(w, "    Tools (%d):", s.ToolCount)
 		if s.ToolCount == 0 {
-			DimStyle.Fprintln(w, " (none)")
+			DimStyle.Fprintln(w, "    Tools: (none)")
 		} else {
-			fmt.Fprintln(w)
-			for _, name := range s.Tools {
-				DimStyle.Fprintf(w, "      - %s\n", name)
-			}
+			DimStyle.Fprintf(w, "    Tools (%d): %s\n", s.ToolCount, strings.Join(s.Tools, ", "))
 		}
 	}
 }

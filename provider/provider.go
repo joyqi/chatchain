@@ -32,9 +32,10 @@ type Message struct {
 	Content     string
 	Reasoning   string       // thinking/reasoning text (display/save only)
 	Attachments []Attachment // nil when no files
-	ToolCalls   []ToolCall   // assistant messages requesting tool use
-	ToolCallID  string       // tool result messages: which call this answers
-	IsError     bool         // tool result messages: whether the call failed
+	ToolCalls    []ToolCall  // assistant messages requesting tool use
+	ToolCallID   string     // tool result messages: which call this answers
+	ToolCallName string     // tool result messages: function name
+	IsError      bool       // tool result messages: whether the call failed
 }
 
 type Provider interface {

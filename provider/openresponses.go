@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/responses"
 )
+
+var _ ToolProvider = (*OpenResponsesProvider)(nil)
 
 type OpenResponsesProvider struct {
 	client      *openai.Client
@@ -94,7 +97,21 @@ func (p *OpenResponsesProvider) buildParams(messages []Message) responses.Respon
 				input = append(input, responses.ResponseInputItemParamOfMessage(msg.Content, responses.EasyInputMessageRoleUser))
 			}
 		case "assistant":
-			input = append(input, responses.ResponseInputItemParamOfMessage(msg.Content, responses.EasyInputMessageRoleAssistant))
+			if len(msg.ToolCalls) > 0 {
+				// Add text message if present
+				if msg.Content != "" {
+					input = append(input, responses.ResponseInputItemParamOfMessage(msg.Content, responses.EasyInputMessageRoleAssistant))
+				}
+				// Add each tool call as a function_call input item
+				for _, tc := range msg.ToolCalls {
+					argsJSON, _ := json.Marshal(tc.Arguments)
+					input = append(input, responses.ResponseInputItemParamOfFunctionCall(string(argsJSON), tc.ID, tc.Name))
+				}
+			} else {
+				input = append(input, responses.ResponseInputItemParamOfMessage(msg.Content, responses.EasyInputMessageRoleAssistant))
+			}
+		case "tool":
+			input = append(input, responses.ResponseInputItemParamOfFunctionCallOutput(msg.ToolCallID, msg.Content))
 		}
 	}
 	params.Input.OfInputItemList = input
@@ -110,7 +127,31 @@ func (p *OpenResponsesProvider) Chat(ctx context.Context, messages []Message) (s
 }
 
 func (p *OpenResponsesProvider) StreamChat(ctx context.Context, messages []Message, w io.Writer, reasoningW io.WriteCloser) (string, string, error) {
-	stream := p.client.Responses.NewStreaming(ctx, p.buildParams(messages))
+	content, reasoning, _, err := p.streamChatInternal(ctx, messages, nil, w, reasoningW)
+	return content, reasoning, err
+}
+
+func (p *OpenResponsesProvider) StreamChatWithTools(ctx context.Context, messages []Message, tools []ToolDef, w io.Writer, reasoningW io.WriteCloser) (string, string, []ToolCall, error) {
+	return p.streamChatInternal(ctx, messages, tools, w, reasoningW)
+}
+
+func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages []Message, tools []ToolDef, w io.Writer, reasoningW io.WriteCloser) (string, string, []ToolCall, error) {
+	params := p.buildParams(messages)
+
+	if len(tools) > 0 {
+		for _, t := range tools {
+			params.Tools = append(params.Tools, responses.ToolUnionParam{
+				OfFunction: &responses.FunctionToolParam{
+					Name:        t.Name,
+					Description: param.NewOpt(t.Description),
+					Parameters:  t.InputSchema,
+					Strict:      param.NewOpt(false),
+				},
+			})
+		}
+	}
+
+	stream := p.client.Responses.NewStreaming(ctx, params)
 	var full, thinkFull string
 	reasoningClosed := false
 	closeReasoning := func() {
@@ -119,6 +160,14 @@ func (p *OpenResponsesProvider) StreamChat(ctx context.Context, messages []Messa
 			reasoningClosed = true
 		}
 	}
+
+	// Track function calls: itemID → accumulated data
+	type fnCallAcc struct {
+		callID string // the actual call_id (from output_item.done)
+		name   string
+		args   strings.Builder
+	}
+	fnCalls := make(map[string]*fnCallAcc)
 
 	for stream.Next() {
 		evt := stream.Current()
@@ -130,11 +179,42 @@ func (p *OpenResponsesProvider) StreamChat(ctx context.Context, messages []Messa
 			closeReasoning()
 			fmt.Fprint(w, evt.Delta)
 			full += evt.Delta
+		case "response.function_call_arguments.delta":
+			delta := evt.AsResponseFunctionCallArgumentsDelta()
+			acc, ok := fnCalls[delta.ItemID]
+			if !ok {
+				acc = &fnCallAcc{}
+				fnCalls[delta.ItemID] = acc
+			}
+			acc.args.WriteString(delta.Delta)
+		case "response.function_call_arguments.done":
+			done := evt.AsResponseFunctionCallArgumentsDone()
+			acc, ok := fnCalls[done.ItemID]
+			if !ok {
+				acc = &fnCallAcc{}
+				fnCalls[done.ItemID] = acc
+			}
+			acc.name = done.Name
+			acc.args.Reset()
+			acc.args.WriteString(done.Arguments)
+		case "response.output_item.done":
+			// Extract call_id and name from the completed output item
+			item := evt.AsResponseOutputItemDone()
+			if item.Item.Type == "function_call" {
+				acc, ok := fnCalls[item.Item.ID]
+				if !ok {
+					acc = &fnCallAcc{}
+					fnCalls[item.Item.ID] = acc
+				}
+				acc.callID = item.Item.CallID
+				if item.Item.Name != "" {
+					acc.name = item.Item.Name
+				}
+			}
 		case "response.completed":
-			// Stream complete — stop reading
+			// Stream complete
 		default:
 			if evt.Delta != "" && evt.Type == "" {
-				// Fallback for untyped deltas
 				closeReasoning()
 				fmt.Fprint(w, evt.Delta)
 				full += evt.Delta
@@ -143,13 +223,28 @@ func (p *OpenResponsesProvider) StreamChat(ctx context.Context, messages []Messa
 	}
 	closeReasoning()
 	if err := stream.Err(); err != nil {
-		// Some providers close the stream without [DONE] after response.completed,
-		// causing JSON parse errors. Ignore if we already got content or reasoning.
-		if full != "" || thinkFull != "" {
-			return full, thinkFull, nil
+		if full != "" || thinkFull != "" || len(fnCalls) > 0 {
+			// Ignore stream close errors if we got content
+		} else {
+			return full, thinkFull, nil, fmt.Errorf("stream error: %w", err)
 		}
-		return full, thinkFull, fmt.Errorf("stream error: %w", err)
 	}
 
-	return full, thinkFull, nil
+	if len(fnCalls) > 0 {
+		var toolCalls []ToolCall
+		for _, acc := range fnCalls {
+			var args map[string]any
+			if argsStr := acc.args.String(); argsStr != "" {
+				json.Unmarshal([]byte(argsStr), &args)
+			}
+			toolCalls = append(toolCalls, ToolCall{
+				ID:        acc.callID,
+				Name:      acc.name,
+				Arguments: args,
+			})
+		}
+		return full, thinkFull, toolCalls, nil
+	}
+
+	return full, thinkFull, nil, nil
 }

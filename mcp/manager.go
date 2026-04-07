@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -19,6 +20,7 @@ type ServerConfig struct {
 	Args    []string
 	URL     string
 	Env     map[string]string
+	Headers map[string]string
 }
 
 // ServerStatus holds runtime info about a connected MCP server.
@@ -174,11 +176,19 @@ func (m *Manager) Close() {
 
 func makeTransport(cfg ServerConfig) (mcp.Transport, error) {
 	if cfg.URL != "" {
-		// URL-based: try streamable HTTP first (newer spec), fall back to SSE
 		if strings.HasPrefix(cfg.URL, "http://") || strings.HasPrefix(cfg.URL, "https://") {
-			return &mcp.StreamableClientTransport{
+			transport := &mcp.StreamableClientTransport{
 				Endpoint: cfg.URL,
-			}, nil
+			}
+			if len(cfg.Headers) > 0 {
+				transport.HTTPClient = &http.Client{
+					Transport: &headerTransport{
+						base:    http.DefaultTransport,
+						headers: cfg.Headers,
+					},
+				}
+			}
+			return transport, nil
 		}
 		return nil, fmt.Errorf("unsupported URL scheme: %s", cfg.URL)
 	}
@@ -186,7 +196,6 @@ func makeTransport(cfg ServerConfig) (mcp.Transport, error) {
 	if cfg.Command != "" {
 		args := cfg.Args
 		cmd := exec.CommandContext(context.Background(), cfg.Command, args...)
-		// Set env vars if configured
 		if len(cfg.Env) > 0 {
 			cmd.Env = os.Environ()
 			for k, v := range cfg.Env {
@@ -197,6 +206,19 @@ func makeTransport(cfg ServerConfig) (mcp.Transport, error) {
 	}
 
 	return nil, fmt.Errorf("server config must have either command or url")
+}
+
+// headerTransport injects custom headers into every HTTP request.
+type headerTransport struct {
+	base    http.RoundTripper
+	headers map[string]string
+}
+
+func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	for k, v := range t.headers {
+		req.Header.Set(k, v)
+	}
+	return t.base.RoundTrip(req)
 }
 
 // ParseMCPFlag parses a --mcp flag value into a ServerConfig.

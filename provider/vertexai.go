@@ -10,6 +10,8 @@ import (
 	"google.golang.org/genai"
 )
 
+var _ ToolProvider = (*VertexAIProvider)(nil)
+
 type VertexAIProvider struct {
 	client      *genai.Client
 	model       string
@@ -82,7 +84,36 @@ func (p *VertexAIProvider) buildContents(messages []Message) ([]*genai.Content, 
 				contents = append(contents, genai.NewContentFromText(msg.Content, "user"))
 			}
 		case "assistant":
-			contents = append(contents, genai.NewContentFromText(msg.Content, "model"))
+			if len(msg.ToolCalls) > 0 {
+				var parts []*genai.Part
+				if msg.Content != "" {
+					parts = append(parts, genai.NewPartFromText(msg.Content))
+				}
+				for _, tc := range msg.ToolCalls {
+					parts = append(parts, &genai.Part{
+						FunctionCall: &genai.FunctionCall{
+							ID:   tc.ID,
+							Name: tc.Name,
+							Args: tc.Arguments,
+						},
+					})
+				}
+				contents = append(contents, genai.NewContentFromParts(parts, "model"))
+			} else {
+				contents = append(contents, genai.NewContentFromText(msg.Content, "model"))
+			}
+		case "tool":
+			resp := map[string]any{"output": msg.Content}
+			if msg.IsError {
+				resp = map[string]any{"error": msg.Content}
+			}
+			contents = append(contents, genai.NewContentFromParts([]*genai.Part{
+				{FunctionResponse: &genai.FunctionResponse{
+					ID:       msg.ToolCallID,
+					Name:     msg.ToolCallName,
+					Response: resp,
+				}},
+			}, "user"))
 		}
 	}
 	return contents, system
@@ -110,8 +141,32 @@ func (p *VertexAIProvider) Chat(ctx context.Context, messages []Message) (string
 }
 
 func (p *VertexAIProvider) StreamChat(ctx context.Context, messages []Message, w io.Writer, reasoningW io.WriteCloser) (string, string, error) {
+	content, reasoning, _, err := p.streamChatInternal(ctx, messages, nil, w, reasoningW)
+	return content, reasoning, err
+}
+
+func (p *VertexAIProvider) StreamChatWithTools(ctx context.Context, messages []Message, tools []ToolDef, w io.Writer, reasoningW io.WriteCloser) (string, string, []ToolCall, error) {
+	return p.streamChatInternal(ctx, messages, tools, w, reasoningW)
+}
+
+func (p *VertexAIProvider) streamChatInternal(ctx context.Context, messages []Message, tools []ToolDef, w io.Writer, reasoningW io.WriteCloser) (string, string, []ToolCall, error) {
 	contents, system := p.buildContents(messages)
+	cfg := p.config(system)
+
+	if len(tools) > 0 {
+		var decls []*genai.FunctionDeclaration
+		for _, t := range tools {
+			decls = append(decls, &genai.FunctionDeclaration{
+				Name:                 t.Name,
+				Description:          t.Description,
+				ParametersJsonSchema: t.InputSchema,
+			})
+		}
+		cfg.Tools = []*genai.Tool{{FunctionDeclarations: decls}}
+	}
+
 	var full, thinkFull string
+	var toolCalls []ToolCall
 	reasoningClosed := false
 	closeReasoning := func() {
 		if !reasoningClosed {
@@ -120,16 +175,31 @@ func (p *VertexAIProvider) StreamChat(ctx context.Context, messages []Message, w
 		}
 	}
 
-	for resp, err := range p.client.Models.GenerateContentStream(ctx, p.model, contents, p.config(system)) {
+	for resp, err := range p.client.Models.GenerateContentStream(ctx, p.model, contents, cfg) {
 		if err != nil {
 			closeReasoning()
-			return full, thinkFull, fmt.Errorf("stream error: %w", err)
+			return full, thinkFull, nil, fmt.Errorf("stream error: %w", err)
 		}
 		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
 			for _, part := range resp.Candidates[0].Content.Parts {
 				if part.Thought {
 					fmt.Fprint(reasoningW, part.Text)
 					thinkFull += part.Text
+				} else if part.FunctionCall != nil {
+					closeReasoning()
+					args := part.FunctionCall.Args
+					if args == nil {
+						args = make(map[string]any)
+					}
+					id := part.FunctionCall.ID
+					if id == "" {
+						id = fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, len(toolCalls))
+					}
+					toolCalls = append(toolCalls, ToolCall{
+						ID:        id,
+						Name:      part.FunctionCall.Name,
+						Arguments: args,
+					})
 				} else if part.Text != "" {
 					closeReasoning()
 					fmt.Fprint(w, part.Text)
@@ -139,5 +209,9 @@ func (p *VertexAIProvider) StreamChat(ctx context.Context, messages []Message, w
 		}
 	}
 	closeReasoning()
-	return full, thinkFull, nil
+
+	if len(toolCalls) > 0 {
+		return full, thinkFull, toolCalls, nil
+	}
+	return full, thinkFull, nil, nil
 }

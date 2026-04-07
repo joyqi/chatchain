@@ -22,6 +22,7 @@ type MCPServerConfig struct {
 	Args    []string          `yaml:"args"`
 	URL     string            `yaml:"url"`
 	Env     map[string]string `yaml:"env"`
+	Headers map[string]string `yaml:"headers"`
 }
 
 // Config is the top-level config file structure.

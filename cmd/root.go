@@ -307,6 +307,7 @@ func buildMCPConfigs(cfg *config.Config) []mcpmgr.ServerConfig {
 			Args:    sc.Args,
 			URL:     sc.URL,
 			Env:     sc.Env,
+			Headers: sc.Headers,
 		})
 	}
 
