@@ -36,6 +36,7 @@ type Message struct {
 	ToolCallID   string     // tool result messages: which call this answers
 	ToolCallName string     // tool result messages: function name
 	IsError      bool       // tool result messages: whether the call failed
+	RawContent   any        // provider-specific raw content (e.g. *genai.Content for thought signatures)
 }
 
 type Provider interface {
@@ -51,6 +52,12 @@ type Provider interface {
 type ToolProvider interface {
 	StreamChatWithTools(ctx context.Context, messages []Message, tools []ToolDef,
 		w io.Writer, reasoning io.WriteCloser) (content string, reasoningText string, toolCalls []ToolCall, err error)
+}
+
+// RawContentProvider is an optional interface for providers that need to preserve
+// raw model response content (e.g. Vertex AI thought signatures) across tool call rounds.
+type RawContentProvider interface {
+	LastRawContent() any
 }
 
 func New(providerType, apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) (Provider, error) {

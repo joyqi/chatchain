@@ -11,11 +11,13 @@ import (
 )
 
 var _ ToolProvider = (*VertexAIProvider)(nil)
+var _ RawContentProvider = (*VertexAIProvider)(nil)
 
 type VertexAIProvider struct {
-	client      *genai.Client
-	model       string
-	temperature *float64
+	client           *genai.Client
+	model            string
+	temperature      *float64
+	lastModelContent *genai.Content // preserves thought signatures for tool call rounds
 }
 
 func NewVertexAI(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *VertexAIProvider {
@@ -39,6 +41,10 @@ func NewVertexAI(apiKey, baseURL, model string, temperature *float64, httpClient
 		model:       model,
 		temperature: temperature,
 	}
+}
+
+func (p *VertexAIProvider) LastRawContent() any {
+	return p.lastModelContent
 }
 
 func (p *VertexAIProvider) ListModels(ctx context.Context) ([]string, error) {
@@ -84,7 +90,10 @@ func (p *VertexAIProvider) buildContents(messages []Message) ([]*genai.Content, 
 				contents = append(contents, genai.NewContentFromText(msg.Content, "user"))
 			}
 		case "assistant":
-			if len(msg.ToolCalls) > 0 {
+			// Use raw content if available (preserves thought signatures)
+			if raw, ok := msg.RawContent.(*genai.Content); ok && raw != nil {
+				contents = append(contents, raw)
+			} else if len(msg.ToolCalls) > 0 {
 				var parts []*genai.Part
 				if msg.Content != "" {
 					parts = append(parts, genai.NewPartFromText(msg.Content))
@@ -92,7 +101,6 @@ func (p *VertexAIProvider) buildContents(messages []Message) ([]*genai.Content, 
 				for _, tc := range msg.ToolCalls {
 					parts = append(parts, &genai.Part{
 						FunctionCall: &genai.FunctionCall{
-							ID:   tc.ID,
 							Name: tc.Name,
 							Args: tc.Arguments,
 						},
@@ -109,7 +117,6 @@ func (p *VertexAIProvider) buildContents(messages []Message) ([]*genai.Content, 
 			}
 			contents = append(contents, genai.NewContentFromParts([]*genai.Part{
 				{FunctionResponse: &genai.FunctionResponse{
-					ID:       msg.ToolCallID,
 					Name:     msg.ToolCallName,
 					Response: resp,
 				}},
@@ -167,6 +174,7 @@ func (p *VertexAIProvider) streamChatInternal(ctx context.Context, messages []Me
 
 	var full, thinkFull string
 	var toolCalls []ToolCall
+	var rawParts []*genai.Part // accumulate all parts to preserve thought signatures
 	reasoningClosed := false
 	closeReasoning := func() {
 		if !reasoningClosed {
@@ -182,6 +190,7 @@ func (p *VertexAIProvider) streamChatInternal(ctx context.Context, messages []Me
 		}
 		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
 			for _, part := range resp.Candidates[0].Content.Parts {
+				rawParts = append(rawParts, part)
 				if part.Thought {
 					fmt.Fprint(reasoningW, part.Text)
 					thinkFull += part.Text
@@ -211,7 +220,9 @@ func (p *VertexAIProvider) streamChatInternal(ctx context.Context, messages []Me
 	closeReasoning()
 
 	if len(toolCalls) > 0 {
+		p.lastModelContent = genai.NewContentFromParts(rawParts, "model")
 		return full, thinkFull, toolCalls, nil
 	}
+	p.lastModelContent = nil
 	return full, thinkFull, nil, nil
 }

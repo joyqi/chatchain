@@ -11,11 +11,13 @@ import (
 )
 
 var _ ToolProvider = (*GeminiProvider)(nil)
+var _ RawContentProvider = (*GeminiProvider)(nil)
 
 type GeminiProvider struct {
-	client      *genai.Client
-	model       string
-	temperature *float64
+	client           *genai.Client
+	model            string
+	temperature      *float64
+	lastModelContent *genai.Content
 }
 
 func NewGemini(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *GeminiProvider {
@@ -39,6 +41,10 @@ func NewGemini(apiKey, baseURL, model string, temperature *float64, httpClient *
 		model:       model,
 		temperature: temperature,
 	}
+}
+
+func (p *GeminiProvider) LastRawContent() any {
+	return p.lastModelContent
 }
 
 func (p *GeminiProvider) ListModels(ctx context.Context) ([]string, error) {
@@ -84,7 +90,9 @@ func (p *GeminiProvider) buildContents(messages []Message) ([]*genai.Content, *g
 				contents = append(contents, genai.NewContentFromText(msg.Content, "user"))
 			}
 		case "assistant":
-			if len(msg.ToolCalls) > 0 {
+			if raw, ok := msg.RawContent.(*genai.Content); ok && raw != nil {
+				contents = append(contents, raw)
+			} else if len(msg.ToolCalls) > 0 {
 				var parts []*genai.Part
 				if msg.Content != "" {
 					parts = append(parts, genai.NewPartFromText(msg.Content))
@@ -167,6 +175,7 @@ func (p *GeminiProvider) streamChatInternal(ctx context.Context, messages []Mess
 
 	var full, thinkFull string
 	var toolCalls []ToolCall
+	var rawParts []*genai.Part
 	reasoningClosed := false
 	closeReasoning := func() {
 		if !reasoningClosed {
@@ -182,6 +191,7 @@ func (p *GeminiProvider) streamChatInternal(ctx context.Context, messages []Mess
 		}
 		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
 			for _, part := range resp.Candidates[0].Content.Parts {
+				rawParts = append(rawParts, part)
 				if part.Thought {
 					fmt.Fprint(reasoningW, part.Text)
 					thinkFull += part.Text
@@ -212,8 +222,10 @@ func (p *GeminiProvider) streamChatInternal(ctx context.Context, messages []Mess
 	closeReasoning()
 
 	if len(toolCalls) > 0 {
+		p.lastModelContent = genai.NewContentFromParts(rawParts, "model")
 		return full, thinkFull, toolCalls, nil
 	}
+	p.lastModelContent = nil
 	return full, thinkFull, nil, nil
 }
 

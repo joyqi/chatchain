@@ -505,9 +505,29 @@ func streamResponse(ctx context.Context, p provider.Provider, history []provider
 // calls via MCP, feeds results back, and repeats until the model produces a
 // final text response.
 func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr.Manager, history *[]provider.Message, tools []provider.ToolDef, w io.Writer) (string, string, error) {
-	const maxIterations = 20
+	// Persistent spinner across all tool-call rounds
+	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
+	s.Writer = os.Stderr
+	spinnerRunning := false
+	totalCalls := 0
+	var toolErrors []string
+	var allToolNames []string
 
-	for i := 0; i < maxIterations; i++ {
+	startSpinner := func(suffix string) {
+		s.Suffix = " " + suffix
+		if !spinnerRunning {
+			s.Start()
+			spinnerRunning = true
+		}
+	}
+	stopSpinner := func() {
+		if spinnerRunning {
+			s.Stop()
+			spinnerRunning = false
+		}
+	}
+
+	for {
 		reasonPr, reasonPw := io.Pipe()
 		contentPr, contentPw := io.Pipe()
 		var content, reasoning string
@@ -526,18 +546,18 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 		var readErr error
 		hasReasoning := false
 
-		withSpinner("Thinking...", func() {
-			firstN, readErr = reasonPr.Read(firstChunk)
-			if readErr != nil {
-				readErr = nil
-				firstN, readErr = contentPr.Read(firstChunk)
-			} else {
-				hasReasoning = true
-			}
-		})
+		startSpinner("Thinking...")
+		firstN, readErr = reasonPr.Read(firstChunk)
+		if readErr != nil {
+			readErr = nil
+			firstN, readErr = contentPr.Read(firstChunk)
+		} else {
+			hasReasoning = true
+		}
 
 		if readErr != nil {
 			<-done
+			stopSpinner()
 			if streamErr != nil {
 				return "", "", streamErr
 			}
@@ -545,8 +565,13 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 			if len(toolCalls) > 0 {
 				goto handleToolCalls
 			}
+			if totalCalls > 0 {
+				printToolSummary(w, allToolNames, toolErrors)
+			}
 			return "", "", readErr
 		}
+
+		stopSpinner()
 
 		if hasReasoning {
 			DimStyle.Fprint(w, "Reasoning> ")
@@ -566,6 +591,9 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 					goto handleToolCalls
 				}
 				// Reasoning-only response
+				if totalCalls > 0 {
+					printToolSummary(w, allToolNames, toolErrors)
+				}
 				return reasoning, reasoning, nil
 			}
 		}
@@ -583,11 +611,17 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 		<-done
 
 		if streamErr != nil {
+			if totalCalls > 0 {
+				printToolSummary(w, allToolNames, toolErrors)
+			}
 			return "", "", streamErr
 		}
 
 		if len(toolCalls) == 0 {
-			// Final text response
+			if totalCalls > 0 {
+				fmt.Fprintln(w)
+				printToolSummary(w, allToolNames, toolErrors)
+			}
 			return content, reasoning, nil
 		}
 
@@ -597,15 +631,28 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 		}
 
 		// Append assistant message with tool calls to history
-		*history = append(*history, provider.Message{
+		msg := provider.Message{
 			Role:      "assistant",
 			Content:   content,
 			ToolCalls: toolCalls,
-		})
+		}
+		// Preserve raw model content (e.g. Vertex AI thought signatures)
+		if rcp, ok := tp.(provider.RawContentProvider); ok {
+			msg.RawContent = rcp.LastRawContent()
+		}
+		*history = append(*history, msg)
 
-		// Execute each tool call via MCP
-		for _, tc := range toolCalls {
-			DimStyle.Fprintf(w, "[calling tool: %s]\n", tc.Name)
+		// Execute each tool call via MCP with spinner status
+		for idx, tc := range toolCalls {
+			totalCalls++
+			allToolNames = append(allToolNames, tc.Name)
+
+			summary := toolCallSummary(tc, 60)
+			if len(toolCalls) > 1 {
+				startSpinner(fmt.Sprintf("[%d/%d] %s", idx+1, len(toolCalls), summary))
+			} else {
+				startSpinner(summary)
+			}
 
 			resultText, isError, callErr := mgr.CallTool(ctx, tc.Name, tc.Arguments)
 			if callErr != nil {
@@ -613,11 +660,8 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 				isError = true
 			}
 
-			// Show result to user (truncated for display)
 			if isError {
-				ErrorStyle.Fprintf(w, "[tool error: %s]\n", truncate(resultText, 500))
-			} else {
-				DimStyle.Fprintf(w, "[tool result: %s]\n", truncate(resultText, 500))
+				toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", tc.Name, truncate(resultText, 100)))
 			}
 
 			// Append tool result message
@@ -629,11 +673,36 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 				IsError:      isError,
 			})
 		}
-		fmt.Fprintln(w)
-		// Loop back for next model call
+		// Keep spinner running into next iteration (Thinking...)
 	}
 
-	return "", "", fmt.Errorf("tool call loop exceeded %d iterations", maxIterations)
+}
+
+func printToolSummary(w io.Writer, names []string, errors []string) {
+	// Deduplicate and count tool names
+	counts := make(map[string]int)
+	var order []string
+	for _, name := range names {
+		if counts[name] == 0 {
+			order = append(order, name)
+		}
+		counts[name]++
+	}
+	var parts []string
+	for _, name := range order {
+		if counts[name] > 1 {
+			parts = append(parts, fmt.Sprintf("%s×%d", name, counts[name]))
+		} else {
+			parts = append(parts, name)
+		}
+	}
+
+	if len(errors) > 0 {
+		for _, e := range errors {
+			ErrorStyle.Fprintf(w, "[tool error: %s]\n", e)
+		}
+	}
+	DimStyle.Fprintf(w, "[%d tool calls: %s]\n", len(names), strings.Join(parts, ", "))
 }
 
 func truncate(s string, maxLen int) string {
@@ -641,6 +710,23 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// toolCallSummary returns a compact one-line summary like "tool_name(key1=val1, key2=val2)".
+func toolCallSummary(tc provider.ToolCall, maxWidth int) string {
+	var params []string
+	for k, v := range tc.Arguments {
+		s := fmt.Sprintf("%v", v)
+		if len(s) > 20 {
+			s = s[:20] + "…"
+		}
+		params = append(params, k+"="+s)
+	}
+	summary := tc.Name + "(" + strings.Join(params, ", ") + ")"
+	if len(summary) > maxWidth {
+		summary = summary[:maxWidth] + "…"
+	}
+	return summary
 }
 
 func printMCPStatus(mgr *mcpmgr.Manager, w io.Writer) {
