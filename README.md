@@ -5,13 +5,15 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 ## Features
 
 - **Multi-provider** — OpenAI, OpenAI Responses API, Anthropic, Gemini, Vertex AI, and OpenClaw, with custom base URL support
+- **MCP tool support** — connect external MCP tool servers (filesystem, GitHub, databases, etc.) and let AI providers use them during chat
 - **Interactive model selection** — arrow-key navigation with filtering
 - **Streaming responses** — real-time token output with loading spinner
+- **Markdown highlighting** — inline ANSI styling for headings, bold, italic, code, tables, and code blocks in streaming output
 - **File attachments** — send images, PDFs, and text files alongside messages with Tab-completion for file paths
 - **Non-interactive mode** — single message in, response out, pipe-friendly
 - **Conversation history** — full context maintained within a session
 - **System prompt** — set via flag or interactive input
-- **Config file** — persistent API keys, default models, and custom provider aliases via `~/.chatchain.yaml`
+- **Config file** — persistent API keys, default models, custom provider aliases, and MCP server definitions via `~/.chatchain.yaml`
 - **Styled terminal output** — color-coded prompts
 
 ## Install
@@ -91,6 +93,7 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses|openclaw] [flags]
 | `--message` | `-m` | Send a single message and print the response (non-interactive, use `-` to read from stdin) |
 | `--system` | `-s` | System prompt (omit value for interactive input) |
 | `--list` | `-l` | List configured providers, or models for a given provider |
+| `--mcp` | | MCP server (command string or URL, repeatable) |
 | `--config` | `-c` | Path to config file (default: `~/.chatchain.yaml`) |
 | `--verbose` | `-v` | Print HTTP request/response bodies for debugging |
 
@@ -139,6 +142,17 @@ providers:
     type: anthropic
     key: sk-ant-xxx
     model: claude-sonnet-4-20250514
+
+# MCP tool servers
+mcp_servers:
+  filesystem:
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+  github:
+    url: https://mcp.example.com/sse
+    headers:
+      Authorization: "Bearer ghp_xxx"
 ```
 
 With this config:
@@ -165,6 +179,7 @@ In interactive mode, the following commands are available:
 | `/clear` | Remove all attached files |
 | `/save [path]` | Save conversation history to a Markdown file (default: `history.md`) |
 | `/import [path]` | Import conversation history from a saved Markdown file (default: `history.md`) |
+| `/mcp` | Show connected MCP servers and their tools |
 
 Attached files are sent with your next message, then cleared automatically.
 
@@ -215,6 +230,15 @@ chatchain anthropic -M claude-sonnet-4-20250514 -t 0.5 -m "Write a haiku"
 # Custom API endpoint
 chatchain openai -u https://your-proxy.com/v1 -k sk-xxx
 
+# With MCP tools (ad-hoc server via CLI flag)
+chatchain openai -M gpt-4o --mcp "npx -y @modelcontextprotocol/server-filesystem /tmp"
+
+# Multiple MCP servers
+chatchain anthropic -M claude-sonnet-4-20250514 --mcp "npx -y @modelcontextprotocol/server-filesystem /tmp" --mcp "https://mcp.example.com/sse"
+
+# MCP servers from config file are loaded automatically
+chatchain openai -M gpt-4o
+
 # Read message from stdin (pipe-friendly)
 echo "Explain quicksort" | chatchain openai -M gpt-4o -m -
 cat prompt.txt | chatchain openai -M gpt-4o -m -
@@ -254,17 +278,20 @@ chatchain/
 ├── config/
 │   └── config.go        # Config file loading and merging
 ├── chat/
-│   ├── chat.go          # Chat loop, model selection, completion, spinner
+│   ├── chat.go          # Chat loop, model selection, tool-call loop, spinner
 │   ├── file.go          # File attachment reading and MIME detection
+│   ├── markdown.go      # Streaming markdown highlighter (ANSI)
 │   └── styles.go        # Terminal style definitions
+├── mcp/
+│   └── manager.go       # MCP client manager (stdio + HTTP transports)
 └── provider/
-    ├── provider.go      # Provider interface + Attachment type
-    ├── openai.go          # OpenAI Chat Completions implementation
-    ├── openresponses.go   # OpenAI Responses API implementation
-    ├── anthropic.go       # Anthropic implementation
-    ├── gemini.go          # Gemini implementation
-    ├── vertexai.go        # Vertex AI implementation
-    └── openclaw.go        # OpenClaw Gateway implementation
+    ├── provider.go      # Provider interface, ToolProvider, Message types
+    ├── openai.go          # OpenAI Chat Completions (+ tool calling)
+    ├── openresponses.go   # OpenAI Responses API (+ tool calling)
+    ├── anthropic.go       # Anthropic (+ tool calling)
+    ├── gemini.go          # Gemini (+ tool calling)
+    ├── vertexai.go        # Vertex AI (+ tool calling)
+    └── openclaw.go        # OpenClaw Gateway
 ```
 
 ## Dependencies
@@ -278,6 +305,7 @@ chatchain/
 - [anthropic-sdk-go](https://github.com/anthropics/anthropic-sdk-go) — Anthropic SDK
 - [go-genai](https://github.com/googleapis/go-genai) — Google Gemini SDK
 - [openclaw-go](https://github.com/a3tai/openclaw-go) — OpenClaw Gateway SDK
+- [go-sdk (MCP)](https://github.com/modelcontextprotocol/go-sdk) — Model Context Protocol SDK
 
 ## License
 

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ChatChain — CLI AI Chat Tool</title>
-  <meta name="description" content="A lightweight, cross-platform CLI tool to chat with any LLM from your terminal. Supports OpenAI, Anthropic, Gemini, file attachments, and streaming responses.">
+  <meta name="description" content="A lightweight, cross-platform CLI tool to chat with any LLM from your terminal. Supports OpenAI, Anthropic, Gemini, MCP tools, file attachments, markdown highlighting, and streaming responses.">
 
   <!-- Favicon -->
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
@@ -12,14 +12,14 @@
   <!-- Open Graph -->
   <meta property="og:type" content="website">
   <meta property="og:title" content="ChatChain">
-  <meta property="og:description" content="Talk to any LLM from your terminal. Supports OpenAI, Anthropic, Gemini, file attachments, and streaming responses.">
+  <meta property="og:description" content="Talk to any LLM from your terminal. Supports OpenAI, Anthropic, Gemini, MCP tools, markdown highlighting, and streaming responses.">
   <meta property="og:image" content="https://chatchain.io/og.png">
   <meta property="og:url" content="https://chatchain.io/">
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="ChatChain">
-  <meta name="twitter:description" content="Talk to any LLM from your terminal. Supports OpenAI, Anthropic, Gemini, file attachments, and streaming responses.">
+  <meta name="twitter:description" content="Talk to any LLM from your terminal. Supports OpenAI, Anthropic, Gemini, MCP tools, markdown highlighting, and streaming responses.">
   <meta name="twitter:image" content="https://chatchain.io/og.png">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -378,7 +378,7 @@
         <div class="feature-card">
           <span class="icon">&#127760;</span>
           <h3>Multi-Provider</h3>
-          <p>OpenAI, Anthropic, Gemini, Vertex AI, OpenAI Responses API, and OpenClaw. Switch with a single argument.</p>
+          <p>OpenAI, Anthropic, Gemini, Vertex AI, OpenAI Responses API, and OpenClaw. All with tool calling support.</p>
         </div>
         <div class="feature-card">
           <span class="icon">&#9889;</span>
@@ -404,6 +404,16 @@
           <span class="icon">&#128736;</span>
           <h3>Config File</h3>
           <p>Persistent API keys, default models, and custom provider aliases via <code>~/.chatchain.yaml</code>.</p>
+        </div>
+        <div class="feature-card">
+          <span class="icon">&#128268;</span>
+          <h3>MCP Tool Support</h3>
+          <p>Connect external MCP servers (filesystem, GitHub, databases) and let AI use them as tools during chat.</p>
+        </div>
+        <div class="feature-card">
+          <span class="icon">&#127912;</span>
+          <h3>Markdown Highlighting</h3>
+          <p>Headings, bold, italic, code, and tables are highlighted with ANSI colors in streaming output.</p>
         </div>
         <div class="feature-card">
           <span class="icon">&#129302;</span>
@@ -504,6 +514,9 @@
         <div><span class="comment"># Custom API endpoint</span></div>
         <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-u</span> <span class="string">https://your-proxy.com/v1</span> <span class="flag">-k</span> <span class="string">sk-xxx</span></div>
         <div></div>
+        <div><span class="comment"># With MCP tools</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-M</span> <span class="string">gpt-4o</span> <span class="flag">--mcp</span> <span class="string">"npx -y @modelcontextprotocol/server-filesystem /tmp"</span></div>
+        <div></div>
         <div><span class="comment"># List all providers and config aliases</span></div>
         <div><span class="prompt">$</span> <span class="cmd">chatchain</span> <span class="flag">-l</span></div>
         <div></div>
@@ -523,6 +536,7 @@
         <tr><td><code>--message</code></td><td><code>-m</code></td><td>Non-interactive: send a single message (use <code>-</code> to read from stdin)</td></tr>
         <tr><td><code>--system</code></td><td><code>-s</code></td><td>System prompt (omit value for interactive input)</td></tr>
         <tr><td><code>--list</code></td><td><code>-l</code></td><td>List configured providers, or models for a given provider</td></tr>
+        <tr><td><code>--mcp</code></td><td></td><td>MCP server (command or URL, repeatable)</td></tr>
         <tr><td><code>--config</code></td><td><code>-c</code></td><td>Path to config file (default: <code>~/.chatchain.yaml</code>)</td></tr>
         <tr><td><code>--verbose</code></td><td><code>-v</code></td><td>Verbose: print HTTP request/response bodies</td></tr>
       </table>
@@ -544,8 +558,13 @@
         <div>    <span class="dim">url:</span> <span class="string">https://api.deepseek.com/v1</span></div>
         <div>    <span class="dim">model:</span> <span class="string">deepseek-chat</span></div>
         <div>    <span class="dim">system:</span> <span class="string">You are a helpful coding assistant</span></div>
+        <div></div>
+        <div><span class="flag">mcp_servers</span><span class="dim">:</span>            <span class="comment"># MCP tool servers</span></div>
+        <div>  <span class="flag">filesystem</span><span class="dim">:</span></div>
+        <div>    <span class="dim">command:</span> <span class="string">npx</span></div>
+        <div>    <span class="dim">args:</span> <span class="string">["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]</span></div>
       </div>
-      <p>With this config, <code>chatchain deepseek -m "hello"</code> uses the OpenAI provider with DeepSeek's key, URL, and model. Config files are loaded from <code>~/</code> (global) and <code>./</code> (project-local), or via <code>-c &lt;path&gt;</code>.</p>
+      <p>With this config, <code>chatchain deepseek -m "hello"</code> uses the OpenAI provider with DeepSeek's key, URL, and model. MCP servers are connected automatically on startup. Config files are loaded from <code>~/</code> (global) and <code>./</code> (project-local), or via <code>-c &lt;path&gt;</code>.</p>
     </section>
 
     <section>
@@ -557,6 +576,7 @@
         <tr><td><code>/clear</code></td><td>Remove all attached files</td></tr>
         <tr><td><code>/save [path]</code></td><td>Save conversation to Markdown (default: <code>history.md</code>)</td></tr>
         <tr><td><code>/import [path]</code></td><td>Import conversation from a saved Markdown file (default: <code>history.md</code>)</td></tr>
+        <tr><td><code>/mcp</code></td><td>Show connected MCP servers and their tools</td></tr>
       </table>
     </section>
 
