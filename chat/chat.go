@@ -428,7 +428,9 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		// Use tool-call loop if provider supports tools and MCP tools are available
 		if isToolProvider && len(tools) > 0 {
 			var reply, thinking string
+			historyLen := len(history)
 			retryErr := retryWithCountdown(w, func() error {
+				history = history[:historyLen]
 				var err error
 				reply, thinking, err = executeWithTools(ctx, tp, mgr, &history, tools, w)
 				return err
