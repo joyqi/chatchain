@@ -115,10 +115,16 @@ func SaveHistory(messages []provider.Message, path string) error {
 			}
 			b.WriteString("\n")
 		case "assistant":
+			// Skip intermediate tool-call messages (no text content)
+			if len(msg.ToolCalls) > 0 && msg.Content == "" {
+				continue
+			}
 			if msg.Reasoning != "" {
 				fmt.Fprintf(&b, "Reasoning> %s\n\n", msg.Reasoning)
 			}
 			fmt.Fprintf(&b, "Assistant> %s\n\n", msg.Content)
+		case "tool":
+			// Tool result messages are not saved to history file
 		}
 	}
 

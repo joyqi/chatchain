@@ -235,7 +235,7 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 	if stopReason == "tool_use" && len(toolUseBlocks) > 0 {
 		var toolCalls []ToolCall
 		for _, tb := range toolUseBlocks {
-			var args map[string]any
+			args := map[string]any{}
 			if argsStr := tb.argsJSON.String(); argsStr != "" {
 				json.Unmarshal([]byte(argsStr), &args)
 			}

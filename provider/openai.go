@@ -255,7 +255,7 @@ func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Mess
 			if !ok {
 				continue
 			}
-			var args map[string]any
+			args := map[string]any{}
 			argsStr := acc.args.String()
 			if argsStr != "" {
 				json.Unmarshal([]byte(argsStr), &args)

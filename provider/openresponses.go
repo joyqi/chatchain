@@ -261,7 +261,7 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 		p.lastRawOutput = &openResponsesRawOutput{items: rawOutputItems}
 		var toolCalls []ToolCall
 		for itemID, acc := range fnCalls {
-			var args map[string]any
+			args := map[string]any{}
 			if argsStr := acc.args.String(); argsStr != "" {
 				json.Unmarshal([]byte(argsStr), &args)
 			}
