@@ -294,6 +294,29 @@ func expandPasteTags(input string, pf *pasteFilter) string {
 	return input
 }
 
+const maxRetries = 10
+
+func retryWithCountdown(w io.Writer, fn func() error) error {
+	err := fn()
+	if err == nil {
+		return nil
+	}
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		ErrorStyle.Fprintf(w, "Error: %v\n", err)
+		for sec := attempt; sec > 0; sec-- {
+			fmt.Fprintf(w, "\r\033[K")
+			DimStyle.Fprintf(w, "Retrying in %ds... (attempt %d/%d)", sec, attempt, maxRetries)
+			time.Sleep(1 * time.Second)
+		}
+		fmt.Fprintf(w, "\r\033[K")
+		err = fn()
+		if err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
 func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Message, mgr *mcpmgr.Manager, w io.Writer) error {
 	pf := &pasteFilter{r: os.Stdin}
 	rl, err := readline.NewEx(&readline.Config{
@@ -404,9 +427,14 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 
 		// Use tool-call loop if provider supports tools and MCP tools are available
 		if isToolProvider && len(tools) > 0 {
-			reply, thinking, err := executeWithTools(ctx, tp, mgr, &history, tools, w)
-			if err != nil {
-				ErrorStyle.Fprintf(w, "Error: %v\n\n", err)
+			var reply, thinking string
+			retryErr := retryWithCountdown(w, func() error {
+				var err error
+				reply, thinking, err = executeWithTools(ctx, tp, mgr, &history, tools, w)
+				return err
+			})
+			if retryErr != nil {
+				ErrorStyle.Fprintf(w, "Error: %v\n\n", retryErr)
 				history = history[:len(history)-1]
 				continue
 			}
@@ -417,9 +445,14 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		}
 
 		// Standard streaming path (no tools)
-		reply, thinking, streamErr := streamResponse(ctx, p, history, w)
-		if streamErr != nil {
-			ErrorStyle.Fprintf(w, "Error: %v\n\n", streamErr)
+		var reply, thinking string
+		retryErr := retryWithCountdown(w, func() error {
+			var err error
+			reply, thinking, err = streamResponse(ctx, p, history, w)
+			return err
+		})
+		if retryErr != nil {
+			ErrorStyle.Fprintf(w, "Error: %v\n\n", retryErr)
 			history = history[:len(history)-1]
 			continue
 		}
