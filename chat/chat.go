@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -296,10 +297,32 @@ func expandPasteTags(input string, pf *pasteFilter) string {
 
 const maxRetries = 10
 
+// http4xxPattern matches HTTP 4xx status codes (except 429) in error messages.
+var http4xxPattern = regexp.MustCompile(`\b4\d{2}\b`)
+
+// isRetryable returns true if the error is likely transient and worth retrying.
+// Non-retryable: io.EOF, HTTP 4xx (except 429 rate limit).
+func isRetryable(err error) bool {
+	if err == io.EOF {
+		return false
+	}
+	msg := err.Error()
+	matches := http4xxPattern.FindAllString(msg, -1)
+	for _, m := range matches {
+		if m != "429" {
+			return false
+		}
+	}
+	return true
+}
+
 func retryWithCountdown(w io.Writer, fn func() error) error {
 	err := fn()
 	if err == nil {
 		return nil
+	}
+	if !isRetryable(err) {
+		return err
 	}
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		ErrorStyle.Fprintf(w, "Error: %v\n", err)
@@ -312,6 +335,9 @@ func retryWithCountdown(w io.Writer, fn func() error) error {
 		err = fn()
 		if err == nil {
 			return nil
+		}
+		if !isRetryable(err) {
+			return err
 		}
 	}
 	return err
