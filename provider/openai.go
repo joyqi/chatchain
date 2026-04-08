@@ -12,16 +12,26 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/shared"
 )
 
 // Compile-time check that OpenAIProvider implements ToolProvider.
 var _ ToolProvider = (*OpenAIProvider)(nil)
+var _ RawContentProvider = (*OpenAIProvider)(nil)
 
 type OpenAIProvider struct {
-	client      *openai.Client
-	model       string
-	temperature *float64
+	client               *openai.Client
+	model                string
+	temperature          *float64
+	lastAssistantRawJSON string // raw JSON of last assistant message with tool calls
+}
+
+func (p *OpenAIProvider) LastRawContent() any {
+	if p.lastAssistantRawJSON == "" {
+		return nil
+	}
+	return p.lastAssistantRawJSON
 }
 
 func NewOpenAI(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *OpenAIProvider {
@@ -92,20 +102,26 @@ func (p *OpenAIProvider) buildParams(messages []Message) openai.ChatCompletionNe
 			}
 		case "assistant":
 			if len(msg.ToolCalls) > 0 {
-				assistant := openai.AssistantMessage(msg.Content)
-				for _, tc := range msg.ToolCalls {
-					argsJSON, _ := json.Marshal(tc.Arguments)
-					assistant.OfAssistant.ToolCalls = append(assistant.OfAssistant.ToolCalls, openai.ChatCompletionMessageToolCallUnionParam{
-						OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
-							ID: tc.ID,
-							Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
-								Name:      tc.Name,
-								Arguments: string(argsJSON),
+				// If raw assistant JSON is available, replay it verbatim.
+				// This preserves provider-specific fields (e.g. kimi reasoning).
+				if rawJSON, ok := msg.RawContent.(string); ok && rawJSON != "" {
+					params.Messages = append(params.Messages, param.Override[openai.ChatCompletionMessageParamUnion](json.RawMessage(rawJSON)))
+				} else {
+					assistant := openai.AssistantMessage(msg.Content)
+					for _, tc := range msg.ToolCalls {
+						argsJSON, _ := json.Marshal(tc.Arguments)
+						assistant.OfAssistant.ToolCalls = append(assistant.OfAssistant.ToolCalls, openai.ChatCompletionMessageToolCallUnionParam{
+							OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
+								ID: tc.ID,
+								Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
+									Name:      tc.Name,
+									Arguments: string(argsJSON),
+								},
 							},
-						},
-					})
+						})
+					}
+					params.Messages = append(params.Messages, assistant)
 				}
-				params.Messages = append(params.Messages, assistant)
 			} else {
 				params.Messages = append(params.Messages, openai.AssistantMessage(msg.Content))
 			}
@@ -223,13 +239,25 @@ func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Mess
 	// If model requested tool calls, parse and return them
 	if finishReason == "tool_calls" && len(toolCallMap) > 0 {
 		var toolCalls []ToolCall
+		// Build raw tool_calls array for replay
+		type rawToolCall struct {
+			ID       string `json:"id"`
+			Type     string `json:"type"`
+			Function struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			} `json:"function"`
+		}
+		var rawTCs []rawToolCall
+
 		for i := 0; i < len(toolCallMap); i++ {
 			acc, ok := toolCallMap[i]
 			if !ok {
 				continue
 			}
 			var args map[string]any
-			if argsStr := acc.args.String(); argsStr != "" {
+			argsStr := acc.args.String()
+			if argsStr != "" {
 				json.Unmarshal([]byte(argsStr), &args)
 			}
 			toolCalls = append(toolCalls, ToolCall{
@@ -237,9 +265,31 @@ func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Mess
 				Name:      acc.name,
 				Arguments: args,
 			})
+			rawTCs = append(rawTCs, rawToolCall{
+				ID:   acc.id,
+				Type: "function",
+				Function: struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				}{Name: acc.name, Arguments: argsStr},
+			})
 		}
+
+		// Save raw assistant message JSON (preserves reasoning for kimi etc.)
+		rawMsg := map[string]any{
+			"role":       "assistant",
+			"content":    full,
+			"tool_calls": rawTCs,
+		}
+		if thinkFull != "" {
+			rawMsg["reasoning"] = thinkFull
+		}
+		rawJSON, _ := json.Marshal(rawMsg)
+		p.lastAssistantRawJSON = string(rawJSON)
+
 		return full, thinkFull, toolCalls, nil
 	}
+	p.lastAssistantRawJSON = ""
 
 	return full, thinkFull, nil, nil
 }

@@ -17,11 +17,20 @@ import (
 )
 
 var _ ToolProvider = (*OpenResponsesProvider)(nil)
+var _ RawContentProvider = (*OpenResponsesProvider)(nil)
+
+// openResponsesRawOutput stores the raw output items from a response.completed event.
+// These are replayed verbatim as input items in the next round to preserve
+// provider-specific fields like reasoning content that the SDK doesn't expose.
+type openResponsesRawOutput struct {
+	items []json.RawMessage
+}
 
 type OpenResponsesProvider struct {
-	client      *openai.Client
-	model       string
-	temperature *float64
+	client           *openai.Client
+	model            string
+	temperature      *float64
+	lastRawOutput    *openResponsesRawOutput
 }
 
 func NewOpenResponses(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *OpenResponsesProvider {
@@ -41,6 +50,10 @@ func NewOpenResponses(apiKey, baseURL, model string, temperature *float64, httpC
 		model:       model,
 		temperature: temperature,
 	}
+}
+
+func (p *OpenResponsesProvider) LastRawContent() any {
+	return p.lastRawOutput
 }
 
 func (p *OpenResponsesProvider) ListModels(ctx context.Context) ([]string, error) {
@@ -98,14 +111,25 @@ func (p *OpenResponsesProvider) buildParams(messages []Message) responses.Respon
 			}
 		case "assistant":
 			if len(msg.ToolCalls) > 0 {
-				// Add text message if present
-				if msg.Content != "" {
-					input = append(input, responses.ResponseInputItemParamOfMessage(msg.Content, responses.EasyInputMessageRoleAssistant))
-				}
-				// Add each tool call as a function_call input item
-				for _, tc := range msg.ToolCalls {
-					argsJSON, _ := json.Marshal(tc.Arguments)
-					input = append(input, responses.ResponseInputItemParamOfFunctionCall(string(argsJSON), tc.ID, tc.Name))
+				// If raw output items are available, replay them verbatim.
+				// This preserves provider-specific fields (e.g. kimi reasoning items).
+				// Skip "message" type items — some APIs (kimi) reject them on replay.
+				if raw, ok := msg.RawContent.(*openResponsesRawOutput); ok && raw != nil {
+					for _, item := range raw.items {
+						var peek struct{ Type string `json:"type"` }
+						if json.Unmarshal(item, &peek) == nil && peek.Type == "message" {
+							continue
+						}
+						input = append(input, param.Override[responses.ResponseInputItemUnionParam](item))
+					}
+				} else {
+					if msg.Content != "" {
+						input = append(input, responses.ResponseInputItemParamOfMessage(msg.Content, responses.EasyInputMessageRoleAssistant))
+					}
+					for _, tc := range msg.ToolCalls {
+						argsJSON, _ := json.Marshal(tc.Arguments)
+						input = append(input, responses.ResponseInputItemParamOfFunctionCall(string(argsJSON), tc.ID, tc.Name))
+					}
 				}
 			} else {
 				input = append(input, responses.ResponseInputItemParamOfMessage(msg.Content, responses.EasyInputMessageRoleAssistant))
@@ -168,6 +192,7 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 		args   strings.Builder
 	}
 	fnCalls := make(map[string]*fnCallAcc)
+	var rawOutputItems []json.RawMessage
 
 	for stream.Next() {
 		evt := stream.Current()
@@ -198,8 +223,9 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 			acc.args.Reset()
 			acc.args.WriteString(done.Arguments)
 		case "response.output_item.done":
-			// Extract call_id and name from the completed output item
 			item := evt.AsResponseOutputItemDone()
+			// Capture every completed output item as raw JSON for replay
+			rawOutputItems = append(rawOutputItems, json.RawMessage(item.Item.RawJSON()))
 			if item.Item.Type == "function_call" {
 				acc, ok := fnCalls[item.Item.ID]
 				if !ok {
@@ -231,14 +257,20 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 	}
 
 	if len(fnCalls) > 0 {
+		// Save raw output for replay
+		p.lastRawOutput = &openResponsesRawOutput{items: rawOutputItems}
 		var toolCalls []ToolCall
-		for _, acc := range fnCalls {
+		for itemID, acc := range fnCalls {
 			var args map[string]any
 			if argsStr := acc.args.String(); argsStr != "" {
 				json.Unmarshal([]byte(argsStr), &args)
 			}
+			id := acc.callID
+			if id == "" {
+				id = itemID
+			}
 			toolCalls = append(toolCalls, ToolCall{
-				ID:        acc.callID,
+				ID:        id,
 				Name:      acc.name,
 				Arguments: args,
 			})
@@ -246,5 +278,6 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 		return full, thinkFull, toolCalls, nil
 	}
 
+	p.lastRawOutput = nil
 	return full, thinkFull, nil, nil
 }
