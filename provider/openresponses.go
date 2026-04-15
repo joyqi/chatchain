@@ -265,18 +265,30 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 	}
 
 	if len(fnCalls) > 0 {
-		// Save raw output for replay
-		p.lastRawOutput = &openResponsesRawOutput{items: rawOutputItems}
+		// Build toolCalls in output-item order, deduping by call_id.
+		// Some upstreams (e.g. zenmux → Bedrock) emit multiple output items
+		// that share a call_id; appending a tool_result per item produces
+		// duplicate tool_result blocks for the same tool_use, which
+		// Anthropic rejects. Drop the duplicate function_call items from
+		// the raw output we replay, so the assistant's tool_use blocks
+		// stay in 1:1 correspondence with tool_result messages.
 		var toolCalls []ToolCall
+		seenCallIDs := make(map[string]bool)
+		keptItemIDs := make(map[string]bool)
 		for _, itemID := range fnCallOrder {
 			acc := fnCalls[itemID]
-			args := map[string]any{}
-			if argsStr := acc.args.String(); argsStr != "" {
-				json.Unmarshal([]byte(argsStr), &args)
-			}
 			id := acc.callID
 			if id == "" {
 				id = itemID
+			}
+			if seenCallIDs[id] {
+				continue
+			}
+			seenCallIDs[id] = true
+			keptItemIDs[itemID] = true
+			args := map[string]any{}
+			if argsStr := acc.args.String(); argsStr != "" {
+				json.Unmarshal([]byte(argsStr), &args)
 			}
 			toolCalls = append(toolCalls, ToolCall{
 				ID:        id,
@@ -284,6 +296,22 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 				Arguments: args,
 			})
 		}
+		// Filter rawOutputItems: drop any function_call items whose itemID
+		// was deduped out, so replay stays in sync with toolCalls.
+		filteredRaw := make([]json.RawMessage, 0, len(rawOutputItems))
+		for _, item := range rawOutputItems {
+			var peek struct {
+				Type string `json:"type"`
+				ID   string `json:"id"`
+			}
+			if json.Unmarshal(item, &peek) == nil && peek.Type == "function_call" {
+				if !keptItemIDs[peek.ID] {
+					continue
+				}
+			}
+			filteredRaw = append(filteredRaw, item)
+		}
+		p.lastRawOutput = &openResponsesRawOutput{items: filteredRaw}
 		return full, thinkFull, toolCalls, nil
 	}
 
