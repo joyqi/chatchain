@@ -192,18 +192,14 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 		args   strings.Builder
 	}
 	fnCalls := make(map[string]*fnCallAcc)
-	var fnCallOrder []string // preserves the order tool_use items first appear in the stream
+	// fnCallOrder is populated strictly from response.output_item.done so it
+	// stays in lock-step with rawOutputItems. This guarantees the tool_result
+	// messages we append later are in the same order as the replayed
+	// function_call items, which Anthropic-via-OpenAI-Responses gateways
+	// require ("tool_use ids were found without tool_result blocks
+	// immediately after").
+	var fnCallOrder []string
 	var rawOutputItems []json.RawMessage
-
-	ensureFnCall := func(itemID string) *fnCallAcc {
-		if acc, ok := fnCalls[itemID]; ok {
-			return acc
-		}
-		acc := &fnCallAcc{}
-		fnCalls[itemID] = acc
-		fnCallOrder = append(fnCallOrder, itemID)
-		return acc
-	}
 
 	for stream.Next() {
 		evt := stream.Current()
@@ -217,11 +213,19 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 			full += evt.Delta
 		case "response.function_call_arguments.delta":
 			delta := evt.AsResponseFunctionCallArgumentsDelta()
-			acc := ensureFnCall(delta.ItemID)
+			acc, ok := fnCalls[delta.ItemID]
+			if !ok {
+				acc = &fnCallAcc{}
+				fnCalls[delta.ItemID] = acc
+			}
 			acc.args.WriteString(delta.Delta)
 		case "response.function_call_arguments.done":
 			done := evt.AsResponseFunctionCallArgumentsDone()
-			acc := ensureFnCall(done.ItemID)
+			acc, ok := fnCalls[done.ItemID]
+			if !ok {
+				acc = &fnCallAcc{}
+				fnCalls[done.ItemID] = acc
+			}
 			acc.name = done.Name
 			acc.args.Reset()
 			acc.args.WriteString(done.Arguments)
@@ -230,11 +234,16 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 			// Capture every completed output item as raw JSON for replay
 			rawOutputItems = append(rawOutputItems, json.RawMessage(item.Item.RawJSON()))
 			if item.Item.Type == "function_call" {
-				acc := ensureFnCall(item.Item.ID)
+				acc, ok := fnCalls[item.Item.ID]
+				if !ok {
+					acc = &fnCallAcc{}
+					fnCalls[item.Item.ID] = acc
+				}
 				acc.callID = item.Item.CallID
 				if item.Item.Name != "" {
 					acc.name = item.Item.Name
 				}
+				fnCallOrder = append(fnCallOrder, item.Item.ID)
 			}
 		case "response.completed":
 			// Stream complete
