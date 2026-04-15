@@ -173,6 +173,12 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 				},
 			})
 		}
+		// Disable parallel tool calls: when proxied to Bedrock/Anthropic via
+		// a Responses-compatible gateway (e.g. zenmux), parallel tool_use
+		// blocks get translated in ways that confuse the downstream
+		// validator (orphan tool_use, duplicate tool_result, etc.).
+		// Forcing sequential calls avoids the entire class of issues.
+		params.ParallelToolCalls = param.NewOpt(false)
 	}
 
 	stream := p.client.Responses.NewStreaming(ctx, params)
