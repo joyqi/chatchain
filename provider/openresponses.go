@@ -192,7 +192,18 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 		args   strings.Builder
 	}
 	fnCalls := make(map[string]*fnCallAcc)
+	var fnCallOrder []string // preserves the order tool_use items first appear in the stream
 	var rawOutputItems []json.RawMessage
+
+	ensureFnCall := func(itemID string) *fnCallAcc {
+		if acc, ok := fnCalls[itemID]; ok {
+			return acc
+		}
+		acc := &fnCallAcc{}
+		fnCalls[itemID] = acc
+		fnCallOrder = append(fnCallOrder, itemID)
+		return acc
+	}
 
 	for stream.Next() {
 		evt := stream.Current()
@@ -206,19 +217,11 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 			full += evt.Delta
 		case "response.function_call_arguments.delta":
 			delta := evt.AsResponseFunctionCallArgumentsDelta()
-			acc, ok := fnCalls[delta.ItemID]
-			if !ok {
-				acc = &fnCallAcc{}
-				fnCalls[delta.ItemID] = acc
-			}
+			acc := ensureFnCall(delta.ItemID)
 			acc.args.WriteString(delta.Delta)
 		case "response.function_call_arguments.done":
 			done := evt.AsResponseFunctionCallArgumentsDone()
-			acc, ok := fnCalls[done.ItemID]
-			if !ok {
-				acc = &fnCallAcc{}
-				fnCalls[done.ItemID] = acc
-			}
+			acc := ensureFnCall(done.ItemID)
 			acc.name = done.Name
 			acc.args.Reset()
 			acc.args.WriteString(done.Arguments)
@@ -227,11 +230,7 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 			// Capture every completed output item as raw JSON for replay
 			rawOutputItems = append(rawOutputItems, json.RawMessage(item.Item.RawJSON()))
 			if item.Item.Type == "function_call" {
-				acc, ok := fnCalls[item.Item.ID]
-				if !ok {
-					acc = &fnCallAcc{}
-					fnCalls[item.Item.ID] = acc
-				}
+				acc := ensureFnCall(item.Item.ID)
 				acc.callID = item.Item.CallID
 				if item.Item.Name != "" {
 					acc.name = item.Item.Name
@@ -260,7 +259,8 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 		// Save raw output for replay
 		p.lastRawOutput = &openResponsesRawOutput{items: rawOutputItems}
 		var toolCalls []ToolCall
-		for itemID, acc := range fnCalls {
+		for _, itemID := range fnCallOrder {
+			acc := fnCalls[itemID]
 			args := map[string]any{}
 			if argsStr := acc.args.String(); argsStr != "" {
 				json.Unmarshal([]byte(argsStr), &args)
