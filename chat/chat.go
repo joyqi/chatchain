@@ -463,7 +463,7 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			})
 			if retryErr != nil {
 				ErrorStyle.Fprintf(w, "Error: %v\n\n", retryErr)
-				history = history[:len(history)-1]
+				history = history[:historyLen-1]
 				continue
 			}
 			fmt.Fprintln(w)
