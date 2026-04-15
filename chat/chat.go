@@ -63,7 +63,7 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 	tools := mgr.Tools()
 
 	if isToolProvider && len(tools) > 0 {
-		reply, _, err := executeWithTools(ctx, tp, mgr, &messages, tools, w)
+		reply, _, err := executeWithTools(ctx, tp, mgr, &messages, tools, w, true)
 		if err != nil {
 			return err
 		}
@@ -458,7 +458,7 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			retryErr := retryWithCountdown(w, func() error {
 				history = history[:historyLen]
 				var err error
-				reply, thinking, err = executeWithTools(ctx, tp, mgr, &history, tools, w)
+				reply, thinking, err = executeWithTools(ctx, tp, mgr, &history, tools, w, false)
 				return err
 			})
 			if retryErr != nil {
@@ -564,8 +564,9 @@ func streamResponse(ctx context.Context, p provider.Provider, history []provider
 
 // executeWithTools runs the tool-call loop: calls the model, executes any tool
 // calls via MCP, feeds results back, and repeats until the model produces a
-// final text response.
-func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr.Manager, history *[]provider.Message, tools []provider.ToolDef, w io.Writer) (string, string, error) {
+// final text response. When quiet=true, no spinner/prefixes/reasoning/markdown
+// are rendered — only the final text reply is returned via the content value.
+func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr.Manager, history *[]provider.Message, tools []provider.ToolDef, w io.Writer, quiet bool) (string, string, error) {
 	// Persistent spinner across all tool-call rounds
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
 	s.Writer = os.Stderr
@@ -575,6 +576,9 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 	var allToolNames []string
 
 	startSpinner := func(suffix string) {
+		if quiet {
+			return
+		}
 		s.Suffix = " " + suffix
 		if !spinnerRunning {
 			s.Start()
@@ -626,7 +630,7 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 			if len(toolCalls) > 0 {
 				goto handleToolCalls
 			}
-			if totalCalls > 0 {
+			if totalCalls > 0 && !quiet {
 				printToolSummary(w, allToolNames, toolErrors)
 			}
 			return "", "", readErr
@@ -635,12 +639,16 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 		stopSpinner()
 
 		if hasReasoning {
-			DimStyle.Fprint(w, "Reasoning> ")
-			os.Stdout.WriteString("\033[2m")
-			os.Stdout.Write(firstChunk[:firstN])
-			io.Copy(os.Stdout, reasonPr)
-			os.Stdout.WriteString("\033[0m")
-			fmt.Fprintln(w)
+			if quiet {
+				io.Copy(io.Discard, reasonPr)
+			} else {
+				DimStyle.Fprint(w, "Reasoning> ")
+				os.Stdout.WriteString("\033[2m")
+				os.Stdout.Write(firstChunk[:firstN])
+				io.Copy(os.Stdout, reasonPr)
+				os.Stdout.WriteString("\033[0m")
+				fmt.Fprintln(w)
+			}
 
 			firstN, readErr = contentPr.Read(firstChunk)
 			if readErr != nil {
@@ -652,7 +660,7 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 					goto handleToolCalls
 				}
 				// Reasoning-only response
-				if totalCalls > 0 {
+				if totalCalls > 0 && !quiet {
 					printToolSummary(w, allToolNames, toolErrors)
 				}
 				return reasoning, reasoning, nil
@@ -661,25 +669,29 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 
 		// Stream content to display
 		if firstN > 0 {
-			AssistantStyle.Fprint(w, "Assistant> ")
-			mdw := newMarkdownWriter(os.Stdout)
-			mdw.Write(firstChunk[:firstN])
-			io.Copy(mdw, contentPr)
-			mdw.Flush()
+			if quiet {
+				io.Copy(io.Discard, contentPr)
+			} else {
+				AssistantStyle.Fprint(w, "Assistant> ")
+				mdw := newMarkdownWriter(os.Stdout)
+				mdw.Write(firstChunk[:firstN])
+				io.Copy(mdw, contentPr)
+				mdw.Flush()
+			}
 		} else {
 			io.Copy(io.Discard, contentPr)
 		}
 		<-done
 
 		if streamErr != nil {
-			if totalCalls > 0 {
+			if totalCalls > 0 && !quiet {
 				printToolSummary(w, allToolNames, toolErrors)
 			}
 			return "", "", streamErr
 		}
 
 		if len(toolCalls) == 0 {
-			if totalCalls > 0 {
+			if totalCalls > 0 && !quiet {
 				fmt.Fprintln(w)
 				printToolSummary(w, allToolNames, toolErrors)
 			}
@@ -687,7 +699,7 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 		}
 
 	handleToolCalls:
-		if content != "" {
+		if content != "" && !quiet {
 			fmt.Fprintln(w)
 		}
 

@@ -18,16 +18,17 @@ import (
 )
 
 var (
-	apiKey       string
-	baseURL      string
-	model        string
-	temperature  float64
-	chatMessage  string
-	systemPrompt string
-	verbose      bool
-	configPath   string
-	list         bool
-	mcpFlags     []string
+	apiKey            string
+	baseURL           string
+	model             string
+	temperature       float64
+	chatMessage       string
+	systemPrompt      string
+	systemInteractive bool
+	verbose           bool
+	configPath        string
+	list              bool
+	mcpFlags          []string
 )
 
 var rootCmd = &cobra.Command{
@@ -155,10 +156,9 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
-		// Interactive system prompt input when -s is used without a value
 		systemPrompt = strings.TrimSpace(systemPrompt)
 		var importedHistory []provider.Message
-		if cmd.Flags().Changed("system") && systemPrompt == "" {
+		if systemInteractive {
 			sp, imported, err := chat.ReadSystemPrompt(os.Stdout)
 			if err != nil {
 				return err
@@ -177,8 +177,8 @@ func init() {
 	rootCmd.Flags().StringVarP(&model, "model", "M", "", "Model name (optional, interactive selection if omitted)")
 	rootCmd.Flags().Float64VarP(&temperature, "temperature", "t", 0, "Sampling temperature (0.0-2.0)")
 	rootCmd.Flags().StringVarP(&chatMessage, "message", "m", "", "Send a single message and print the response (non-interactive, use '-' to read from stdin)")
-	rootCmd.Flags().StringVarP(&systemPrompt, "system", "s", "", "System prompt (omit value for interactive input)")
-	rootCmd.Flags().Lookup("system").NoOptDefVal = " "
+	rootCmd.Flags().StringVarP(&systemPrompt, "system", "s", "", "System prompt")
+	rootCmd.Flags().BoolVarP(&systemInteractive, "system-input", "S", false, "Enter system prompt interactively")
 	rootCmd.Flags().BoolVarP(&list, "list", "l", false, "List configured providers, or models for a given provider")
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print request and response bodies for debugging")
 	rootCmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to config file (default: ~/.chatchain.yaml)")

@@ -91,7 +91,8 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses|openclaw] [flags]
 | `--model` | `-M` | Model name (skip interactive selection) |
 | `--temperature` | `-t` | Sampling temperature, 0.0-2.0 (omit to use provider default) |
 | `--message` | `-m` | Send a single message and print the response (non-interactive, use `-` to read from stdin) |
-| `--system` | `-s` | System prompt (omit value for interactive input) |
+| `--system` | `-s` | System prompt |
+| `--system-input` | `-S` | Enter system prompt interactively |
 | `--list` | `-l` | List configured providers, or models for a given provider |
 | `--mcp` | | MCP server (command string or URL, repeatable) |
 | `--config` | `-c` | Path to config file (default: `~/.chatchain.yaml`) |
@@ -232,7 +233,7 @@ chatchain openclaw -u ws://localhost:18789/ws -M main -m "Hello"
 chatchain openai -M gpt-4o -s 'You are a helpful translator' -m "Translate to French: hello"
 
 # Interactive system prompt input (prompts System> after model selection)
-chatchain openai -M gpt-4o -s
+chatchain openai -M gpt-4o -S
 
 # Non-interactive mode (requires -M)
 chatchain openai -M gpt-4o -m "Explain quicksort in one paragraph"
