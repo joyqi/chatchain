@@ -147,13 +147,26 @@ providers:
 mcp_servers:
   filesystem:
     command: npx
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "${workspaceFolder}"]
 
   github:
     url: https://mcp.example.com/sse
     headers:
-      Authorization: "Bearer ghp_xxx"
+      Authorization: "Bearer ${env:GITHUB_TOKEN}"
 ```
+
+#### MCP Variable Expansion
+
+MCP server config values (`command`, `args`, `url`, `env`, `headers`) support VS Code-style variable expansion:
+
+| Variable | Expands to |
+|----------|-----------|
+| `${workspaceFolder}` / `${cwd}` | Current working directory |
+| `${userHome}` | User home directory |
+| `${pathSeparator}` / `${/}` | OS path separator (`/` or `\`) |
+| `${env:VAR}` | Value of environment variable `VAR` |
+
+Unknown variables are left untouched.
 
 With this config:
 

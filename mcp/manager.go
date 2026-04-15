@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -55,8 +56,9 @@ func NewManager(ctx context.Context, configs []ServerConfig, logf LogFunc) (*Man
 		Version: "1.0.0",
 	}, nil)
 
-	for _, cfg := range configs {
-		transport, err := makeTransport(cfg)
+	for _, raw := range configs {
+		cfg := expandServerConfig(raw)
+		transport, stderr, err := makeTransport(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("MCP server %q: %w", cfg.Name, err)
 		}
@@ -75,6 +77,9 @@ func NewManager(ctx context.Context, configs []ServerConfig, logf LogFunc) (*Man
 
 		session, err := client.Connect(ctx, transport, nil)
 		if err != nil {
+			if stderr != nil && stderr.Len() > 0 {
+				return nil, fmt.Errorf("MCP server %q: connect failed: %w\n  subprocess stderr:\n%s", cfg.Name, err, strings.TrimRight(stderr.String(), "\n"))
+			}
 			return nil, fmt.Errorf("MCP server %q: connect failed: %w", cfg.Name, err)
 		}
 
@@ -174,7 +179,9 @@ func (m *Manager) Close() {
 	}
 }
 
-func makeTransport(cfg ServerConfig) (mcp.Transport, error) {
+// makeTransport returns the transport and an optional stderr buffer
+// (non-nil for command transports) to surface subprocess errors on failure.
+func makeTransport(cfg ServerConfig) (mcp.Transport, *bytes.Buffer, error) {
 	if cfg.URL != "" {
 		if strings.HasPrefix(cfg.URL, "http://") || strings.HasPrefix(cfg.URL, "https://") {
 			transport := &mcp.StreamableClientTransport{
@@ -188,9 +195,9 @@ func makeTransport(cfg ServerConfig) (mcp.Transport, error) {
 					},
 				}
 			}
-			return transport, nil
+			return transport, nil, nil
 		}
-		return nil, fmt.Errorf("unsupported URL scheme: %s", cfg.URL)
+		return nil, nil, fmt.Errorf("unsupported URL scheme: %s", cfg.URL)
 	}
 
 	if cfg.Command != "" {
@@ -202,10 +209,12 @@ func makeTransport(cfg ServerConfig) (mcp.Transport, error) {
 				cmd.Env = append(cmd.Env, k+"="+v)
 			}
 		}
-		return &mcp.CommandTransport{Command: cmd}, nil
+		stderr := &bytes.Buffer{}
+		cmd.Stderr = stderr
+		return &mcp.CommandTransport{Command: cmd}, stderr, nil
 	}
 
-	return nil, fmt.Errorf("server config must have either command or url")
+	return nil, nil, fmt.Errorf("server config must have either command or url")
 }
 
 // headerTransport injects custom headers into every HTTP request.

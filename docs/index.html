@@ -562,9 +562,13 @@
         <div><span class="flag">mcp_servers</span><span class="dim">:</span>            <span class="comment"># MCP tool servers</span></div>
         <div>  <span class="flag">filesystem</span><span class="dim">:</span></div>
         <div>    <span class="dim">command:</span> <span class="string">npx</span></div>
-        <div>    <span class="dim">args:</span> <span class="string">["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]</span></div>
+        <div>    <span class="dim">args:</span> <span class="string">["-y", "@modelcontextprotocol/server-filesystem", "${workspaceFolder}"]</span></div>
+        <div>  <span class="flag">github</span><span class="dim">:</span></div>
+        <div>    <span class="dim">url:</span> <span class="string">https://mcp.example.com/sse</span></div>
+        <div>    <span class="dim">headers:</span></div>
+        <div>      <span class="dim">Authorization:</span> <span class="string">"Bearer ${env:GITHUB_TOKEN}"</span></div>
       </div>
-      <p>With this config, <code>chatchain deepseek -m "hello"</code> uses the OpenAI provider with DeepSeek's key, URL, and model. MCP servers are connected automatically on startup. Config files are loaded from <code>~/</code> (global) and <code>./</code> (project-local), or via <code>-c &lt;path&gt;</code>.</p>
+      <p>With this config, <code>chatchain deepseek -m "hello"</code> uses the OpenAI provider with DeepSeek's key, URL, and model. MCP servers are connected automatically on startup. MCP values support VS Code-style variables: <code>${workspaceFolder}</code>, <code>${userHome}</code>, <code>${pathSeparator}</code>, and <code>${env:VAR}</code>. Config files are loaded from <code>~/</code> (global) and <code>./</code> (project-local), or via <code>-c &lt;path&gt;</code>.</p>
     </section>
 
     <section>
