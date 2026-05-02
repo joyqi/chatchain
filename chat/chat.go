@@ -33,6 +33,51 @@ func SelectModel(models []string) (string, error) {
 	return result, nil
 }
 
+// reserveBottomLines guarantees at least n empty rows below the current
+// cursor position, scrolling the screen up if necessary. macOS Terminal.app
+// crashes (and ergochat/readline gets confused) when CJK IME composition
+// triggers line wrap at the absolute bottom row, so we keep the prompt away
+// from that edge.
+//
+// Uses IND (ESC D) instead of LF so the cursor column is preserved — IND
+// scrolls when at the bottom margin but only moves down otherwise; CUU
+// (ESC [ n A) never scrolls. Net effect: no-op when there is already enough
+// headroom, otherwise scroll the deficit and return the cursor to the same
+// logical position.
+func reserveBottomLines(n int) {
+	if n <= 0 {
+		return
+	}
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		b.WriteString("\033D")
+	}
+	fmt.Fprintf(&b, "\033[%dA", n)
+	os.Stdout.WriteString(b.String())
+}
+
+// bottomReserveListener returns a readline.Listener that recomputes the
+// required bottom headroom on every keystroke based on the current buffer
+// length and terminal width. Called both at prompt init (with line=nil) and
+// after each rune is written to the buffer.
+func bottomReserveListener() readline.Listener {
+	return func(line []rune, pos int, key rune) ([]rune, int, bool) {
+		w, _, err := term.GetSize(int(os.Stdout.Fd()))
+		if err != nil || w <= 0 {
+			w = 80
+		}
+		// Worst-case column estimate: every rune as 2 cols (CJK), plus
+		// a fixed allowance for the visible prompt.
+		cols := len(line)*2 + 8
+		lines := cols/w + 4
+		if lines > 40 {
+			lines = 40
+		}
+		reserveBottomLines(lines)
+		return nil, 0, false
+	}
+}
+
 func withSpinner(title string, action func()) {
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
 	s.Suffix = " " + title
@@ -86,6 +131,7 @@ func ReadSystemPrompt(w io.Writer) (string, []provider.Message, error) {
 		InterruptPrompt: "^C",
 		AutoComplete:    &importCompleter{},
 		Stdin:           pf,
+		Listener:        bottomReserveListener(),
 	})
 	if err != nil {
 		return "", nil, err
@@ -351,6 +397,7 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		EOFPrompt:       "exit",
 		AutoComplete:    &chatCompleter{},
 		Stdin:           pf,
+		Listener:        bottomReserveListener(),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize input: %w", err)
