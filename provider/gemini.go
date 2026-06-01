@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,11 +13,11 @@ import (
 
 var _ ToolProvider = (*GeminiProvider)(nil)
 var _ RawContentProvider = (*GeminiProvider)(nil)
+var _ UsageReporter = (*GeminiProvider)(nil)
 
 type GeminiProvider struct {
+	baseProvider
 	client           *genai.Client
-	model            string
-	temperature      *float64
 	lastModelContent *genai.Content
 }
 
@@ -37,14 +38,29 @@ func NewGemini(apiKey, baseURL, model string, temperature *float64, httpClient *
 	}
 
 	return &GeminiProvider{
-		client:      client,
-		model:       model,
-		temperature: temperature,
+		baseProvider: baseProvider{providerType: "gemini", model: model, temperature: temperature},
+		client:       client,
 	}
 }
 
 func (p *GeminiProvider) LastRawContent() any {
 	return p.lastModelContent
+}
+
+func (p *GeminiProvider) MarshalRawContent(v any) ([]byte, error) {
+	c, ok := v.(*genai.Content)
+	if !ok || c == nil {
+		return nil, fmt.Errorf("gemini: unexpected raw content type %T", v)
+	}
+	return json.Marshal(c)
+}
+
+func (p *GeminiProvider) UnmarshalRawContent(data []byte) (any, error) {
+	var c genai.Content
+	if err := json.Unmarshal(data, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
 }
 
 func (p *GeminiProvider) ListModels(ctx context.Context) ([]string, error) {
@@ -183,11 +199,17 @@ func (p *GeminiProvider) streamChatInternal(ctx context.Context, messages []Mess
 			reasoningClosed = true
 		}
 	}
+	p.lastUsageOK = false
 
 	for resp, err := range p.client.Models.GenerateContentStream(ctx, p.model, contents, cfg) {
 		if err != nil {
 			closeReasoning()
 			return full, thinkFull, nil, fmt.Errorf("stream error: %w", err)
+		}
+		if resp.UsageMetadata != nil {
+			p.lastInput = int(resp.UsageMetadata.PromptTokenCount)
+			p.lastOutput = int(resp.UsageMetadata.CandidatesTokenCount)
+			p.lastUsageOK = true
 		}
 		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
 			for _, part := range resp.Candidates[0].Content.Parts {
@@ -228,4 +250,3 @@ func (p *GeminiProvider) streamChatInternal(ctx context.Context, messages []Mess
 	p.lastModelContent = nil
 	return full, thinkFull, nil, nil
 }
-

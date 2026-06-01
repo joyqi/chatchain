@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"chatchain/provider"
 
@@ -31,6 +32,7 @@ type ServerStatus struct {
 	Connected bool     // whether connection succeeded
 	ToolCount int      // number of tools from this server
 	Tools     []string // tool names
+	Err       string   // connection/tool-listing error (empty when Connected)
 }
 
 // Manager manages connections to MCP servers and dispatches tool calls.
@@ -44,86 +46,124 @@ type Manager struct {
 // LogFunc is used for verbose logging without importing the chat package.
 type LogFunc func(format string, args ...any)
 
-// NewManager connects to all configured MCP servers and discovers their tools.
-// logf is called for verbose output; pass nil to suppress.
+// serverResult is one server's outcome from a concurrent connect attempt.
+type serverResult struct {
+	status  ServerStatus
+	session *mcp.ClientSession
+	tools   []provider.ToolDef
+	logs    []string // buffered verbose lines, flushed in config order
+}
+
+// NewManager connects to all configured MCP servers concurrently and discovers
+// their tools. Connection is graceful: a server that fails to connect or list
+// tools is marked (ServerStatus.Connected=false, .Err set) and skipped — the
+// remaining servers are still usable. logf is called for verbose output (per
+// server, emitted in config order); pass nil to suppress.
 func NewManager(ctx context.Context, configs []ServerConfig, logf LogFunc) (*Manager, error) {
 	m := &Manager{
 		toolIndex: make(map[string]int),
 	}
+	if len(configs) == 0 {
+		return m, nil
+	}
 
-	client := mcp.NewClient(&mcp.Implementation{
-		Name:    "chatchain",
-		Version: "1.0.0",
-	}, nil)
+	// Connect concurrently. Each goroutine writes its own results[i] slot
+	// (distinct indices → no shared-state race); we merge in config order
+	// afterwards to keep tool ordering and toolIndex deterministic.
+	results := make([]serverResult, len(configs))
+	var wg sync.WaitGroup
+	for i, raw := range configs {
+		wg.Add(1)
+		go func(i int, raw ServerConfig) {
+			defer wg.Done()
+			results[i] = connectServer(ctx, raw)
+		}(i, raw)
+	}
+	wg.Wait()
 
-	for _, raw := range configs {
-		cfg := expandServerConfig(raw)
-		transport, stderr, err := makeTransport(cfg)
-		if err != nil {
-			return nil, fmt.Errorf("MCP server %q: %w", cfg.Name, err)
-		}
-
-		endpoint := cfg.URL
-		if endpoint == "" {
-			endpoint = cfg.Command
-			if len(cfg.Args) > 0 {
-				endpoint += " " + strings.Join(cfg.Args, " ")
-			}
-		}
-
+	for _, r := range results {
 		if logf != nil {
-			logf("Connecting to MCP server: %s\n", cfg.Name)
-		}
-
-		session, err := client.Connect(ctx, transport, nil)
-		if err != nil {
-			if stderr != nil && stderr.Len() > 0 {
-				return nil, fmt.Errorf("MCP server %q: connect failed: %w\n  subprocess stderr:\n%s", cfg.Name, err, strings.TrimRight(stderr.String(), "\n"))
+			for _, line := range r.logs {
+				logf("%s", line)
 			}
-			return nil, fmt.Errorf("MCP server %q: connect failed: %w", cfg.Name, err)
 		}
-
+		if !r.status.Connected {
+			m.servers = append(m.servers, r.status)
+			continue
+		}
 		idx := len(m.sessions)
-		m.sessions = append(m.sessions, session)
-
-		status := ServerStatus{
-			Name:      cfg.Name,
-			Endpoint:  endpoint,
-			Connected: true,
-		}
-
-		for tool, err := range session.Tools(ctx, nil) {
-			if err != nil {
-				return nil, fmt.Errorf("MCP server %q: list tools: %w", cfg.Name, err)
-			}
-
-			// Convert InputSchema (any) to map[string]any
-			var schema map[string]any
-			if tool.InputSchema != nil {
-				if s, ok := tool.InputSchema.(map[string]any); ok {
-					schema = s
-				}
-			}
-
-			td := provider.ToolDef{
-				Name:        tool.Name,
-				Description: tool.Description,
-				InputSchema: schema,
-			}
+		m.sessions = append(m.sessions, r.session)
+		for _, td := range r.tools {
 			m.tools = append(m.tools, td)
-			m.toolIndex[tool.Name] = idx
-			status.ToolCount++
-			status.Tools = append(status.Tools, tool.Name)
-
-			if logf != nil {
-				logf("  Tool: %s — %s\n", tool.Name, tool.Description)
-			}
+			m.toolIndex[td.Name] = idx
 		}
-
-		m.servers = append(m.servers, status)
+		m.servers = append(m.servers, r.status)
 	}
 
 	return m, nil
+}
+
+// connectServer connects to a single MCP server and lists its tools. It never
+// returns an error: failures are captured in the returned status's Err field.
+func connectServer(ctx context.Context, raw ServerConfig) serverResult {
+	cfg := expandServerConfig(raw)
+	endpoint := cfg.URL
+	if endpoint == "" {
+		endpoint = cfg.Command
+		if len(cfg.Args) > 0 {
+			endpoint += " " + strings.Join(cfg.Args, " ")
+		}
+	}
+	res := serverResult{status: ServerStatus{Name: cfg.Name, Endpoint: endpoint}}
+	res.logs = append(res.logs, fmt.Sprintf("Connecting to MCP server: %s\n", cfg.Name))
+
+	transport, stderr, err := makeTransport(cfg)
+	if err != nil {
+		res.status.Err = err.Error()
+		return res
+	}
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "chatchain", Version: "1.0.0"}, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		msg := fmt.Sprintf("connect failed: %v", err)
+		if stderr != nil && stderr.Len() > 0 {
+			msg += "\n  subprocess stderr:\n" + strings.TrimRight(stderr.String(), "\n")
+		}
+		res.status.Err = msg
+		return res
+	}
+
+	res.session = session
+	res.status.Connected = true
+
+	for tool, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			// Tool listing failed: treat the whole server as unavailable.
+			session.Close()
+			return serverResult{
+				status: ServerStatus{Name: cfg.Name, Endpoint: endpoint, Err: fmt.Sprintf("list tools: %v", err)},
+				logs:   res.logs,
+			}
+		}
+
+		var schema map[string]any
+		if tool.InputSchema != nil {
+			if s, ok := tool.InputSchema.(map[string]any); ok {
+				schema = s
+			}
+		}
+		res.tools = append(res.tools, provider.ToolDef{
+			Name:        tool.Name,
+			Description: tool.Description,
+			InputSchema: schema,
+		})
+		res.status.ToolCount++
+		res.status.Tools = append(res.status.Tools, tool.Name)
+		res.logs = append(res.logs, fmt.Sprintf("  Tool: %s — %s\n", tool.Name, tool.Description))
+	}
+
+	return res
 }
 
 // Servers returns status info for all configured MCP servers.

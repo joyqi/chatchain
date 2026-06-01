@@ -16,11 +16,11 @@ import (
 
 // Compile-time check that AnthropicProvider implements ToolProvider.
 var _ ToolProvider = (*AnthropicProvider)(nil)
+var _ UsageReporter = (*AnthropicProvider)(nil)
 
 type AnthropicProvider struct {
-	client      *anthropic.Client
-	model       string
-	temperature *float64
+	baseProvider
+	client *anthropic.Client
 }
 
 func NewAnthropic(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *AnthropicProvider {
@@ -36,9 +36,8 @@ func NewAnthropic(apiKey, baseURL, model string, temperature *float64, httpClien
 
 	client := anthropic.NewClient(opts...)
 	return &AnthropicProvider{
-		client:      &client,
-		model:       model,
-		temperature: temperature,
+		baseProvider: baseProvider{providerType: "anthropic", model: model, temperature: temperature},
+		client:       &client,
 	}
 }
 
@@ -176,6 +175,7 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 	}
 
 	stream := p.client.Messages.NewStreaming(ctx, params)
+	p.lastUsageOK = false
 
 	var full, thinkFull string
 	reasoningClosed := false
@@ -188,8 +188,8 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 
 	// Track tool use blocks during streaming
 	type toolUseAcc struct {
-		id      string
-		name    string
+		id       string
+		name     string
 		argsJSON strings.Builder
 	}
 	var currentToolUse *toolUseAcc
@@ -199,6 +199,8 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 	for stream.Next() {
 		evt := stream.Current()
 		switch evt.Type {
+		case "message_start":
+			p.lastInput = int(evt.Message.Usage.InputTokens)
 		case "content_block_start":
 			if evt.ContentBlock.Type == "tool_use" {
 				currentToolUse = &toolUseAcc{
@@ -224,6 +226,8 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 			}
 		case "message_delta":
 			stopReason = string(evt.Delta.StopReason)
+			p.lastOutput = int(evt.Usage.OutputTokens)
+			p.lastUsageOK = true
 		}
 	}
 	closeReasoning()

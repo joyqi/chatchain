@@ -18,6 +18,7 @@ import (
 
 var _ ToolProvider = (*OpenResponsesProvider)(nil)
 var _ RawContentProvider = (*OpenResponsesProvider)(nil)
+var _ UsageReporter = (*OpenResponsesProvider)(nil)
 
 // openResponsesRawOutput stores the raw output items from a response.completed event.
 // These are replayed verbatim as input items in the next round to preserve
@@ -27,10 +28,9 @@ type openResponsesRawOutput struct {
 }
 
 type OpenResponsesProvider struct {
-	client           *openai.Client
-	model            string
-	temperature      *float64
-	lastRawOutput    *openResponsesRawOutput
+	baseProvider
+	client        *openai.Client
+	lastRawOutput *openResponsesRawOutput
 }
 
 func NewOpenResponses(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *OpenResponsesProvider {
@@ -46,14 +46,29 @@ func NewOpenResponses(apiKey, baseURL, model string, temperature *float64, httpC
 
 	client := openai.NewClient(opts...)
 	return &OpenResponsesProvider{
-		client:      &client,
-		model:       model,
-		temperature: temperature,
+		baseProvider: baseProvider{providerType: "openresponses", model: model, temperature: temperature},
+		client:       &client,
 	}
 }
 
 func (p *OpenResponsesProvider) LastRawContent() any {
 	return p.lastRawOutput
+}
+
+func (p *OpenResponsesProvider) MarshalRawContent(v any) ([]byte, error) {
+	r, ok := v.(*openResponsesRawOutput)
+	if !ok || r == nil {
+		return nil, fmt.Errorf("openresponses: unexpected raw content type %T", v)
+	}
+	return json.Marshal(r.items)
+}
+
+func (p *OpenResponsesProvider) UnmarshalRawContent(data []byte) (any, error) {
+	var items []json.RawMessage
+	if err := json.Unmarshal(data, &items); err != nil {
+		return nil, err
+	}
+	return &openResponsesRawOutput{items: items}, nil
 }
 
 func (p *OpenResponsesProvider) ListModels(ctx context.Context) ([]string, error) {
@@ -116,7 +131,9 @@ func (p *OpenResponsesProvider) buildParams(messages []Message) responses.Respon
 				// Skip "message" type items — some APIs (kimi) reject them on replay.
 				if raw, ok := msg.RawContent.(*openResponsesRawOutput); ok && raw != nil {
 					for _, item := range raw.items {
-						var peek struct{ Type string `json:"type"` }
+						var peek struct {
+							Type string `json:"type"`
+						}
 						if json.Unmarshal(item, &peek) == nil && peek.Type == "message" {
 							continue
 						}
@@ -176,6 +193,7 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 	}
 
 	stream := p.client.Responses.NewStreaming(ctx, params)
+	p.lastUsageOK = false
 	var full, thinkFull string
 	reasoningClosed := false
 	closeReasoning := func() {
@@ -254,7 +272,10 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 				}
 			}
 		case "response.completed":
-			// Stream complete
+			done := evt.AsResponseCompleted()
+			p.lastInput = int(done.Response.Usage.InputTokens)
+			p.lastOutput = int(done.Response.Usage.OutputTokens)
+			p.lastUsageOK = true
 		default:
 			if evt.Delta != "" && evt.Type == "" {
 				closeReasoning()

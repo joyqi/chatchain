@@ -9,11 +9,12 @@ import (
 
 // ProviderConfig holds per-provider settings from the config file.
 type ProviderConfig struct {
-	Type   string `yaml:"type"`
-	Key    string `yaml:"key"`
-	URL    string `yaml:"url"`
-	Model  string `yaml:"model"`
-	System string `yaml:"system"`
+	Type          string `yaml:"type"`
+	Key           string `yaml:"key"`
+	URL           string `yaml:"url"`
+	Model         string `yaml:"model"`
+	System        string `yaml:"system"`
+	ContextWindow string `yaml:"context_window"` // e.g. "200k", "1m", "128000"
 }
 
 // MCPServerConfig holds settings for an MCP tool server.

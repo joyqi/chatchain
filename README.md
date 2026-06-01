@@ -12,6 +12,8 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 - **File attachments** — send images, PDFs, and text files alongside messages with Tab-completion for file paths
 - **Non-interactive mode** — single message in, response out, pipe-friendly
 - **Conversation history** — full context maintained within a session
+- **Session persistence** — every interactive session is auto-saved (losslessly: messages, tool calls, attachments, reasoning) to `~/.chatchain/sessions/`. Resume with `/session` in chat or `--resume[=<id>]` at launch; auto-titled by the model after the first reply; `--no-save` runs ephemerally
+- **Switch model mid-chat** — `/model` re-selects the model without restarting
 - **System prompt** — set via flag or interactive input
 - **Config file** — persistent API keys, default models, custom provider aliases, and MCP server definitions via `~/.chatchain.yaml`
 - **Styled terminal output** — color-coded prompts
@@ -191,8 +193,10 @@ In interactive mode, the following commands are available:
 | `/file <path>` | Attach a file (image, PDF, or text). Supports Tab completion for file paths. |
 | `/files` | List all currently attached files |
 | `/clear` | Remove all attached files |
-| `/save [path]` | Save conversation history to a Markdown file (default: `history.md`) |
-| `/import [path]` | Import conversation history from a saved Markdown file (default: `history.md`) |
+| `/session` | List saved sessions and resume one |
+| `/model` | Switch the model for the current session |
+| `/context [size]` | Show/set the context window (e.g. `200k`, `1m`); no arg opens a picker |
+| `/compact [hint]` | Summarize older history to free context; optional hint guides what to keep |
 | `/mcp` | Show connected MCP servers and their tools |
 
 Attached files are sent with your next message, then cleared automatically.

@@ -19,11 +19,11 @@ import (
 // Compile-time check that OpenAIProvider implements ToolProvider.
 var _ ToolProvider = (*OpenAIProvider)(nil)
 var _ RawContentProvider = (*OpenAIProvider)(nil)
+var _ UsageReporter = (*OpenAIProvider)(nil)
 
 type OpenAIProvider struct {
+	baseProvider
 	client               *openai.Client
-	model                string
-	temperature          *float64
 	lastAssistantRawJSON string // raw JSON of last assistant message with tool calls
 }
 
@@ -32,6 +32,19 @@ func (p *OpenAIProvider) LastRawContent() any {
 		return nil
 	}
 	return p.lastAssistantRawJSON
+}
+
+// MarshalRawContent stores the raw assistant JSON (already valid JSON) verbatim.
+func (p *OpenAIProvider) MarshalRawContent(v any) ([]byte, error) {
+	s, ok := v.(string)
+	if !ok {
+		return nil, fmt.Errorf("openai: unexpected raw content type %T", v)
+	}
+	return []byte(s), nil
+}
+
+func (p *OpenAIProvider) UnmarshalRawContent(data []byte) (any, error) {
+	return string(data), nil
 }
 
 func NewOpenAI(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *OpenAIProvider {
@@ -47,9 +60,8 @@ func NewOpenAI(apiKey, baseURL, model string, temperature *float64, httpClient *
 
 	client := openai.NewClient(opts...)
 	return &OpenAIProvider{
-		client:      &client,
-		model:       model,
-		temperature: temperature,
+		baseProvider: baseProvider{providerType: "openai", model: model, temperature: temperature},
+		client:       &client,
 	}
 }
 
@@ -154,6 +166,9 @@ func (p *OpenAIProvider) StreamChatWithTools(ctx context.Context, messages []Mes
 
 func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Message, tools []ToolDef, w io.Writer, reasoningW io.WriteCloser) (string, string, []ToolCall, error) {
 	params := p.buildParams(messages)
+	// Request usage stats in the final stream chunk (off by default for streams).
+	params.StreamOptions = openai.ChatCompletionStreamOptionsParam{IncludeUsage: openai.Bool(true)}
+	p.lastUsageOK = false
 
 	// Add tool definitions if provided
 	if len(tools) > 0 {
@@ -187,6 +202,12 @@ func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Mess
 
 	for stream.Next() {
 		evt := stream.Current()
+		// The final chunk (IncludeUsage) carries token usage and no choices.
+		if evt.Usage.TotalTokens > 0 {
+			p.lastInput = int(evt.Usage.PromptTokens)
+			p.lastOutput = int(evt.Usage.CompletionTokens)
+			p.lastUsageOK = true
+		}
 		for _, choice := range evt.Choices {
 			if choice.FinishReason != "" {
 				finishReason = choice.FinishReason
