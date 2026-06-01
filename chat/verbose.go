@@ -89,4 +89,3 @@ func NewVerboseHTTPClient() *http.Client {
 		Transport: &VerboseTransport{},
 	}
 }
-
