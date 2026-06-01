@@ -14,6 +14,7 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 - **Non-interactive mode** — single message in, response out, pipe-friendly
 - **Conversation history** — full context maintained within a session
 - **Session persistence** — every interactive session is auto-saved (losslessly: messages, tool calls, attachments, reasoning) to `~/.chatchain/sessions/`. Resume with `/session` in chat or `--resume[=<id>]` at launch; auto-titled by the model after the first reply; `--no-save` runs ephemerally
+- **Context management** — live token accounting against the context window (configurable via `--context-window` / `/context`), with `/compact` LLM-summarization of older history (and automatic compaction before the window fills)
 - **Switch model mid-chat** — `/model` re-selects the model without restarting
 - **System prompt** — set via flag or interactive input
 - **Config file** — persistent API keys, default models, custom provider aliases, and MCP server definitions via `~/.chatchain.yaml`
@@ -192,13 +193,14 @@ the command is colorized inline (green once complete, cyan while a valid prefix)
 
 | Command | Description |
 |---------|-------------|
-| `/file <path>` | Attach a file (image, PDF, or text). Supports Tab completion for file paths. |
-| `/files` | List all currently attached files |
-| `/clear` | Remove all attached files |
+| `/file [path]` | Attach a file (image, PDF, or text). With no path, opens a file browser; with a path, supports Tab completion. |
+| `/files` | Manage attached files — multi-select (Space) and remove (Enter) |
 | `/session` | List saved sessions and resume one |
+| `/sessions` | Clean up saved sessions — multi-select and delete |
 | `/model` | Switch the model for the current session |
 | `/context [size]` | Show/set the context window (e.g. `200k`, `1m`); no arg opens a picker |
 | `/compact [hint]` | Summarize older history to free context; optional hint guides what to keep |
+| `/status` | Show provider, model, context usage, and last-turn token counts |
 | `/mcp` | Show connected MCP servers and their tools |
 
 Attached files are sent with your next message, then cleared automatically.

@@ -378,7 +378,7 @@
         <div class="feature-card">
           <span class="icon">&#127760;</span>
           <h3>Multi-Provider</h3>
-          <p>OpenAI, Anthropic, Gemini, Vertex AI, OpenAI Responses API, and OpenClaw. All with tool calling support.</p>
+          <p>OpenAI, Anthropic, Gemini, Vertex AI, and the OpenAI Responses API. All with tool calling support.</p>
         </div>
         <div class="feature-card">
           <span class="icon">&#9889;</span>
@@ -420,6 +420,21 @@
           <h3>Claude Code Plugin</h3>
           <p>Use as a Claude Code plugin to call other LLMs directly within your coding workflow.</p>
         </div>
+        <div class="feature-card">
+          <span class="icon">&#128190;</span>
+          <h3>Session Persistence</h3>
+          <p>Every chat is auto-saved losslessly to <code>~/.chatchain/sessions/</code>. Resume past sessions, switch models mid-chat, or run ephemerally.</p>
+        </div>
+        <div class="feature-card">
+          <span class="icon">&#128202;</span>
+          <h3>Context Management</h3>
+          <p>Live token accounting against the context window, with one-command LLM summarization to compact older history when it fills up.</p>
+        </div>
+        <div class="feature-card">
+          <span class="icon">&#9000;</span>
+          <h3>Slash Commands</h3>
+          <p>Type <code>/</code> for an auto-completing, highlighted command menu &mdash; attach files, manage sessions, compact context, and more.</p>
+        </div>
       </div>
     </section>
 
@@ -431,14 +446,13 @@
         <span class="provider-tag"><span class="dot" style="background:#4285f4"></span> Gemini</span>
         <span class="provider-tag"><span class="dot" style="background:#ea4335"></span> Vertex AI</span>
         <span class="provider-tag"><span class="dot" style="background:#10a37f"></span> OpenAI Responses</span>
-        <span class="provider-tag"><span class="dot" style="background:#8b5cf6"></span> OpenClaw</span>
       </div>
-      <p>Each provider uses its official SDK. Pass your API key via flag or environment variable (<code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, <code>GOOGLE_API_KEY</code>, <code>OPENCLAW_GATEWAY_TOKEN</code>).</p>
+      <p>Each provider uses its official SDK. Pass your API key via flag or environment variable (<code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, <code>GOOGLE_API_KEY</code>).</p>
     </section>
 
     <section>
       <h2>File Attachments</h2>
-      <p>Attach files in interactive mode with the <code>/file</code> command. Tab-completion helps you navigate paths. Files are sent with your next message, then cleared automatically.</p>
+      <p>Attach files in interactive mode with the <code>/file</code> command &mdash; pass a path (with Tab completion) or run it bare to open a file browser. Manage pending attachments with <code>/files</code> (multi-select to remove). Files are sent with your next message, then cleared automatically.</p>
       <div class="terminal">
         <div><span class="user-label">You></span> /file ~/photos/sunset.png</div>
         <div><span class="dim">  Attached: sunset.png (image/png, 245760 bytes)</span></div>
@@ -576,11 +590,14 @@
       <h2>Chat Commands</h2>
       <table>
         <tr><th>Command</th><th>Description</th></tr>
-        <tr><td><code>/file &lt;path&gt;</code></td><td>Attach a file (with Tab completion for paths)</td></tr>
-        <tr><td><code>/files</code></td><td>List currently attached files</td></tr>
-        <tr><td><code>/clear</code></td><td>Remove all attached files</td></tr>
-        <tr><td><code>/save [path]</code></td><td>Save conversation to Markdown (default: <code>history.md</code>)</td></tr>
-        <tr><td><code>/import [path]</code></td><td>Import conversation from a saved Markdown file (default: <code>history.md</code>)</td></tr>
+        <tr><td><code>/file [path]</code></td><td>Attach a file; with no path, opens a file browser</td></tr>
+        <tr><td><code>/files</code></td><td>Manage attachments &mdash; multi-select and remove</td></tr>
+        <tr><td><code>/session</code></td><td>List saved sessions and resume one</td></tr>
+        <tr><td><code>/sessions</code></td><td>Clean up saved sessions &mdash; multi-select and delete</td></tr>
+        <tr><td><code>/model</code></td><td>Switch the model for the current session</td></tr>
+        <tr><td><code>/context [size]</code></td><td>Show or set the context window (e.g. <code>200k</code>, <code>1m</code>)</td></tr>
+        <tr><td><code>/compact [hint]</code></td><td>Summarize older history to free up context</td></tr>
+        <tr><td><code>/status</code></td><td>Show provider, model, context usage, and last-turn tokens</td></tr>
         <tr><td><code>/mcp</code></td><td>Show connected MCP servers and their tools</td></tr>
       </table>
     </section>
@@ -598,7 +615,7 @@
       { type: 'cmd',   text: '$ chatchain openai -M gpt-4o' },
       { type: 'pause', ms: 600 },
       { type: 'system', text: 'Chat started. Press Ctrl+C to exit.' },
-      { type: 'system', text: 'Commands: /file <path>, /files, /clear, /save <path>, /import <path>' },
+      { type: 'system', text: 'Commands: /file [path], /files, /session, /model, /context, /compact, /status, /mcp' },
       { type: 'pause', ms: 400 },
       { type: 'blank' },
       { type: 'user',  text: 'What is ChatChain?' },
