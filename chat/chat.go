@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	mcpmgr "chatchain/mcp"
@@ -270,11 +271,11 @@ func (c *chatCompleter) Do(line []rune, pos int) ([][]rune, int) {
 
 	// Command completion (no space yet)
 	if !strings.Contains(text, " ") {
-		commands := []string{"/file ", "/files ", "/clear ", "/session ", "/model ", "/context ", "/compact ", "/mcp "}
 		var candidates [][]rune
-		for _, cmd := range commands {
-			if strings.HasPrefix(cmd, text) {
-				candidates = append(candidates, []rune(cmd[len(text):]))
+		for _, cmd := range slashCommands {
+			full := cmd + " " // insert a trailing space, ready for args
+			if strings.HasPrefix(full, text) {
+				candidates = append(candidates, []rune(full[len(text):]))
 			}
 		}
 		return candidates, len([]rune(text))
@@ -457,13 +458,20 @@ func retryWithCountdown(w io.Writer, fn func() error) error {
 
 func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Message, mgr *mcpmgr.Manager, sw *SessionWriter, contextWindow int, w io.Writer) error {
 	pf := &pasteFilter{r: os.Stdin}
+	// lineEmpty tracks whether the input line is empty; the Listener keeps it in
+	// sync with readline's real buffer and the reader resets it on Enter. A
+	// line-leading "/" then auto-opens the command menu, and the Painter colors
+	// the command token live as it is typed.
+	var lineEmpty atomic.Bool
+	lineEmpty.Store(true)
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          UserStyle.Sprint("You> "),
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
 		AutoComplete:    &chatCompleter{},
-		Stdin:           pf,
-		Listener:        bottomReserveListener(),
+		Stdin:           newSlashTriggerReader(pf, &lineEmpty),
+		Painter:         commandPainter,
+		Listener:        slashTriggerListener(&lineEmpty, bottomReserveListener()),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize input: %w", err)
