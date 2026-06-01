@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,11 +13,11 @@ import (
 
 var _ ToolProvider = (*VertexAIProvider)(nil)
 var _ RawContentProvider = (*VertexAIProvider)(nil)
+var _ UsageReporter = (*VertexAIProvider)(nil)
 
 type VertexAIProvider struct {
+	baseProvider
 	client           *genai.Client
-	model            string
-	temperature      *float64
 	lastModelContent *genai.Content // preserves thought signatures for tool call rounds
 }
 
@@ -37,14 +38,29 @@ func NewVertexAI(apiKey, baseURL, model string, temperature *float64, httpClient
 	}
 
 	return &VertexAIProvider{
-		client:      client,
-		model:       model,
-		temperature: temperature,
+		baseProvider: baseProvider{providerType: "vertexai", model: model, temperature: temperature},
+		client:       client,
 	}
 }
 
 func (p *VertexAIProvider) LastRawContent() any {
 	return p.lastModelContent
+}
+
+func (p *VertexAIProvider) MarshalRawContent(v any) ([]byte, error) {
+	c, ok := v.(*genai.Content)
+	if !ok || c == nil {
+		return nil, fmt.Errorf("vertexai: unexpected raw content type %T", v)
+	}
+	return json.Marshal(c)
+}
+
+func (p *VertexAIProvider) UnmarshalRawContent(data []byte) (any, error) {
+	var c genai.Content
+	if err := json.Unmarshal(data, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
 }
 
 func (p *VertexAIProvider) ListModels(ctx context.Context) ([]string, error) {
@@ -182,11 +198,17 @@ func (p *VertexAIProvider) streamChatInternal(ctx context.Context, messages []Me
 			reasoningClosed = true
 		}
 	}
+	p.lastUsageOK = false
 
 	for resp, err := range p.client.Models.GenerateContentStream(ctx, p.model, contents, cfg) {
 		if err != nil {
 			closeReasoning()
 			return full, thinkFull, nil, fmt.Errorf("stream error: %w", err)
+		}
+		if resp.UsageMetadata != nil {
+			p.lastInput = int(resp.UsageMetadata.PromptTokenCount)
+			p.lastOutput = int(resp.UsageMetadata.CandidatesTokenCount)
+			p.lastUsageOK = true
 		}
 		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
 			for _, part := range resp.Candidates[0].Content.Parts {

@@ -211,7 +211,7 @@ func (p *OpenClawProvider) ensureSession(ctx context.Context) error {
 	p.sessionKey = fmt.Sprintf("chatchain-%08x", rand.Int31())
 
 	if p.verbose {
-		dimLog( "→ sessions.create {key:%s, agentId:%s}\n", p.sessionKey, p.agentID)
+		dimLog("→ sessions.create {key:%s, agentId:%s}\n", p.sessionKey, p.agentID)
 	}
 
 	_, err := p.client.SessionsCreate(ctx, protocol.SessionsCreateParams{
@@ -235,6 +235,14 @@ func (p *OpenClawProvider) ensureSession(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (p *OpenClawProvider) Type() string  { return "openclaw" }
+func (p *OpenClawProvider) Model() string { return p.agentID }
+func (p *OpenClawProvider) SetModel(m string) {
+	p.mu.Lock()
+	p.agentID = m
+	p.mu.Unlock()
 }
 
 func (p *OpenClawProvider) ListModels(ctx context.Context) ([]string, error) {
