@@ -536,6 +536,28 @@ func ListSessions() ([]SessionInfo, error) {
 	return infos, nil
 }
 
+// sessionLabel is the one-line description shown in session pickers.
+func sessionLabel(s SessionInfo) string {
+	title := s.Title
+	if title == "" {
+		title = "(untitled)"
+	}
+	return fmt.Sprintf("%s · %s · %s · %d msgs", title, s.Model, humanizeTime(s.UpdatedAt), s.MessageCount)
+}
+
+// DeleteSession removes a session bundle from disk. The id must be a bare
+// directory name (no path separators) so it can't escape the sessions dir.
+func DeleteSession(id string) error {
+	if id == "" || strings.ContainsAny(id, `/\`) || strings.Contains(id, "..") {
+		return fmt.Errorf("invalid session id %q", id)
+	}
+	base, err := sessionsDir()
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(filepath.Join(base, id))
+}
+
 // PickSession lists sessions and lets the user choose one to resume. Returns
 // the chosen session ID, or "" when there are none or the user cancels.
 func PickSession() (string, error) {
@@ -548,11 +570,7 @@ func PickSession() (string, error) {
 	}
 	labels := make([]string, len(infos))
 	for i, s := range infos {
-		title := s.Title
-		if title == "" {
-			title = "(untitled)"
-		}
-		labels[i] = fmt.Sprintf("%s · %s · %s · %d msgs", title, s.Model, humanizeTime(s.UpdatedAt), s.MessageCount)
+		labels[i] = sessionLabel(s)
 	}
 	prompt := cancelableSelect("Select a session to resume", labels, 15)
 	idx, _, err := prompt.Run()

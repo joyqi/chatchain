@@ -127,6 +127,15 @@ func (b *contextBudget) update(p provider.Provider, history []provider.Message) 
 
 func (b *contextBudget) setWindow(n int) { b.window = n }
 
+// reseed recomputes usage from history with the local tokenizer and drops any
+// provider-reported figure. Used when the active conversation is replaced
+// wholesale — compaction, or resuming a different session — so the provider's
+// last reported usage no longer describes what will be sent.
+func (b *contextBudget) reseed(history []provider.Message) {
+	b.used = b.counter.countMessages(history)
+	b.haveUsage = false
+}
+
 // shouldCompact reports whether the next request (current usage + `extra` tokens
 // of new, not-yet-sent content) would reach the compaction threshold.
 func (b *contextBudget) shouldCompact(extra int) bool {

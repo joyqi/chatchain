@@ -19,3 +19,7 @@ func (b *baseProvider) Type() string                { return b.providerType }
 func (b *baseProvider) Model() string               { return b.model }
 func (b *baseProvider) SetModel(m string)           { b.model = m }
 func (b *baseProvider) LastUsage() (int, int, bool) { return b.lastInput, b.lastOutput, b.lastUsageOK }
+
+// ResetUsage clears the last-call token figures (e.g. when resuming a different
+// session) so LastUsage reports nothing until the next API call.
+func (b *baseProvider) ResetUsage() { b.lastInput, b.lastOutput, b.lastUsageOK = 0, 0, false }

@@ -508,7 +508,7 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 	}
 
 	DimStyle.Fprintln(w, "Chat started. Press Ctrl+C to exit.")
-	DimStyle.Fprintln(w, "Commands: /file <path>, /files, /clear, /session, /model, /context, /compact, /mcp")
+	DimStyle.Fprintln(w, "Commands: /file [path], /files, /session, /sessions, /model, /context, /compact, /status, /mcp")
 	if id := sw.ID(); id != "" {
 		DimStyle.Fprintf(w, "Session: %s\n", id)
 	}
@@ -598,8 +598,7 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			ErrorStyle.Fprintf(w, "Warning: failed to persist compaction marker: %v\n", err)
 		}
 		persisted = len(history)
-		budget.used = budget.counter.countMessages(history)
-		budget.haveUsage = false
+		budget.reseed(history)
 		DimStyle.Fprintf(w, "Context compacted → %s\n", budget.status())
 	}
 
@@ -624,8 +623,20 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		titleWG.Wait()
 
 		// Handle commands
-		if strings.HasPrefix(input, "/file ") {
-			path := strings.TrimSpace(input[6:])
+		if input == "/file" || strings.HasPrefix(input, "/file ") {
+			path := strings.TrimSpace(strings.TrimPrefix(input, "/file"))
+			if path == "" {
+				// No path given: browse and pick one.
+				picked, perr := pickFile()
+				if perr != nil {
+					ErrorStyle.Fprintf(w, "Error: %v\n", perr)
+					continue
+				}
+				if picked == "" {
+					continue // cancelled
+				}
+				path = picked
+			}
 			att, err := ReadAttachment(path)
 			if err != nil {
 				ErrorStyle.Fprintf(w, "Error: %v\n", err)
@@ -635,13 +646,8 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			}
 			continue
 		}
-		if input == "/files" {
-			fmt.Fprint(w, FormatAttachmentList(pendingAttachments))
-			continue
-		}
-		if input == "/clear" {
-			pendingAttachments = nil
-			DimStyle.Fprintln(w, "Attachments cleared.")
+		if input == "/files" || strings.HasPrefix(input, "/files ") {
+			pendingAttachments = cleanAttachments(w, pendingAttachments)
 			continue
 		}
 		if input == "/model" || strings.HasPrefix(input, "/model ") {
@@ -686,6 +692,13 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			sw = newSW
 			history = sess.Messages
 			persisted = len(history)
+			// Re-seed the budget from the resumed history and drop the previous
+			// session's token figures, so /status reflects the new session right
+			// away — before any turn happens.
+			budget.reseed(history)
+			if ur, ok := p.(interface{ ResetUsage() }); ok {
+				ur.ResetUsage()
+			}
 			pendingAttachments = nil
 			titled = true
 			// Continue under the current provider; adopt the session's model
@@ -694,6 +707,10 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 				p.SetModel(sess.Meta.Model)
 			}
 			DimStyle.Fprintf(w, "Resumed session %s (%d messages)\n", id, len(history))
+			continue
+		}
+		if input == "/sessions" || strings.HasPrefix(input, "/sessions ") {
+			cleanSessions(w, sw.ID())
 			continue
 		}
 		if input == "/context" || strings.HasPrefix(input, "/context ") {
@@ -726,6 +743,10 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		}
 		if input == "/mcp" || strings.HasPrefix(input, "/mcp ") {
 			printMCPStatus(mgr, w)
+			continue
+		}
+		if input == "/status" || strings.HasPrefix(input, "/status ") {
+			showStatus(statusLines(p, budget, history, len(pendingAttachments), mgr, sw))
 			continue
 		}
 
