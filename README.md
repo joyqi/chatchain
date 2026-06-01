@@ -7,6 +7,7 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 - **Multi-provider** — OpenAI, OpenAI Responses API, Anthropic, Gemini, and Vertex AI, with custom base URL support
 - **MCP tool support** — connect external MCP tool servers (filesystem, GitHub, databases, etc.) and let AI providers use them during chat
 - **Interactive model selection** — arrow-key navigation with filtering
+- **Slash-command completion** — type `/` and the command menu pops up and live-filters as you type; the command is highlighted inline (no manual Tab needed)
 - **Streaming responses** — real-time token output with loading spinner
 - **Markdown highlighting** — inline ANSI styling for headings, bold, italic, code, tables, and code blocks in streaming output
 - **File attachments** — send images, PDFs, and text files alongside messages with Tab-completion for file paths
@@ -185,7 +186,9 @@ chatchain openai -k sk-override -m "hi" -M gpt-4o
 
 ### Chat Commands
 
-In interactive mode, the following commands are available:
+In interactive mode, the following commands are available. Typing `/` on an empty
+line opens the command menu automatically — it live-filters as you keep typing, and
+the command is colorized inline (green once complete, cyan while a valid prefix):
 
 | Command | Description |
 |---------|-------------|
