@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	mcpmgr "chatchain/mcp"
@@ -19,18 +20,125 @@ import (
 	"golang.org/x/term"
 )
 
-func SelectModel(models []string) (string, error) {
-	prompt := promptui.Select{
-		Label: "Select a model",
-		Items: models,
-		Size:  15,
-	}
+// cancelOption is a sentinel first item added to every selector. Selecting it
+// (index 0) means "cancel". Routing cancellation through a normal selection lets
+// us reuse promptui's clean success-path cleanup, which (unlike its broken
+// interrupt path) reliably wipes the rendered list. It is rendered red/bold via
+// cancelableSelect's templates so it stands out from real options.
+const cancelOption = "✗ Cancel"
 
-	_, result, err := prompt.Run()
+// escCancelSeq is what ESC / Ctrl+C are expanded into: enough PageUp/Prev presses
+// to reach the top of any realistic list (the cancelOption at index 0), then
+// Enter. This makes both keys trigger promptui's clean success cleanup instead of
+// its leaky interrupt path. 'h' = PageUp, 'k' = Prev in promptui's key map; both
+// clamp at the top.
+var escCancelSeq = func() []byte {
+	b := make([]byte, 0, 64)
+	for i := 0; i < 50; i++ { // 50 PageUps tops out lists up to ~50×pageSize items
+		b = append(b, 'h')
+	}
+	for i := 0; i < 5; i++ { // a few single steps, belt-and-suspenders
+		b = append(b, 'k')
+	}
+	return append(b, '\r') // Enter → select cancelOption (index 0)
+}()
+
+// escToCancelStdin wraps stdin so a standalone ESC keypress or Ctrl+C (0x03) is
+// expanded into escCancelSeq (navigate to the cancel sentinel + Enter) — both
+// cancel cleanly via the success path. Arrow keys and other escape sequences
+// (ESC '[' … / ESC 'O' …) arrive in the same read burst and pass through
+// untouched. The expansion can exceed the caller's buffer, so overflow is queued
+// and drained on the next Read. Pointer receiver (mutable queue); Close is a
+// no-op so the real os.Stdin is never closed.
+type escToCancelStdin struct {
+	r     io.Reader
+	queue []byte
+}
+
+func (e *escToCancelStdin) Read(p []byte) (int, error) {
+	if len(e.queue) > 0 {
+		n := copy(p, e.queue)
+		e.queue = e.queue[n:]
+		return n, nil
+	}
+	n, err := e.r.Read(p)
+	if n == 0 {
+		return n, err
+	}
+	var out []byte
+	for i := 0; i < n; i++ {
+		loneEsc := p[i] == 0x1b && !(i+1 < n && (p[i+1] == '[' || p[i+1] == 'O'))
+		if p[i] == 0x03 || loneEsc { // Ctrl+C or a standalone ESC → cancel
+			out = append(out, escCancelSeq...)
+		} else {
+			out = append(out, p[i])
+		}
+	}
+	m := copy(p, out)
+	if m < len(out) {
+		e.queue = append(e.queue, out[m:]...)
+	}
+	return m, err
+}
+
+func (*escToCancelStdin) Close() error { return nil }
+
+// cancelableSelect builds a promptui.Select with the red "✗ Cancel" sentinel at
+// index 0, ESC/Ctrl+C routed to it, and templates that render the cancel item in
+// red/bold so it's clearly distinct from real options.
+func cancelableSelect(label string, items []string, size int) promptui.Select {
+	isCancel := `eq . "` + cancelOption + `"`
+	return promptui.Select{
+		Label: label,
+		Items: append([]string{cancelOption}, items...),
+		Size:  size,
+		Stdin: &escToCancelStdin{r: os.Stdin},
+		// Hide the post-selection line entirely: promptui clears the whole list
+		// via its clean clearScreen path (no residue), for both a real choice and
+		// a cancel. The confirmation for a real choice is printed by the caller.
+		HideSelected: true,
+		Templates: &promptui.SelectTemplates{
+			Active:   `{{ if ` + isCancel + ` }}{{ printf "▸ %s" . | red | bold }}{{ else }}{{ printf "▸ %s" . | cyan }}{{ end }}`,
+			Inactive: `{{ if ` + isCancel + ` }}{{ printf "  %s" . | red }}{{ else }}{{ printf "  %s" . }}{{ end }}`,
+		},
+	}
+}
+
+// pickContextWindow shows a selector of common context window sizes (ESC to
+// cancel → returns 0). The label header shows current usage so the user can
+// judge. Industry max is currently 1M.
+func pickContextWindow(b *contextBudget) (int, error) {
+	vals := []int{8_000, 32_000, 128_000, 200_000, 256_000, 1_000_000}
+	labels := make([]string, len(vals))
+	for i, v := range vals {
+		labels[i] = formatTokens(v)
+		if v == b.window {
+			labels[i] += " (current)"
+		}
+	}
+	prompt := cancelableSelect(fmt.Sprintf("Context window — now %s", b.status()), labels, 10)
+	idx, _, err := prompt.Run()
+	if err != nil || idx == 0 {
+		return 0, nil // cancelled (interrupt or cancel sentinel)
+	}
+	return vals[idx-1], nil
+}
+
+// SelectModel prompts for a model. On user cancel (ESC selects the cancel
+// sentinel; Ctrl+C / Ctrl+D interrupt) it returns ("", nil) — empty, not an error.
+func SelectModel(models []string) (string, error) {
+	prompt := cancelableSelect("Select a model", models, 15)
+	idx, _, err := prompt.Run()
 	if err != nil {
+		if err == promptui.ErrInterrupt || err == promptui.ErrEOF {
+			return "", nil // cancelled
+		}
 		return "", err
 	}
-	return result, nil
+	if idx == 0 {
+		return "", nil // cancel sentinel
+	}
+	return models[idx-1], nil
 }
 
 // reserveBottomLines guarantees at least n empty rows below the current
@@ -78,7 +186,10 @@ func bottomReserveListener() readline.Listener {
 	}
 }
 
-func withSpinner(title string, action func()) {
+// WithSpinner runs action while showing a single-line spinner with the given
+// title, then stops the spinner. Used for blocking waits (model listing, MCP
+// connect join) so the user sees activity instead of a blank screen.
+func WithSpinner(title string, action func()) {
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
 	s.Suffix = " " + title
 	s.Start()
@@ -90,7 +201,7 @@ func FetchModels(ctx context.Context, p provider.Provider) ([]string, error) {
 	var models []string
 	var fetchErr error
 
-	withSpinner("Fetching available models...", func() {
+	WithSpinner("Fetching available models...", func() {
 		models, fetchErr = p.ListModels(ctx)
 	})
 
@@ -124,66 +235,27 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 	return nil
 }
 
-func ReadSystemPrompt(w io.Writer) (string, []provider.Message, error) {
+func ReadSystemPrompt(w io.Writer) (string, error) {
 	pf := &pasteFilter{r: os.Stdin}
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          BoldStyle.Sprint("System> "),
 		InterruptPrompt: "^C",
-		AutoComplete:    &importCompleter{},
 		Stdin:           pf,
 		Listener:        bottomReserveListener(),
 	})
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 	defer rl.Close()
 
 	os.Stdout.WriteString("\033[?2004h")
 	defer os.Stdout.WriteString("\033[?2004l")
 
-	for {
-		input, err := rl.Readline()
-		if err != nil {
-			return "", nil, nil // skip on Ctrl+C / EOF
-		}
-		input = expandPasteTags(strings.TrimSpace(input), pf)
-
-		if input == "/import" || strings.HasPrefix(input, "/import ") {
-			path := strings.TrimSpace(strings.TrimPrefix(input, "/import"))
-			if path == "" {
-				path = "history.md"
-			}
-			imported, err := ImportHistory(path)
-			if err != nil {
-				ErrorStyle.Fprintf(w, "Error: %v\n", err)
-				continue
-			}
-			DimStyle.Fprintf(w, "Imported %d messages from %s\n", len(imported), path)
-			return "", imported, nil
-		}
-
-		return input, nil, nil
+	input, err := rl.Readline()
+	if err != nil {
+		return "", nil // skip on Ctrl+C / EOF
 	}
-}
-
-type importCompleter struct{}
-
-func (c *importCompleter) Do(line []rune, pos int) ([][]rune, int) {
-	text := string(line[:pos])
-	if !strings.HasPrefix(text, "/") {
-		return nil, 0
-	}
-	if !strings.Contains(text, " ") {
-		cmd := "/import "
-		if strings.HasPrefix(cmd, text) {
-			return [][]rune{[]rune(cmd[len(text):])}, len([]rune(text))
-		}
-		return nil, 0
-	}
-	if strings.HasPrefix(text, "/import ") {
-		return completeFilePath(text[8:])
-	}
-	return nil, 0
+	return expandPasteTags(strings.TrimSpace(input), pf), nil
 }
 
 type chatCompleter struct{}
@@ -198,7 +270,7 @@ func (c *chatCompleter) Do(line []rune, pos int) ([][]rune, int) {
 
 	// Command completion (no space yet)
 	if !strings.Contains(text, " ") {
-		commands := []string{"/file ", "/files ", "/clear ", "/save ", "/import ", "/mcp "}
+		commands := []string{"/file ", "/files ", "/clear ", "/session ", "/model ", "/context ", "/compact ", "/mcp "}
 		var candidates [][]rune
 		for _, cmd := range commands {
 			if strings.HasPrefix(cmd, text) {
@@ -208,15 +280,9 @@ func (c *chatCompleter) Do(line []rune, pos int) ([][]rune, int) {
 		return candidates, len([]rune(text))
 	}
 
-	// File path completion for "/file " and "/save "
+	// File path completion for "/file "
 	if strings.HasPrefix(text, "/file ") && !strings.HasPrefix(text, "/files") {
 		return completeFilePath(text[6:])
-	}
-	if strings.HasPrefix(text, "/save ") {
-		return completeFilePath(text[6:])
-	}
-	if strings.HasPrefix(text, "/import ") {
-		return completeFilePath(text[8:])
 	}
 
 	return nil, 0
@@ -389,7 +455,7 @@ func retryWithCountdown(w io.Writer, fn func() error) error {
 	return err
 }
 
-func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Message, mgr *mcpmgr.Manager, w io.Writer) error {
+func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Message, mgr *mcpmgr.Manager, sw *SessionWriter, contextWindow int, w io.Writer) error {
 	pf := &pasteFilter{r: os.Stdin}
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          UserStyle.Sprint("You> "),
@@ -403,6 +469,9 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		return fmt.Errorf("failed to initialize input: %w", err)
 	}
 	defer rl.Close()
+	// Own the session writer's lifecycle here: it may be swapped by /session,
+	// so close whatever it points to at return (closure over the variable).
+	defer func() { sw.Close() }()
 
 	// Enable bracketed paste mode AFTER readline init, so readline's
 	// terminal setup doesn't override it.
@@ -410,15 +479,31 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 	defer os.Stdout.WriteString("\033[?2004l")
 
 	var history []provider.Message
+	// persisted = number of leading history messages already written to the
+	// session. We persist only committed turns (after a successful response),
+	// so a failed/retried turn that rolls back history never reaches disk.
+	persisted := 0
 	if len(importedHistory) > 0 {
 		history = importedHistory
+		persisted = len(history)
 	} else if systemPrompt != "" {
+		// Keep the system message in memory only; persisted stays 0 so it is
+		// written with the first real turn. A command-only session that never
+		// reaches a turn thus creates nothing on disk.
 		history = append(history, provider.Message{Role: "system", Content: systemPrompt})
 	}
 	ctx := context.Background()
 
+	budget := newContextBudget(contextWindow)
+	if len(history) > 0 {
+		budget.update(p, history) // seed from loaded history on resume
+	}
+
 	DimStyle.Fprintln(w, "Chat started. Press Ctrl+C to exit.")
-	DimStyle.Fprintln(w, "Commands: /file <path>, /files, /clear, /save <path>, /import <path>, /mcp")
+	DimStyle.Fprintln(w, "Commands: /file <path>, /files, /clear, /session, /model, /context, /compact, /mcp")
+	if id := sw.ID(); id != "" {
+		DimStyle.Fprintf(w, "Session: %s\n", id)
+	}
 	fmt.Fprintln(w)
 
 	tp, isToolProvider := p.(provider.ToolProvider)
@@ -426,9 +511,80 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 
 	var pendingAttachments []provider.Attachment
 
+	// Auto-title: after the first completed turn, generate a short title in the
+	// background (one provider.Chat call). titleWG serializes that goroutine
+	// against the next turn's provider access so there is no concurrent use of
+	// the provider or session writer.
+	var titleWG sync.WaitGroup
+	titled := len(importedHistory) > 0 // resumed sessions already have a title
+
+	persistTurn := func() {
+		if sw != nil && persisted < len(history) {
+			sw.AppendMessages(history[persisted:])
+			persisted = len(history)
+		}
+	}
+	maybeTitle := func() {
+		if titled || sw == nil {
+			return
+		}
+		var firstUser, firstAssistant string
+		for _, m := range history {
+			if firstUser == "" && m.Role == "user" {
+				firstUser = m.Content
+			}
+			if firstAssistant == "" && m.Role == "assistant" && m.Content != "" {
+				firstAssistant = m.Content
+			}
+		}
+		if firstUser == "" || firstAssistant == "" {
+			return
+		}
+		titled = true
+		// Immediate placeholder so the session is identifiable right away.
+		sw.SetTitle(truncateRunes(strings.TrimSpace(firstUser), 40))
+		titleWG.Add(1)
+		go func(u, a string, target *SessionWriter) {
+			defer titleWG.Done()
+			generateTitle(ctx, p, u, a, target)
+		}(firstUser, firstAssistant, sw)
+	}
+
+	// compactNow summarizes the older history into one summary (LLM call under a
+	// spinner), swaps in the compacted view, writes an Event Store marker, and
+	// re-seeds the budget. persisted is reset to the new view length — everything
+	// in it is already on disk (originals + the marker), only later turns append.
+	compactNow := func(hint string, manual bool) {
+		var newHist []provider.Message
+		var summary string
+		var retainTail int
+		var changed bool
+		var cerr error
+		WithSpinner("Compacting context…", func() {
+			newHist, summary, retainTail, changed, cerr = compactHistory(ctx, p, history, hint)
+		})
+		if cerr != nil {
+			ErrorStyle.Fprintf(w, "Compaction failed: %v\n", cerr)
+			return
+		}
+		if !changed {
+			if manual {
+				DimStyle.Fprintln(w, "Nothing to compact yet.")
+			}
+			return
+		}
+		history = newHist
+		sw.AppendCompaction(summary, retainTail)
+		persisted = len(history)
+		budget.used = budget.counter.countMessages(history)
+		budget.haveUsage = false
+		DimStyle.Fprintf(w, "Context compacted → %s\n", budget.status())
+	}
+
 	for {
 		input, err := rl.Readline()
 		if err != nil { // io.EOF or readline.ErrInterrupt
+			titleWG.Wait()
 			fmt.Fprintln(w, "\nBye!")
 			return nil
 		}
@@ -440,6 +596,10 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 
 		// Expand paste tags: [#1 first few chars... N lines] → full pasted text
 		input = expandPasteTags(input, pf)
+
+		// Wait for any in-flight title generation before touching the provider
+		// or session writer, so the background goroutine never races them.
+		titleWG.Wait()
 
 		// Handle commands
 		if strings.HasPrefix(input, "/file ") {
@@ -462,36 +622,105 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			DimStyle.Fprintln(w, "Attachments cleared.")
 			continue
 		}
-		if input == "/save" || strings.HasPrefix(input, "/save ") {
-			path := strings.TrimSpace(strings.TrimPrefix(input, "/save"))
-			if path == "" {
-				path = "history.md"
+		if input == "/model" || strings.HasPrefix(input, "/model ") {
+			models, ferr := FetchModels(ctx, p)
+			if ferr != nil {
+				ErrorStyle.Fprintf(w, "Error: %v\n", ferr)
+				continue
 			}
-			if err := SaveHistory(history, path); err != nil {
-				ErrorStyle.Fprintf(w, "Error: %v\n", err)
-			} else {
-				DimStyle.Fprintf(w, "Conversation saved to %s\n", path)
+			selected, serr := SelectModel(models)
+			if serr != nil {
+				ErrorStyle.Fprintf(w, "Error: %v\n", serr)
+				continue
 			}
+			if selected == "" {
+				continue // cancelled (ESC)
+			}
+			p.SetModel(selected)
+			sw.SetModel(selected)
+			DimStyle.Fprintf(w, "Model switched to %s\n", selected)
 			continue
 		}
-		if input == "/import" || strings.HasPrefix(input, "/import ") {
-			path := strings.TrimSpace(strings.TrimPrefix(input, "/import"))
-			if path == "" {
-				path = "history.md"
+		if input == "/session" || strings.HasPrefix(input, "/session ") {
+			id, perr := PickSession()
+			if perr != nil {
+				ErrorStyle.Fprintf(w, "Error: %v\n", perr)
+				continue
 			}
-			imported, err := ImportHistory(path)
-			if err != nil {
-				ErrorStyle.Fprintf(w, "Error: %v\n", err)
-			} else {
-				history = imported
-				pendingAttachments = nil
-				DimStyle.Fprintf(w, "Imported %d messages from %s\n", len(imported), path)
+			if id == "" {
+				DimStyle.Fprintln(w, "No session selected.")
+				continue
 			}
+			if id == sw.ID() {
+				DimStyle.Fprintln(w, "Already in this session.")
+				continue
+			}
+			newSW, sess, lerr := ResumeSession(id, p)
+			if lerr != nil {
+				ErrorStyle.Fprintf(w, "Error: %v\n", lerr)
+				continue
+			}
+			sw.Close()
+			sw = newSW
+			history = sess.Messages
+			persisted = len(history)
+			pendingAttachments = nil
+			titled = true
+			// Continue under the current provider; adopt the session's model
+			// only when it belongs to the same provider type.
+			if sess.Meta.Provider == p.Type() && sess.Meta.Model != "" {
+				p.SetModel(sess.Meta.Model)
+			}
+			DimStyle.Fprintf(w, "Resumed session %s (%d messages)\n", id, len(history))
+			continue
+		}
+		if input == "/context" || strings.HasPrefix(input, "/context ") {
+			arg := strings.TrimSpace(strings.TrimPrefix(input, "/context"))
+			if arg == "" {
+				selected, perr := pickContextWindow(budget)
+				if perr != nil {
+					ErrorStyle.Fprintf(w, "Error: %v\n", perr)
+					continue
+				}
+				if selected > 0 {
+					budget.setWindow(selected)
+					DimStyle.Fprintf(w, "Context window: %s\n", budget.status())
+				}
+				continue
+			}
+			n, perr := ParseWindowSize(arg)
+			if perr != nil {
+				ErrorStyle.Fprintf(w, "Error: %v\n", perr)
+				continue
+			}
+			budget.setWindow(n)
+			DimStyle.Fprintf(w, "Context window: %s\n", budget.status())
+			continue
+		}
+		if input == "/compact" || strings.HasPrefix(input, "/compact ") {
+			hint := strings.TrimSpace(strings.TrimPrefix(input, "/compact"))
+			compactNow(hint, true)
 			continue
 		}
 		if input == "/mcp" || strings.HasPrefix(input, "/mcp ") {
 			printMCPStatus(mgr, w)
 			continue
+		}
+
+		// Lazy model selection: if startup selection was skipped (ESC), pick a
+		// model before sending the first real message. Cancelling again skips
+		// this turn and returns to the prompt.
+		if p.Model() == "" && !ensureModel(ctx, p, sw, w) {
+			continue
+		}
+
+		// Auto-compact if this turn's new content would push past the threshold.
+		extra := budget.counter.count(input)
+		for _, att := range pendingAttachments {
+			extra += len(att.Data) / 1000
+		}
+		if budget.shouldCompact(extra) {
+			compactNow("", false)
 		}
 
 		msg := provider.Message{Role: "user", Content: input, Attachments: pendingAttachments}
@@ -516,6 +745,9 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			fmt.Fprintln(w)
 			fmt.Fprintln(w)
 			history = append(history, provider.Message{Role: "assistant", Content: reply, Reasoning: thinking})
+			persistTurn()
+			budget.update(p, history)
+			maybeTitle()
 			continue
 		}
 
@@ -535,7 +767,69 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		fmt.Fprintln(w)
 		fmt.Fprintln(w)
 		history = append(history, provider.Message{Role: "assistant", Content: reply, Reasoning: thinking})
+		persistTurn()
+		budget.update(p, history)
+		maybeTitle()
 	}
+}
+
+// ensureModel makes sure a model is selected before sending. Used for lazy
+// selection when the startup model picker was skipped with ESC. Returns false
+// if the user cancels selection (the caller should skip the turn).
+func ensureModel(ctx context.Context, p provider.Provider, sw *SessionWriter, w io.Writer) bool {
+	if p.Model() != "" {
+		return true
+	}
+	models, err := FetchModels(ctx, p)
+	if err != nil {
+		ErrorStyle.Fprintf(w, "Error: %v\n", err)
+		return false
+	}
+	selected, err := SelectModel(models)
+	if err != nil {
+		ErrorStyle.Fprintf(w, "Error: %v\n", err)
+		return false
+	}
+	if selected == "" {
+		return false // cancelled
+	}
+	p.SetModel(selected)
+	sw.SetModel(selected)
+	DimStyle.Fprintf(w, "Using model: %s\n", selected)
+	return true
+}
+
+// generateTitle asks the model for a short conversation title and stores it on
+// the session. Best-effort: any error leaves the placeholder title in place.
+func generateTitle(ctx context.Context, p provider.Provider, firstUser, firstAssistant string, sw *SessionWriter) {
+	prompt := fmt.Sprintf("为下面的对话起一个简短的标题（不超过6个词，不要加引号，不要结尾标点，使用对话所用的语言），只返回标题本身：\n\n用户: %s\n\n助手: %s",
+		truncateRunes(firstUser, 500), truncateRunes(firstAssistant, 500))
+	title, err := p.Chat(ctx, []provider.Message{{Role: "user", Content: prompt}})
+	if err != nil {
+		return
+	}
+	title = sanitizeTitle(title)
+	if title != "" {
+		sw.SetTitle(title)
+	}
+}
+
+func sanitizeTitle(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.Trim(s, "\"'“”「」` ")
+	return truncateRunes(s, 80)
+}
+
+// truncateRunes truncates on rune boundaries so CJK text is never cut mid-rune.
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
 }
 
 // streamResponse handles the standard streaming display (reasoning + content pipes).
@@ -558,7 +852,7 @@ func streamResponse(ctx context.Context, p provider.Provider, history []provider
 	var readErr error
 	hasReasoning := false
 
-	withSpinner("Thinking...", func() {
+	WithSpinner("Thinking...", func() {
 		firstN, readErr = reasonPr.Read(firstChunk)
 		if readErr != nil {
 			readErr = nil

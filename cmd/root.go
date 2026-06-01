@@ -29,6 +29,9 @@ var (
 	configPath        string
 	list              bool
 	mcpFlags          []string
+	resumeID          string
+	noSave            bool
+	contextWindowFlag string
 )
 
 var rootCmd = &cobra.Command{
@@ -113,28 +116,69 @@ var rootCmd = &cobra.Command{
 
 		// Build MCP server configs from CLI flags + config file
 		mcpConfigs := buildMCPConfigs(cfg)
-		var mgr *mcpmgr.Manager
-		if len(mcpConfigs) > 0 {
-			var logf mcpmgr.LogFunc
-			if verbose {
-				logf = func(format string, args ...any) {
-					chat.DimStyle.Fprintf(os.Stderr, format, args...)
-				}
+		var logf mcpmgr.LogFunc
+		if verbose {
+			logf = func(format string, args ...any) {
+				chat.DimStyle.Fprintf(os.Stderr, format, args...)
 			}
-			mgr, err = mcpmgr.NewManager(context.Background(), mcpConfigs, logf)
-			if err != nil {
-				return fmt.Errorf("MCP setup failed: %w", err)
-			}
-			defer mgr.Close()
 		}
 
-		// Non-interactive mode: single message, direct response
+		// Non-interactive mode: connect MCP synchronously (quiet), then respond.
 		if chatMessage != "" {
+			var mgr *mcpmgr.Manager
+			if len(mcpConfigs) > 0 {
+				mgr, _ = mcpmgr.NewManager(context.Background(), mcpConfigs, logf)
+				defer mgr.Close()
+			}
 			return chat.Once(context.Background(), p, chatMessage, systemPrompt, mgr, os.Stdout)
 		}
 
-		// If no model specified, let user select from available models
-		if model == "" {
+		// Interactive: kick off MCP connect concurrently in the background so it
+		// overlaps the interactive model/session prompts; we join before chat.
+		var mcpCh chan *mcpmgr.Manager
+		if len(mcpConfigs) > 0 {
+			mcpCh = make(chan *mcpmgr.Manager, 1)
+			go func() {
+				m, _ := mcpmgr.NewManager(context.Background(), mcpConfigs, logf)
+				mcpCh <- m
+			}()
+		}
+
+		if noSave && cmd.Flags().Changed("resume") {
+			return fmt.Errorf("--no-save cannot be combined with --resume")
+		}
+
+		// Resume an existing session (before model selection: a resumed session
+		// can supply the model when -M is omitted).
+		var importedHistory []provider.Message
+		var sw *chat.SessionWriter
+		if cmd.Flags().Changed("resume") {
+			id := strings.TrimSpace(resumeID)
+			if id == "" {
+				id, err = chat.PickSession()
+				if err != nil {
+					return fmt.Errorf("failed to list sessions: %w", err)
+				}
+			}
+			if id == "" {
+				return fmt.Errorf("no session to resume")
+			}
+			writer, sess, rerr := chat.ResumeSession(id, p)
+			if rerr != nil {
+				return rerr
+			}
+			sw = writer
+			importedHistory = sess.Messages
+			if model == "" && sess.Meta.Provider == p.Type() && sess.Meta.Model != "" {
+				p.SetModel(sess.Meta.Model)
+			}
+			fmt.Printf("Resumed session %s (%d messages)\n\n", id, len(importedHistory))
+		}
+
+		// If no model is set yet, offer interactive selection. Cancelling
+		// (ESC) is allowed: we enter the chat without a model and pick one
+		// lazily on the first message (see ensureModel in chat.Run).
+		if p.Model() == "" {
 			models, fetchErr := chat.FetchModels(context.Background(), p)
 			if fetchErr != nil {
 				return fmt.Errorf("failed to list models: %w", fetchErr)
@@ -143,31 +187,60 @@ var rootCmd = &cobra.Command{
 				return fmt.Errorf("no models available")
 			}
 
-			selected, err := chat.SelectModel(models)
-			if err != nil {
-				return fmt.Errorf("model selection cancelled: %w", err)
+			selected, serr := chat.SelectModel(models)
+			if serr != nil {
+				return fmt.Errorf("model selection failed: %w", serr)
 			}
-
-			fmt.Printf("Using model: %s\n\n", chat.BoldStyle.Sprint(selected))
-			// Recreate provider with selected model
-			p, err = provider.New(providerType, apiKey, baseURL, selected, temp, httpClient)
-			if err != nil {
-				return err
+			if selected != "" {
+				fmt.Printf("Using model: %s\n\n", chat.BoldStyle.Sprint(selected))
+				p.SetModel(selected)
 			}
 		}
 
 		systemPrompt = strings.TrimSpace(systemPrompt)
-		var importedHistory []provider.Message
 		if systemInteractive {
-			sp, imported, err := chat.ReadSystemPrompt(os.Stdout)
-			if err != nil {
-				return err
+			sp, sperr := chat.ReadSystemPrompt(os.Stdout)
+			if sperr != nil {
+				return sperr
 			}
 			systemPrompt = sp
-			importedHistory = imported
 		}
 
-		return chat.Run(p, systemPrompt, importedHistory, mgr, os.Stdout)
+		// Create a fresh session writer unless resuming or ephemeral (--no-save).
+		if sw == nil && !noSave {
+			sw, err = chat.NewSessionWriter(p, temp, baseURL)
+			if err != nil {
+				return fmt.Errorf("failed to create session: %w", err)
+			}
+		}
+
+		// Resolve context window: flag > config > default (0 → chat default).
+		contextWindow := 0
+		if v := strings.TrimSpace(contextWindowFlag); v != "" {
+			n, perr := chat.ParseWindowSize(v)
+			if perr != nil {
+				return fmt.Errorf("--context-window: %w", perr)
+			}
+			contextWindow = n
+		} else if pc.ContextWindow != "" {
+			n, perr := chat.ParseWindowSize(pc.ContextWindow)
+			if perr != nil {
+				return fmt.Errorf("config context_window: %w", perr)
+			}
+			contextWindow = n
+		}
+
+		// Join the background MCP connect (started above) before entering chat.
+		// Already-finished → spinner flashes briefly; otherwise it shows until
+		// the slowest server resolves. Failed servers are reported, not fatal.
+		var mgr *mcpmgr.Manager
+		if mcpCh != nil {
+			chat.WithSpinner("Connecting to MCP servers…", func() { mgr = <-mcpCh })
+			reportMCPStatus(mgr)
+			defer mgr.Close()
+		}
+
+		return chat.Run(p, systemPrompt, importedHistory, mgr, sw, contextWindow, os.Stdout)
 	},
 }
 
@@ -183,6 +256,10 @@ func init() {
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print request and response bodies for debugging")
 	rootCmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to config file (default: ~/.chatchain.yaml)")
 	rootCmd.Flags().StringArrayVar(&mcpFlags, "mcp", nil, "MCP server (command string or URL, repeatable)")
+	rootCmd.Flags().StringVar(&resumeID, "resume", "", "Resume a saved session: --resume to pick interactively, or --resume=<id>")
+	rootCmd.Flags().Lookup("resume").NoOptDefVal = " " // allow bare --resume (interactive picker)
+	rootCmd.Flags().BoolVar(&noSave, "no-save", false, "Do not persist this session to disk (ephemeral)")
+	rootCmd.Flags().StringVar(&contextWindowFlag, "context-window", "", "Context window size for compaction accounting (e.g. 200k, 1m); default 128k")
 }
 
 // hasAPIKey checks if a provider has a usable API key from env or config.
@@ -294,6 +371,42 @@ func providerEnvKey(providerType string) string {
 		return key
 	}
 	return "API_KEY"
+}
+
+// reportMCPStatus prints a persistent one-line MCP summary plus a warning line
+// per failed server. Persistent (unlike the ephemeral connect spinner, which is
+// invisible when the connect finishes during interactive model selection) so the
+// user always sees what loaded. Connected servers stay usable on failure
+// (graceful degradation); failures are surfaced, not silently dropped.
+func reportMCPStatus(mgr *mcpmgr.Manager) {
+	if mgr == nil {
+		return
+	}
+	servers := mgr.Servers()
+	if len(servers) == 0 {
+		return
+	}
+
+	connected, tools := 0, 0
+	for _, s := range servers {
+		if s.Connected {
+			connected++
+			tools += s.ToolCount
+		}
+	}
+	if connected > 0 {
+		chat.DimStyle.Fprintf(os.Stdout, "MCP: %d/%d servers connected, %d tools\n", connected, len(servers), tools)
+	}
+	for _, s := range servers {
+		if s.Connected {
+			continue
+		}
+		msg := s.Err
+		if i := strings.IndexByte(msg, '\n'); i >= 0 {
+			msg = msg[:i]
+		}
+		chat.ErrorStyle.Fprintf(os.Stdout, "⚠ MCP %s: %s\n", s.Name, msg)
+	}
 }
 
 func buildMCPConfigs(cfg *config.Config) []mcpmgr.ServerConfig {
