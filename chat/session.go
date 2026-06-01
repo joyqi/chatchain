@@ -445,6 +445,13 @@ func loadLog(dir string, p provider.Provider) (view []provider.Message, convCoun
 		}
 		conv = append(conv, m)
 	}
+	// A per-line json error is tolerated above (a crash mid-write leaves a
+	// truncated trailing line). A scanner error (oversized line / I/O fault) is
+	// different: it stops the read partway, so surface it instead of silently
+	// truncating the session and miscounting convCount.
+	if err := sc.Err(); err != nil {
+		return nil, 0, fmt.Errorf("read session log: %w", err)
+	}
 	convCount = len(conv)
 
 	if system != nil {

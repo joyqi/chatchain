@@ -520,7 +520,12 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 
 	persistTurn := func() {
 		if sw != nil && persisted < len(history) {
-			sw.AppendMessages(history[persisted:])
+			if err := sw.AppendMessages(history[persisted:]); err != nil {
+				// Keep persisted where it is so the unsaved tail is retried on
+				// the next turn instead of being silently dropped.
+				ErrorStyle.Fprintf(w, "Warning: failed to save session: %v\n", err)
+				return
+			}
 			persisted = len(history)
 		}
 	}
@@ -546,7 +551,11 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		titleWG.Add(1)
 		go func(u, a string, target *SessionWriter) {
 			defer titleWG.Done()
-			generateTitle(ctx, p, u, a, target)
+			// Bound the background request so a hung provider can't make
+			// titleWG.Wait() block exit indefinitely.
+			tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			generateTitle(tctx, p, u, a, target)
 		}(firstUser, firstAssistant, sw)
 	}
 
@@ -574,7 +583,12 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			return
 		}
 		history = newHist
-		sw.AppendCompaction(summary, retainTail)
+		if err := sw.AppendCompaction(summary, retainTail); err != nil {
+			// The in-memory view is already compacted; the full log is still on
+			// disk, so resume recovers the (uncompacted) history — only this
+			// summary marker is lost. Warn rather than fail the turn.
+			ErrorStyle.Fprintf(w, "Warning: failed to persist compaction marker: %v\n", err)
+		}
 		persisted = len(history)
 		budget.used = budget.counter.countMessages(history)
 		budget.haveUsage = false
@@ -802,7 +816,7 @@ func ensureModel(ctx context.Context, p provider.Provider, sw *SessionWriter, w 
 // generateTitle asks the model for a short conversation title and stores it on
 // the session. Best-effort: any error leaves the placeholder title in place.
 func generateTitle(ctx context.Context, p provider.Provider, firstUser, firstAssistant string, sw *SessionWriter) {
-	prompt := fmt.Sprintf("为下面的对话起一个简短的标题（不超过6个词，不要加引号，不要结尾标点，使用对话所用的语言），只返回标题本身：\n\n用户: %s\n\n助手: %s",
+	prompt := fmt.Sprintf("Write a short title (at most 6 words, no quotes, no trailing punctuation) for the conversation below, in the same language the conversation uses. Return only the title itself:\n\nUser: %s\n\nAssistant: %s",
 		truncateRunes(firstUser, 500), truncateRunes(firstAssistant, 500))
 	title, err := p.Chat(ctx, []provider.Message{{Role: "user", Content: prompt}})
 	if err != nil {
