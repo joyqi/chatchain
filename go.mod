@@ -3,7 +3,6 @@ module chatchain
 go 1.25.0
 
 require (
-	github.com/a3tai/openclaw-go v1.20260325.0
 	github.com/anthropics/anthropic-sdk-go v1.27.1
 	github.com/briandowns/spinner v1.23.2
 	github.com/ergochat/readline v0.1.3

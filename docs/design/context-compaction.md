@@ -54,11 +54,10 @@ Each provider records the last usage at stream end; the chat loop reads it once 
 | anthropic | `message_start` (input) + `message_delta` (output, cumulative) | already in the event stream, just unread |
 | gemini / vertexai | `resp.UsageMetadata` (PromptTokenCount / CandidatesTokenCount) | |
 | openresponses | `response.completed` usage | |
-| openclaw | possibly none | `ok=false` → fall back to local tokenizer |
 
 ### 3.3 Local tokenizer fallback + cold start
 
-For providers without usage (openclaw) and for **counting the new delta**, use a local tokenizer — the Go tiktoken port `github.com/pkoukk/tiktoken-go` (cl100k_base / o200k_base).
+Before the first response reports usage (cold start) and for **counting the new delta**, use a local tokenizer — the Go tiktoken port `github.com/pkoukk/tiktoken-go` (cl100k_base / o200k_base).
 
 - Approximate for non-OpenAI models, but fine for the trigger threshold.
 - **Offline note**: tiktoken-go downloads the BPE vocab on first use by default; `tiktoken-go-loader` embeds it offline to avoid a network dependency.
@@ -154,7 +153,7 @@ Approach:
 ## 9. Change list (after review)
 
 - `provider/provider.go`: add the optional `UsageReporter` interface (`LastUsage() (input, output int, ok bool)`).
-- Each provider: capture usage in `streamChatInternal` and implement `LastUsage()`; **openai enables `StreamOptions.IncludeUsage`**; openclaw doesn't implement it → local tokenizer.
+- Each provider: capture usage in `streamChatInternal` and implement `LastUsage()`; **openai enables `StreamOptions.IncludeUsage`**. Before any usage is reported (cold start), the local tokenizer fills in.
 - `chat/tokens.go` (new): token counting (real usage first + `tiktoken-go` fallback / new-delta count), window size + unit parsing (b/k/m).
 - `chat/compact.go` (new): threshold check, `compact()` (optional microcompact + summarization call + injection-hardened prompt), compaction-marker generation.
 - `chat/session.go`: add the `compaction` marker record type to `messages.jsonl`; `LoadSession` rebuilds the **derived view** (latest marker's summary + messages after it), with the full log still on disk.

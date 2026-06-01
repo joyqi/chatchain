@@ -168,7 +168,7 @@ Per-provider implementation cost (mostly free):
 - **openresponses**: raw is `*openResponsesRawOutput{items []json.RawMessage}` — marshal the items array.
 - **openai**: raw is already a raw JSON string — store/load verbatim.
 - **vertexai / gemini**: raw is `*genai.Content` with JSON tags — `json.Marshal` / `Unmarshal` directly.
-- **anthropic / openclaw**: don't implement `RawContentProvider`; without it `raw` is empty and the message degrades to text + tool_calls.
+- **anthropic**: doesn't implement `RawContentProvider`; without it `raw` is empty and the message degrades to text + tool_calls.
 
 **Write**: for a message with `RawContent != nil`, call the active provider's `MarshalRawContent` and store `{"provider": p.Type(), "blob": <bytes>}`.
 
@@ -259,7 +259,7 @@ All promptui selectors (`/model`, `/session`, startup model selection) support *
 ## 11. Change list
 
 - `provider/provider.go`: add `Type()` / `Model()` / `SetModel()` to `Provider`; add `MarshalRawContent` / `UnmarshalRawContent` to `RawContentProvider`.
-- Each provider: implement `Type()` / `Model()` / `SetModel()`; the four with `RawContentProvider` (openai/gemini/vertexai/openresponses) add marshal/unmarshal; anthropic/openclaw degrade (no raw).
+- Each provider: implement `Type()` / `Model()` / `SetModel()`; the four with `RawContentProvider` (openai/gemini/vertexai/openresponses) add marshal/unmarshal; anthropic degrades (no raw).
 - `chat/session.go` (new): DTOs, `SessionWriter`, `LoadSession`, `ListSessions`/`SessionInfo`, attachment hash store, session-id generation, dir management.
 - `chat/chat.go`: `Run` creates a `SessionWriter` and appends at the history-append points; delete `/save`/`/import`, add `/session` and `/model`; drop the `/import` handling in `ReadSystemPrompt` and the `importCompleter`; update `chatCompleter`; ESC cancel + `ensureModel` lazy selection.
 - `chat/file.go`: **delete** `SaveHistory` / `ImportHistory`; keep `ReadAttachment`, `DetectMimeType`, `FormatAttachmentList`.

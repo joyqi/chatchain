@@ -4,7 +4,7 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 
 ## Features
 
-- **Multi-provider** — OpenAI, OpenAI Responses API, Anthropic, Gemini, Vertex AI, and OpenClaw, with custom base URL support
+- **Multi-provider** — OpenAI, OpenAI Responses API, Anthropic, Gemini, and Vertex AI, with custom base URL support
 - **MCP tool support** — connect external MCP tool servers (filesystem, GitHub, databases, etc.) and let AI providers use them during chat
 - **Interactive model selection** — arrow-key navigation with filtering
 - **Streaming responses** — real-time token output with loading spinner
@@ -81,7 +81,7 @@ claude --plugin-dir ./chatchain-plugin
 ## Usage
 
 ```bash
-chatchain [openai|anthropic|gemini|vertexai|openresponses|openclaw] [flags]
+chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 ```
 
 ### Flags
@@ -107,7 +107,6 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses|openclaw] [flags]
 | `OPENAI_API_KEY` | OpenAI / OpenResponses |
 | `ANTHROPIC_API_KEY` | Anthropic |
 | `GOOGLE_API_KEY` | Gemini / Vertex AI |
-| `OPENCLAW_GATEWAY_TOKEN` | OpenClaw |
 
 ### Config File
 
@@ -230,9 +229,6 @@ chatchain vertexai -u https://your-proxy.com/api/vertex-ai -M gemini-2.5-flash -
 # Use OpenAI Responses API
 chatchain openresponses -M gpt-4o -m "Hello"
 
-# Use OpenClaw (connect to gateway, select agent)
-chatchain openclaw -u ws://localhost:18789/ws -M main -m "Hello"
-
 # With system prompt
 chatchain openai -M gpt-4o -s 'You are a helpful translator' -m "Translate to French: hello"
 
@@ -308,8 +304,7 @@ chatchain/
     ├── openresponses.go   # OpenAI Responses API (+ tool calling)
     ├── anthropic.go       # Anthropic (+ tool calling)
     ├── gemini.go          # Gemini (+ tool calling)
-    ├── vertexai.go        # Vertex AI (+ tool calling)
-    └── openclaw.go        # OpenClaw Gateway
+    └── vertexai.go        # Vertex AI (+ tool calling)
 ```
 
 ## Dependencies
@@ -322,7 +317,6 @@ chatchain/
 - [openai-go](https://github.com/openai/openai-go) — OpenAI SDK
 - [anthropic-sdk-go](https://github.com/anthropics/anthropic-sdk-go) — Anthropic SDK
 - [go-genai](https://github.com/googleapis/go-genai) — Google Gemini SDK
-- [openclaw-go](https://github.com/a3tai/openclaw-go) — OpenClaw Gateway SDK
 - [go-sdk (MCP)](https://github.com/modelcontextprotocol/go-sdk) — Model Context Protocol SDK
 
 ## License

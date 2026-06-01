@@ -35,7 +35,7 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "chatchain [openai|anthropic|gemini|vertexai|openresponses|openclaw]",
+	Use:   "chatchain [openai|anthropic|gemini|vertexai|openresponses]",
 	Short: "A lightweight cross-platform AI chat CLI",
 	Args:  cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -363,7 +363,6 @@ var providerEnvKeys = map[string]string{
 	"gemini":        "GOOGLE_API_KEY",
 	"vertexai":      "GOOGLE_API_KEY",
 	"openresponses": "OPENAI_API_KEY",
-	"openclaw":      "OPENCLAW_GATEWAY_TOKEN",
 }
 
 func providerEnvKey(providerType string) string {

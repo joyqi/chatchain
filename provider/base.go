@@ -6,9 +6,6 @@ package provider
 // lastInput/... are promoted and used unchanged) and sets providerType in its
 // constructor. It satisfies the Type/Model/SetModel parts of Provider and the
 // LastUsage part of UsageReporter via field promotion.
-//
-// OpenClaw does not embed this — its "model" is an agent ID over WebSocket and
-// it reports no usage, so it keeps bespoke accessors.
 type baseProvider struct {
 	providerType string
 	model        string
