@@ -13,6 +13,7 @@ import (
 	"chatchain/config"
 	mcpmgr "chatchain/mcp"
 	"chatchain/provider"
+	"chatchain/tool"
 
 	"github.com/spf13/cobra"
 )
@@ -130,7 +131,8 @@ var rootCmd = &cobra.Command{
 				mgr, _ = mcpmgr.NewManager(context.Background(), mcpConfigs, logf)
 				defer mgr.Close()
 			}
-			return chat.Once(context.Background(), p, chatMessage, systemPrompt, mgr, os.Stdout)
+			dispatch := buildDispatcher(pc, mgr)
+			return chat.Once(context.Background(), p, chatMessage, systemPrompt, dispatch, os.Stdout)
 		}
 
 		// Interactive: kick off MCP connect concurrently in the background so it
@@ -240,7 +242,8 @@ var rootCmd = &cobra.Command{
 			defer mgr.Close()
 		}
 
-		return chat.Run(p, systemPrompt, importedHistory, mgr, sw, contextWindow, os.Stdout)
+		dispatch := buildDispatcher(pc, mgr)
+		return chat.Run(p, systemPrompt, importedHistory, dispatch, mgr, sw, contextWindow, os.Stdout)
 	},
 }
 
@@ -406,6 +409,26 @@ func reportMCPStatus(mgr *mcpmgr.Manager) {
 		}
 		chat.ErrorStyle.Fprintf(os.Stdout, "⚠ MCP %s: %s\n", s.Name, msg)
 	}
+}
+
+// buildDispatcher assembles the tool dispatcher for a provider: its enabled
+// built-in tools (from the provider's `tools:` config) merged with the MCP
+// manager. Built-ins are passed first so they win any tool-name collision. The
+// result is always non-nil (it may advertise no tools).
+func buildDispatcher(pc config.ProviderConfig, mgr *mcpmgr.Manager) tool.Dispatcher {
+	warnf := func(format string, args ...any) {
+		chat.ErrorStyle.Fprintf(os.Stderr, "⚠ "+format+"\n", args...)
+	}
+	reg := tool.Build(pc.Tools, warnf)
+
+	var parts []tool.Dispatcher
+	if len(reg.Tools()) > 0 {
+		parts = append(parts, reg)
+	}
+	if mgr != nil {
+		parts = append(parts, mgr)
+	}
+	return tool.Merge(parts...)
 }
 
 func buildMCPConfigs(cfg *config.Config) []mcpmgr.ServerConfig {

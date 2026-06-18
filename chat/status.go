@@ -6,6 +6,7 @@ import (
 
 	mcpmgr "chatchain/mcp"
 	"chatchain/provider"
+	"chatchain/tool"
 
 	"github.com/manifoldco/promptui"
 )
@@ -21,7 +22,7 @@ type statusItem struct {
 // usage and how that count was obtained, last turn's token counts, message and
 // attachment counts, MCP wiring, and the session id. Fields degrade gracefully
 // when not yet known.
-func statusLines(p provider.Provider, b *contextBudget, history []provider.Message, pending int, mgr *mcpmgr.Manager, sw *SessionWriter) []statusItem {
+func statusLines(p provider.Provider, b *contextBudget, history []provider.Message, pending int, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter) []statusItem {
 	model := p.Model()
 	if model == "" {
 		model = "(not selected)"
@@ -53,7 +54,13 @@ func statusLines(p provider.Provider, b *contextBudget, history []provider.Messa
 					connected++
 				}
 			}
-			mcp = fmt.Sprintf("%d tools · %d/%d servers connected", len(mgr.Tools()), connected, len(servers))
+			mcp = fmt.Sprintf("%d/%d servers connected", connected, len(servers))
+		}
+	}
+	toolsLine := "none"
+	if dispatch != nil {
+		if n := len(dispatch.Tools()); n > 0 {
+			toolsLine = fmt.Sprintf("%d available", n)
 		}
 	}
 
@@ -69,6 +76,7 @@ func statusLines(p provider.Provider, b *contextBudget, history []provider.Messa
 		items = append(items, statusItem{"Attachments", fmt.Sprintf("%d pending", pending)})
 	}
 	items = append(items,
+		statusItem{"Tools", toolsLine},
 		statusItem{"MCP", mcp},
 		statusItem{"Session", session},
 	)

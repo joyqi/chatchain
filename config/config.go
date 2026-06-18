@@ -15,6 +15,12 @@ type ProviderConfig struct {
 	Model         string `yaml:"model"`
 	System        string `yaml:"system"`
 	ContextWindow string `yaml:"context_window"` // e.g. "200k", "1m", "128000"
+	// Tools enables built-in tools for this provider. The key is the tool name
+	// (its presence enables the tool); the value is that tool's raw config,
+	// decoded lazily by the tool itself (an empty/null value means defaults).
+	// Different tools accept different value shapes (run_command takes a list of
+	// allowed program globs).
+	Tools map[string]yaml.Node `yaml:"tools"`
 }
 
 // MCPServerConfig holds settings for an MCP tool server.

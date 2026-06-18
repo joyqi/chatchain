@@ -185,6 +185,53 @@ chatchain openai -m "hi" -M gpt-4o
 chatchain openai -k sk-override -m "hi" -M gpt-4o
 ```
 
+### Built-in Tools
+
+Besides MCP servers, ChatChain ships **built-in tools** that you enable per provider
+in the config file. A tool is enabled by listing it under that provider's `tools:`
+key; an empty value uses the tool's defaults.
+
+```yaml
+providers:
+  claude:
+    type: anthropic
+    key: sk-ant-xxx
+    model: claude-sonnet-4-20250514
+    tools:
+      run_command:           # allow only these programs
+        - git
+        - ssh
+        - "py*"              # globs are supported (matches python, pytest, …)
+
+  openai:
+    key: sk-official
+    model: gpt-4o
+    tools:
+      run_command:           # empty → any program is allowed
+```
+
+#### `run_command`
+
+Lets the model run commands on your machine and returns their combined
+stdout/stderr. The allow list contains **program names** (`argv[0]`), each matched
+as a glob against the program and its basename — so `git` permits every `git`
+subcommand, and `py*` permits `python`, `python3`, `pytest`, … An empty list
+permits any program.
+
+The model calls it with `command` (required), and optional `stdin` and `cwd`.
+
+Safety model:
+
+- **No shell.** Commands are split into `argv` and executed directly. Shell
+  metacharacters (`| & ; > < * $VAR` …) are **not** interpreted — they become
+  literal arguments, so an allow-listed program can never be used to launch a
+  second command (e.g. `git log; rm -rf ~` runs `git` with the literal args
+  `log;`, `rm`, … and never invokes `rm`).
+- The allow list is your trust boundary: listing an interpreter (`bash`, `sh`,
+  `python`, …) effectively grants broad execution — that is your choice.
+- Each call is capped at **10 minutes**. While a command runs, the spinner shows
+  the elapsed time; press **ESC** (or Ctrl+C) to terminate it.
+
 ### Chat Commands
 
 In interactive mode, the following commands are available. Typing `/` on an empty
@@ -202,6 +249,7 @@ the command is colorized inline (green once complete, cyan while a valid prefix)
 | `/compact [hint]` | Summarize older history to free context; optional hint guides what to keep |
 | `/status` | Show provider, model, context usage, and last-turn token counts |
 | `/mcp` | Show connected MCP servers and their tools |
+| `/tools` | List every available tool (built-in and MCP) with its source |
 
 Attached files are sent with your next message, then cleared automatically.
 
