@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 
 	mcpmgr "chatchain/mcp"
 	"chatchain/provider"
+	"chatchain/tool"
 
 	"github.com/briandowns/spinner"
 	"github.com/ergochat/readline"
@@ -209,7 +211,7 @@ func FetchModels(ctx context.Context, p provider.Provider) ([]string, error) {
 	return models, fetchErr
 }
 
-func Once(ctx context.Context, p provider.Provider, message string, systemPrompt string, mgr *mcpmgr.Manager, w io.Writer) error {
+func Once(ctx context.Context, p provider.Provider, message string, systemPrompt string, dispatch tool.Dispatcher, w io.Writer) error {
 	var messages []provider.Message
 	if systemPrompt != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
@@ -217,10 +219,13 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 	messages = append(messages, provider.Message{Role: "user", Content: message})
 
 	tp, isToolProvider := p.(provider.ToolProvider)
-	tools := mgr.Tools()
+	var tools []provider.ToolDef
+	if dispatch != nil {
+		tools = dispatch.Tools()
+	}
 
 	if isToolProvider && len(tools) > 0 {
-		reply, _, err := executeWithTools(ctx, tp, mgr, &messages, tools, w, true)
+		reply, _, err := executeWithTools(ctx, tp, dispatch, &messages, tools, w, true)
 		if err != nil {
 			return err
 		}
@@ -456,7 +461,7 @@ func retryWithCountdown(w io.Writer, fn func() error) error {
 	return err
 }
 
-func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Message, mgr *mcpmgr.Manager, sw *SessionWriter, contextWindow int, w io.Writer) error {
+func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, contextWindow int, w io.Writer) error {
 	pf := &pasteFilter{r: os.Stdin}
 	// lineEmpty tracks whether the input line is empty; the Listener keeps it in
 	// sync with readline's real buffer and the reader resets it on Enter. A
@@ -508,14 +513,17 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 	}
 
 	DimStyle.Fprintln(w, "Chat started. Press Ctrl+C to exit.")
-	DimStyle.Fprintln(w, "Commands: /file [path], /files, /session, /sessions, /model, /context, /compact, /status, /mcp")
+	DimStyle.Fprintln(w, "Commands: /file [path], /files, /session, /sessions, /model, /context, /compact, /status, /mcp, /tools")
 	if id := sw.ID(); id != "" {
 		DimStyle.Fprintf(w, "Session: %s\n", id)
 	}
 	fmt.Fprintln(w)
 
 	tp, isToolProvider := p.(provider.ToolProvider)
-	tools := mgr.Tools()
+	var tools []provider.ToolDef
+	if dispatch != nil {
+		tools = dispatch.Tools()
+	}
 
 	var pendingAttachments []provider.Attachment
 
@@ -745,8 +753,12 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			printMCPStatus(mgr, w)
 			continue
 		}
+		if input == "/tools" || strings.HasPrefix(input, "/tools ") {
+			printToolStatus(dispatch, mgr, w)
+			continue
+		}
 		if input == "/status" || strings.HasPrefix(input, "/status ") {
-			showStatus(statusLines(p, budget, history, len(pendingAttachments), mgr, sw))
+			showStatus(statusLines(p, budget, history, len(pendingAttachments), dispatch, mgr, sw))
 			continue
 		}
 
@@ -777,7 +789,7 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			retryErr := retryWithCountdown(w, func() error {
 				history = history[:historyLen]
 				var err error
-				reply, thinking, err = executeWithTools(ctx, tp, mgr, &history, tools, w, false)
+				reply, thinking, err = executeWithTools(ctx, tp, dispatch, &history, tools, w, false)
 				return err
 			})
 			if retryErr != nil {
@@ -950,14 +962,11 @@ func streamResponse(ctx context.Context, p provider.Provider, history []provider
 // calls via MCP, feeds results back, and repeats until the model produces a
 // final text response. When quiet=true, no spinner/prefixes/reasoning/markdown
 // are rendered — only the final text reply is returned via the content value.
-func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr.Manager, history *[]provider.Message, tools []provider.ToolDef, w io.Writer, quiet bool) (string, string, error) {
+func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, w io.Writer, quiet bool) (string, string, error) {
 	// Persistent spinner across all tool-call rounds
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
 	s.Writer = os.Stderr
 	spinnerRunning := false
-	totalCalls := 0
-	var toolErrors []string
-	var allToolNames []string
 
 	startSpinner := func(suffix string) {
 		if quiet {
@@ -1014,9 +1023,6 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 			if len(toolCalls) > 0 {
 				goto handleToolCalls
 			}
-			if totalCalls > 0 && !quiet {
-				printToolSummary(w, allToolNames, toolErrors)
-			}
 			return "", "", readErr
 		}
 
@@ -1044,9 +1050,6 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 					goto handleToolCalls
 				}
 				// Reasoning-only response
-				if totalCalls > 0 && !quiet {
-					printToolSummary(w, allToolNames, toolErrors)
-				}
 				return reasoning, reasoning, nil
 			}
 		}
@@ -1068,17 +1071,10 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 		<-done
 
 		if streamErr != nil {
-			if totalCalls > 0 && !quiet {
-				printToolSummary(w, allToolNames, toolErrors)
-			}
 			return "", "", streamErr
 		}
 
 		if len(toolCalls) == 0 {
-			if totalCalls > 0 && !quiet {
-				fmt.Fprintln(w)
-				printToolSummary(w, allToolNames, toolErrors)
-			}
 			return content, reasoning, nil
 		}
 
@@ -1099,26 +1095,24 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 		}
 		*history = append(*history, msg)
 
-		// Execute each tool call via MCP with spinner status
-		for idx, tc := range toolCalls {
-			totalCalls++
-			allToolNames = append(allToolNames, tc.Name)
-
-			summary := toolCallSummary(tc, 60)
-			if len(toolCalls) > 1 {
-				startSpinner(fmt.Sprintf("[%d/%d] %s", idx+1, len(toolCalls), summary))
-			} else {
-				startSpinner(summary)
+		// Execute each tool call: print a header when it starts, run it under a
+		// spinner (elapsed time + ESC), then print a short result summary below.
+		for _, tc := range toolCalls {
+			if !quiet {
+				stopSpinner() // drop any "Thinking…" frame before the header
+				CodeStyle.Fprintln(w, toolCallHeader(tc))
 			}
 
-			resultText, isError, callErr := mgr.CallTool(ctx, tc.Name, tc.Arguments)
+			startSpinner(tc.Name)
+			resultText, isError, callErr := callTool(ctx, dispatch, tc, s, tc.Name, quiet)
 			if callErr != nil {
 				resultText = fmt.Sprintf("Error calling tool: %v", callErr)
 				isError = true
 			}
 
-			if isError {
-				toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", tc.Name, truncate(resultText, 100)))
+			if !quiet {
+				stopSpinner()
+				printToolResult(w, resultText, isError)
 			}
 
 			// Append tool result message
@@ -1130,36 +1124,9 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, mgr *mcpmgr
 				IsError:      isError,
 			})
 		}
-		// Keep spinner running into next iteration (Thinking...)
+		// Spinner restarts as "Thinking…" at the top of the next round.
 	}
 
-}
-
-func printToolSummary(w io.Writer, names []string, errors []string) {
-	// Deduplicate and count tool names
-	counts := make(map[string]int)
-	var order []string
-	for _, name := range names {
-		if counts[name] == 0 {
-			order = append(order, name)
-		}
-		counts[name]++
-	}
-	var parts []string
-	for _, name := range order {
-		if counts[name] > 1 {
-			parts = append(parts, fmt.Sprintf("%s×%d", name, counts[name]))
-		} else {
-			parts = append(parts, name)
-		}
-	}
-
-	if len(errors) > 0 {
-		for _, e := range errors {
-			ErrorStyle.Fprintf(w, "[tool error: %s]\n", e)
-		}
-	}
-	DimStyle.Fprintf(w, "[%d tool calls: %s]\n", len(names), strings.Join(parts, ", "))
 }
 
 func truncate(s string, maxLen int) string {
@@ -1169,21 +1136,144 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// toolCallSummary returns a compact one-line summary like "tool_name(key1=val1, key2=val2)".
-func toolCallSummary(tc provider.ToolCall, maxWidth int) string {
-	var params []string
-	for k, v := range tc.Arguments {
-		s := fmt.Sprintf("%v", v)
-		if len(s) > 20 {
-			s = s[:20] + "…"
+// toolCallHeader renders the one-line "[name key:val key:val]" header shown when
+// a tool call starts. Keys are sorted for stable output; each value is collapsed
+// to one line and truncated.
+func toolCallHeader(tc provider.ToolCall) string {
+	keys := make([]string, 0, len(tc.Arguments))
+	for k := range tc.Arguments {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys)+1)
+	parts = append(parts, tc.Name)
+	for _, k := range keys {
+		v := strings.ReplaceAll(fmt.Sprintf("%v", tc.Arguments[k]), "\n", " ")
+		parts = append(parts, k+":"+truncateRunes(v, 40))
+	}
+	return "[" + strings.Join(parts, " ") + "]"
+}
+
+// toolResultMaxLines is how many lines of a tool result are shown inline; extra
+// lines collapse to a "… +N lines" tail.
+const toolResultMaxLines = 3
+
+// printToolResult prints a tool result as up to toolResultMaxLines indented lines
+// under the call, led by a "⎿" marker; further lines collapse to "… +N lines".
+// Error results are red, otherwise faint.
+func printToolResult(w io.Writer, result string, isError bool) {
+	style := DimStyle
+	if isError {
+		style = ErrorStyle
+	}
+
+	result = strings.TrimRight(result, "\n")
+	if strings.TrimSpace(result) == "" {
+		result = "(no output)"
+	}
+	lines := strings.Split(result, "\n")
+
+	show, extra := lines, 0
+	if len(lines) > toolResultMaxLines {
+		show = lines[:toolResultMaxLines-1] // leave the last row for the tail
+		extra = len(lines) - len(show)
+	}
+	for i, ln := range show {
+		ln = truncateRunes(ln, 120)
+		if i == 0 {
+			style.Fprintf(w, "  ⎿ %s\n", ln)
+		} else {
+			style.Fprintf(w, "    %s\n", ln)
 		}
-		params = append(params, k+"="+s)
 	}
-	summary := tc.Name + "(" + strings.Join(params, ", ") + ")"
-	if len(summary) > maxWidth {
-		summary = summary[:maxWidth] + "…"
+	if extra > 0 {
+		style.Fprintf(w, "    … +%d lines\n", extra)
 	}
-	return summary
+}
+
+// toolRow is one row of the /tools panel; its fields are styled independently by
+// the panel's templates.
+type toolRow struct {
+	Name   string // tool name
+	Source string // "built-in" or "mcp: <server>"
+	Desc   string // one-line description
+	IsMCP  bool   // true when Source is an MCP server
+}
+
+// /tools panel templates (promptui FuncMap). Columns are styled independently:
+// bold name, the source tag green ([built-in]) or yellow ([mcp: …]), faint
+// description; the cyan "▸" marks the active (scroll) row.
+const (
+	toolPanelSrcTag   = `{{ if .IsMCP }}{{ printf "[%s]" .Source | yellow }}{{ else }}{{ "[built-in]" | green }}{{ end }}`
+	toolPanelActive   = `{{ "▸" | cyan }} {{ printf "%-18s" .Name | bold }}  ` + toolPanelSrcTag + `  {{ .Desc | faint }}`
+	toolPanelInactive = `  {{ printf "%-18s" .Name | bold }}  ` + toolPanelSrcTag + `  {{ .Desc | faint }}`
+)
+
+// printToolStatus lists every tool currently advertised to the model, with its
+// source (a built-in tool or which MCP server it came from) and a one-line
+// description — the tool-level counterpart to /mcp's server-level view. The list
+// is often long, so it is shown in a scrollable, read-only promptui panel: arrow
+// keys scroll, and any selection / Enter / Esc dismisses it (no cancel row needed
+// since the choice is irrelevant).
+func printToolStatus(dispatch tool.Dispatcher, mgr *mcpmgr.Manager, w io.Writer) {
+	var defs []provider.ToolDef
+	if dispatch != nil {
+		defs = dispatch.Tools()
+	}
+	if len(defs) == 0 {
+		DimStyle.Fprintln(w, "No tools available.")
+		return
+	}
+
+	// Map each MCP tool name to its server for source attribution; anything not
+	// from an MCP server is a built-in.
+	source := make(map[string]string)
+	if mgr != nil {
+		for _, s := range mgr.Servers() {
+			for _, name := range s.Tools {
+				source[name] = s.Name
+			}
+		}
+	}
+
+	rows := make([]toolRow, len(defs))
+	for i, d := range defs {
+		r := toolRow{
+			Name:   d.Name,
+			Source: "built-in",
+			Desc:   truncate(strings.ReplaceAll(d.Description, "\n", " "), 80),
+		}
+		if srv, ok := source[d.Name]; ok {
+			r.Source = "mcp: " + srv
+			r.IsMCP = true
+		}
+		rows[i] = r
+	}
+
+	// Read-only viewer: a scrollable promptui Select with no cancel row. ESC
+	// routes through escToCancelStdin to a clean close; HideSelected wipes the
+	// panel on exit. Columns are styled independently — bold name, the source tag
+	// green ([built-in]) or yellow ([mcp: …]), and a faint description. The cyan
+	// "▸" marks the row the arrows scroll.
+	size := len(rows)
+	if size > 15 {
+		size = 15
+	}
+	prompt := promptui.Select{
+		Label:        fmt.Sprintf("Tools (%d)", len(defs)),
+		Items:        rows,
+		Size:         size,
+		Stdin:        &escToCancelStdin{r: os.Stdin},
+		HideHelp:     true,
+		HideSelected: true,
+		Templates: &promptui.SelectTemplates{
+			Label:    `{{ . | bold }}  {{ "Enter/Esc to close" | faint }}`,
+			Active:   toolPanelActive,
+			Inactive: toolPanelInactive,
+		},
+	}
+	_, _, _ = prompt.Run()
 }
 
 func printMCPStatus(mgr *mcpmgr.Manager, w io.Writer) {
