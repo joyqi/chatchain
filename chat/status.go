@@ -81,26 +81,13 @@ func statusLines(p provider.Provider, b *contextBudget, history []provider.Messa
 	return items
 }
 
-// showStatus displays the status items as a transient panel via promptui,
-// reusing its clean redraw: HideSelected wipes the whole view on dismiss, leaving
-// no scrollback residue. It is built on Select (promptui's only widget with that
-// clean clear, and whose screen buffer requires one line per item) but rendered
-// as a static panel — identical Active/Inactive templates mean no moving pointer
-// or highlight, and HideHelp drops the navigation hint, so it reads as a plain
-// labeled panel rather than a menu. Each row's name is bold; Enter selects (and
-// clears) a row, Esc / q / Ctrl+C close it natively. The selection is irrelevant.
+// showStatus renders the status items as a read-only Viewer panel: each row is a
+// bold name + value, dismissed with Esc / q / Ctrl+C, leaving no residue.
 func showStatus(items []statusItem) {
-	prompt := promptui.Select{
-		Label:        "Status",
-		Items:        items,
-		Size:         len(items),
-		HideHelp:     true,
-		HideSelected: true,
-		Templates: &promptui.SelectTemplates{
-			Label:    `{{ . | bold }}  {{ "Enter/Esc to close" | faint }}`,
-			Active:   `  {{ printf "%-12s" .Name | bold }}  {{ .Value }}`,
-			Inactive: `  {{ printf "%-12s" .Name | bold }}  {{ .Value }}`,
-		},
+	lines := make([]string, len(items))
+	for i, it := range items {
+		lines[i] = fmt.Sprintf("%s  %s", BoldStyle.Sprintf("%-12s", it.Name), it.Value)
 	}
-	_, _, _ = prompt.Run()
+	v := promptui.Viewer{Label: "Status", Lines: lines, Height: 15}
+	_ = v.Run()
 }

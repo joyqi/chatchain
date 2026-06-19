@@ -10,4 +10,5 @@ var (
 	DimStyle       = color.New(color.Faint)
 	CodeStyle      = color.New(color.FgCyan)
 	CodeBlockStyle = color.New(color.FgGreen)
+	YellowStyle    = color.New(color.FgYellow)
 )

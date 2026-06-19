@@ -1055,13 +1055,6 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 
 }
 
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
-
 // toolCallHeader renders the one-line "[name key:val key:val]" header shown when
 // a tool call starts. Keys are sorted for stable output; each value is collapsed
 // to one line and truncated.
@@ -1118,30 +1111,9 @@ func printToolResult(w io.Writer, result string, isError bool) {
 	}
 }
 
-// toolRow is one row of the /tools panel; its fields are styled independently by
-// the panel's templates.
-type toolRow struct {
-	Name   string // tool name
-	Source string // "built-in" or "mcp: <server>"
-	Desc   string // one-line description
-	IsMCP  bool   // true when Source is an MCP server
-}
-
-// /tools panel templates (promptui FuncMap). Columns are styled independently:
-// bold name, the source tag green ([built-in]) or yellow ([mcp: …]), faint
-// description; the cyan "▸" marks the active (scroll) row.
-const (
-	toolPanelSrcTag   = `{{ if .IsMCP }}{{ printf "[%s]" .Source | yellow }}{{ else }}{{ "[built-in]" | green }}{{ end }}`
-	toolPanelActive   = `{{ "▸" | cyan }} {{ printf "%-18s" .Name | bold }}  ` + toolPanelSrcTag + `  {{ .Desc | faint }}`
-	toolPanelInactive = `  {{ printf "%-18s" .Name | bold }}  ` + toolPanelSrcTag + `  {{ .Desc | faint }}`
-)
-
-// printToolStatus lists every tool currently advertised to the model, with its
-// source (a built-in tool or which MCP server it came from) and a one-line
-// description — the tool-level counterpart to /mcp's server-level view. The list
-// is often long, so it is shown in a scrollable, read-only promptui panel: arrow
-// keys scroll, and any selection / Enter / Esc dismisses it (no cancel row needed
-// since the choice is irrelevant).
+// printToolStatus lists every tool advertised to the model — its source (a
+// built-in tool or which MCP server it came from) and a one-line description — in
+// a scrollable read-only Viewer. The tool-level counterpart to /mcp.
 func printToolStatus(dispatch tool.Dispatcher, mgr *mcpmgr.Manager, w io.Writer) {
 	var defs []provider.ToolDef
 	if dispatch != nil {
@@ -1152,8 +1124,7 @@ func printToolStatus(dispatch tool.Dispatcher, mgr *mcpmgr.Manager, w io.Writer)
 		return
 	}
 
-	// Map each MCP tool name to its server for source attribution; anything not
-	// from an MCP server is a built-in.
+	// Map each MCP tool name to its server; anything else is a built-in.
 	source := make(map[string]string)
 	if mgr != nil {
 		for _, s := range mgr.Servers() {
@@ -1163,41 +1134,18 @@ func printToolStatus(dispatch tool.Dispatcher, mgr *mcpmgr.Manager, w io.Writer)
 		}
 	}
 
-	rows := make([]toolRow, len(defs))
+	lines := make([]string, len(defs))
 	for i, d := range defs {
-		r := toolRow{
-			Name:   d.Name,
-			Source: "built-in",
-			Desc:   truncate(strings.ReplaceAll(d.Description, "\n", " "), 80),
-		}
+		tag := CodeBlockStyle.Sprint("[built-in]") // green
 		if srv, ok := source[d.Name]; ok {
-			r.Source = "mcp: " + srv
-			r.IsMCP = true
+			tag = YellowStyle.Sprintf("[mcp: %s]", srv)
 		}
-		rows[i] = r
+		desc := strings.ReplaceAll(d.Description, "\n", " ")
+		lines[i] = fmt.Sprintf("%s  %s  %s", BoldStyle.Sprintf("%-18s", d.Name), tag, DimStyle.Sprint(desc))
 	}
 
-	// Read-only viewer: a scrollable promptui Select. ESC/q close it natively;
-	// HideSelected wipes the panel on exit. Columns are styled independently —
-	// bold name, the source tag green ([built-in]) or yellow ([mcp: …]), and a
-	// faint description. The cyan "▸" marks the row the arrows scroll.
-	size := len(rows)
-	if size > 15 {
-		size = 15
-	}
-	prompt := promptui.Select{
-		Label:        fmt.Sprintf("Tools (%d)", len(defs)),
-		Items:        rows,
-		Size:         size,
-		HideHelp:     true,
-		HideSelected: true,
-		Templates: &promptui.SelectTemplates{
-			Label:    `{{ . | bold }}  {{ "Enter/Esc to close" | faint }}`,
-			Active:   toolPanelActive,
-			Inactive: toolPanelInactive,
-		},
-	}
-	_, _, _ = prompt.Run()
+	v := promptui.Viewer{Label: fmt.Sprintf("Tools (%d)", len(defs)), Lines: lines, Height: 15}
+	_ = v.Run()
 }
 
 func printMCPStatus(mgr *mcpmgr.Manager, w io.Writer) {
@@ -1211,20 +1159,30 @@ func printMCPStatus(mgr *mcpmgr.Manager, w io.Writer) {
 	for _, s := range servers {
 		totalTools += s.ToolCount
 	}
-	fmt.Fprintf(w, "MCP servers: %d, total tools: %d\n", len(servers), totalTools)
-	fmt.Fprintln(w)
 
+	var lines []string
 	for _, s := range servers {
 		status := ErrorStyle.Sprint("disconnected")
 		if s.Connected {
-			status = BoldStyle.Sprint("connected")
+			status = CodeBlockStyle.Sprint("connected") // green
 		}
-		fmt.Fprintf(w, "  %s [%s]\n", BoldStyle.Sprint(s.Name), status)
-		DimStyle.Fprintf(w, "    Endpoint: %s\n", s.Endpoint)
+		lines = append(lines, fmt.Sprintf("%s  [%s]", BoldStyle.Sprint(s.Name), status))
+		lines = append(lines, DimStyle.Sprintf("  endpoint: %s", s.Endpoint))
 		if s.ToolCount == 0 {
-			DimStyle.Fprintln(w, "    Tools: (none)")
+			lines = append(lines, DimStyle.Sprint("  tools: (none)"))
 		} else {
-			DimStyle.Fprintf(w, "    Tools (%d): %s\n", s.ToolCount, strings.Join(s.Tools, ", "))
+			lines = append(lines, DimStyle.Sprintf("  tools (%d): %s", s.ToolCount, strings.Join(s.Tools, ", ")))
+		}
+		if !s.Connected && s.Err != "" {
+			lines = append(lines, ErrorStyle.Sprintf("  error: %s", strings.SplitN(s.Err, "\n", 2)[0]))
 		}
 	}
+
+	v := promptui.Viewer{
+		Label:  fmt.Sprintf("MCP servers (%d · %d tools)", len(servers), totalTools),
+		Lines:  lines,
+		Wrap:   true, // the tools line is long — wrap instead of pan
+		Height: 15,
+	}
+	_ = v.Run()
 }
