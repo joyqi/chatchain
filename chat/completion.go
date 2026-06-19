@@ -5,7 +5,8 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/ergochat/readline"
+	"chatchain/internal/readline"
+
 	"github.com/fatih/color"
 )
 
@@ -85,7 +86,7 @@ func commandPainter(line []rune, _ int) []rune {
 // Listener on the submitting Enter, so the reader also resets the flag itself on
 // Enter / Ctrl+C. UTF-8 multibyte runes never contain 0x2f, so CJK input cannot
 // false-trigger. The injected byte can push output past the caller's buffer, so
-// overflow is queued and drained next Read, mirroring escToCancelStdin.
+// overflow is queued and drained on the next Read.
 type slashTriggerReader struct {
 	r         io.Reader
 	lineEmpty *atomic.Bool // shared with slashTriggerListener

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"text/template"
 
-	"github.com/manifoldco/promptui"
+	"chatchain/internal/promptui"
 )
 
 // TestToolPanelTemplates renders the /tools panel templates the way promptui

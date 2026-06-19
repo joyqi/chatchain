@@ -13,98 +13,32 @@ import (
 	"sync/atomic"
 	"time"
 
+	"chatchain/internal/promptui"
+	"chatchain/internal/readline"
 	mcpmgr "chatchain/mcp"
 	"chatchain/provider"
 	"chatchain/tool"
 
 	"github.com/briandowns/spinner"
-	"github.com/ergochat/readline"
-	"github.com/manifoldco/promptui"
 	"golang.org/x/term"
 )
 
-// cancelOption is a sentinel first item added to every selector. Selecting it
-// (index 0) means "cancel". Routing cancellation through a normal selection lets
-// us reuse promptui's clean success-path cleanup, which (unlike its broken
-// interrupt path) reliably wipes the rendered list. It is rendered red/bold via
-// cancelableSelect's templates so it stands out from real options.
-const cancelOption = "✗ Cancel"
-
-// escCancelSeq is what ESC / Ctrl+C are expanded into: enough PageUp/Prev presses
-// to reach the top of any realistic list (the cancelOption at index 0), then
-// Enter. This makes both keys trigger promptui's clean success cleanup instead of
-// its leaky interrupt path. 'h' = PageUp, 'k' = Prev in promptui's key map; both
-// clamp at the top.
-var escCancelSeq = func() []byte {
-	b := make([]byte, 0, 64)
-	for i := 0; i < 50; i++ { // 50 PageUps tops out lists up to ~50×pageSize items
-		b = append(b, 'h')
-	}
-	for i := 0; i < 5; i++ { // a few single steps, belt-and-suspenders
-		b = append(b, 'k')
-	}
-	return append(b, '\r') // Enter → select cancelOption (index 0)
-}()
-
-// escToCancelStdin wraps stdin so a standalone ESC keypress or Ctrl+C (0x03) is
-// expanded into escCancelSeq (navigate to the cancel sentinel + Enter) — both
-// cancel cleanly via the success path. Arrow keys and other escape sequences
-// (ESC '[' … / ESC 'O' …) arrive in the same read burst and pass through
-// untouched. The expansion can exceed the caller's buffer, so overflow is queued
-// and drained on the next Read. Pointer receiver (mutable queue); Close is a
-// no-op so the real os.Stdin is never closed.
-type escToCancelStdin struct {
-	r     io.Reader
-	queue []byte
-}
-
-func (e *escToCancelStdin) Read(p []byte) (int, error) {
-	if len(e.queue) > 0 {
-		n := copy(p, e.queue)
-		e.queue = e.queue[n:]
-		return n, nil
-	}
-	n, err := e.r.Read(p)
-	if n == 0 {
-		return n, err
-	}
-	var out []byte
-	for i := 0; i < n; i++ {
-		loneEsc := p[i] == 0x1b && !(i+1 < n && (p[i+1] == '[' || p[i+1] == 'O'))
-		if p[i] == 0x03 || loneEsc { // Ctrl+C or a standalone ESC → cancel
-			out = append(out, escCancelSeq...)
-		} else {
-			out = append(out, p[i])
-		}
-	}
-	m := copy(p, out)
-	if m < len(out) {
-		e.queue = append(e.queue, out[m:]...)
-	}
-	return m, err
-}
-
-func (*escToCancelStdin) Close() error { return nil }
-
-// cancelableSelect builds a promptui.Select with the red "✗ Cancel" sentinel at
-// index 0, ESC/Ctrl+C routed to it, and templates that render the cancel item in
-// red/bold so it's clearly distinct from real options.
-func cancelableSelect(label string, items []string, size int) promptui.Select {
-	isCancel := `eq . "` + cancelOption + `"`
-	return promptui.Select{
-		Label: label,
-		Items: append([]string{cancelOption}, items...),
-		Size:  size,
-		Stdin: &escToCancelStdin{r: os.Stdin},
-		// Hide the post-selection line entirely: promptui clears the whole list
-		// via its clean clearScreen path (no residue), for both a real choice and
-		// a cancel. The confirmation for a real choice is printed by the caller.
+// runSelect shows a single-select menu over the string items using promptui's
+// clean defaults and native ESC/q/Ctrl+C cancel. It returns the chosen index with
+// ok=true, or (0, false) when the user cancels — the single-select sibling of
+// multiSelect.
+func runSelect(label string, items []string, size int) (int, bool) {
+	prompt := promptui.Select{
+		Label:        label,
+		Items:        items,
+		Size:         size,
 		HideSelected: true,
-		Templates: &promptui.SelectTemplates{
-			Active:   `{{ if ` + isCancel + ` }}{{ printf "▸ %s" . | red | bold }}{{ else }}{{ printf "▸ %s" . | cyan }}{{ end }}`,
-			Inactive: `{{ if ` + isCancel + ` }}{{ printf "  %s" . | red }}{{ else }}{{ printf "  %s" . }}{{ end }}`,
-		},
 	}
+	idx, _, err := prompt.Run()
+	if err != nil {
+		return 0, false
+	}
+	return idx, true
 }
 
 // pickContextWindow shows a selector of common context window sizes (ESC to
@@ -119,29 +53,21 @@ func pickContextWindow(b *contextBudget) (int, error) {
 			labels[i] += " (current)"
 		}
 	}
-	prompt := cancelableSelect(fmt.Sprintf("Context window — now %s", b.status()), labels, 10)
-	idx, _, err := prompt.Run()
-	if err != nil || idx == 0 {
-		return 0, nil // cancelled (interrupt or cancel sentinel)
+	idx, ok := runSelect(fmt.Sprintf("Context window — now %s", b.status()), labels, 10)
+	if !ok {
+		return 0, nil // cancelled (ESC / q / Ctrl+C)
 	}
-	return vals[idx-1], nil
+	return vals[idx], nil
 }
 
-// SelectModel prompts for a model. On user cancel (ESC selects the cancel
-// sentinel; Ctrl+C / Ctrl+D interrupt) it returns ("", nil) — empty, not an error.
+// SelectModel prompts for a model. On user cancel (ESC / q / Ctrl+C / Ctrl+D) it
+// returns ("", nil) — empty, not an error.
 func SelectModel(models []string) (string, error) {
-	prompt := cancelableSelect("Select a model", models, 15)
-	idx, _, err := prompt.Run()
-	if err != nil {
-		if err == promptui.ErrInterrupt || err == promptui.ErrEOF {
-			return "", nil // cancelled
-		}
-		return "", err
+	idx, ok := runSelect("Select a model", models, 15)
+	if !ok {
+		return "", nil // cancelled (ESC / q / Ctrl+C / EOF)
 	}
-	if idx == 0 {
-		return "", nil // cancel sentinel
-	}
-	return models[idx-1], nil
+	return models[idx], nil
 }
 
 // reserveBottomLines guarantees at least n empty rows below the current
@@ -1251,11 +1177,10 @@ func printToolStatus(dispatch tool.Dispatcher, mgr *mcpmgr.Manager, w io.Writer)
 		rows[i] = r
 	}
 
-	// Read-only viewer: a scrollable promptui Select with no cancel row. ESC
-	// routes through escToCancelStdin to a clean close; HideSelected wipes the
-	// panel on exit. Columns are styled independently — bold name, the source tag
-	// green ([built-in]) or yellow ([mcp: …]), and a faint description. The cyan
-	// "▸" marks the row the arrows scroll.
+	// Read-only viewer: a scrollable promptui Select. ESC/q close it natively;
+	// HideSelected wipes the panel on exit. Columns are styled independently —
+	// bold name, the source tag green ([built-in]) or yellow ([mcp: …]), and a
+	// faint description. The cyan "▸" marks the row the arrows scroll.
 	size := len(rows)
 	if size > 15 {
 		size = 15
@@ -1264,7 +1189,6 @@ func printToolStatus(dispatch tool.Dispatcher, mgr *mcpmgr.Manager, w io.Writer)
 		Label:        fmt.Sprintf("Tools (%d)", len(defs)),
 		Items:        rows,
 		Size:         size,
-		Stdin:        &escToCancelStdin{r: os.Stdin},
 		HideHelp:     true,
 		HideSelected: true,
 		Templates: &promptui.SelectTemplates{
