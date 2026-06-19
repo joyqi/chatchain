@@ -112,8 +112,8 @@ func attachmentLabel(a provider.Attachment) string {
 
 // pickFile opens an interactive directory browser starting at the working
 // directory: "../" and subdirectories navigate, a file selects and returns its
-// path. Returns "" if cancelled. Hidden entries are skipped. Reuses
-// cancelableSelect, so Esc/Ctrl+C cancel cleanly with no residue.
+// path. Returns "" if cancelled. Hidden entries are skipped. Uses runSelect, so
+// Esc/q/Ctrl+C cancel cleanly with no residue.
 func pickFile() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
@@ -153,12 +153,11 @@ func pickFile() (string, error) {
 		for i, it := range items {
 			labels[i] = it.label
 		}
-		prompt := cancelableSelect("Attach a file · "+dir, labels, 15)
-		idx, _, perr := prompt.Run()
-		if perr != nil || idx == 0 {
+		idx, ok := runSelect("Attach a file · "+dir, labels, 15)
+		if !ok {
 			return "", nil // cancelled
 		}
-		chosen := items[idx-1]
+		chosen := items[idx]
 		if chosen.isDir {
 			dir = chosen.path
 			continue
@@ -178,7 +177,7 @@ func cleanAttachments(w io.Writer, pending []provider.Attachment) []provider.Att
 	for i, a := range pending {
 		rows[i] = attachmentLabel(a)
 	}
-	idxs, ok := multiSelect("Attachments — Space toggles · Enter removes · Esc cancels", rows)
+	idxs, ok := multiSelect("Attachments", rows)
 	if !ok || len(idxs) == 0 {
 		return pending
 	}

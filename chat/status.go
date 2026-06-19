@@ -2,13 +2,11 @@ package chat
 
 import (
 	"fmt"
-	"os"
 
+	"chatchain/internal/promptui"
 	mcpmgr "chatchain/mcp"
 	"chatchain/provider"
 	"chatchain/tool"
-
-	"github.com/manifoldco/promptui"
 )
 
 // statusItem is one labeled row of the /status panel. Name is the bold left
@@ -90,14 +88,12 @@ func statusLines(p provider.Provider, b *contextBudget, history []provider.Messa
 // as a static panel — identical Active/Inactive templates mean no moving pointer
 // or highlight, and HideHelp drops the navigation hint, so it reads as a plain
 // labeled panel rather than a menu. Each row's name is bold; Enter selects (and
-// clears) a row, Esc / Ctrl+C route through escToCancelStdin to the same clean
-// cleanup. The selection is irrelevant.
+// clears) a row, Esc / q / Ctrl+C close it natively. The selection is irrelevant.
 func showStatus(items []statusItem) {
 	prompt := promptui.Select{
 		Label:        "Status",
 		Items:        items,
 		Size:         len(items),
-		Stdin:        &escToCancelStdin{r: os.Stdin},
 		HideHelp:     true,
 		HideSelected: true,
 		Templates: &promptui.SelectTemplates{

@@ -572,12 +572,11 @@ func PickSession() (string, error) {
 	for i, s := range infos {
 		labels[i] = sessionLabel(s)
 	}
-	prompt := cancelableSelect("Select a session to resume", labels, 15)
-	idx, _, err := prompt.Run()
-	if err != nil || idx == 0 {
-		return "", nil // cancelled (interrupt or cancel sentinel) — caller stays put
+	idx, ok := runSelect("Select a session to resume", labels, 15)
+	if !ok {
+		return "", nil // cancelled — caller stays put
 	}
-	return infos[idx-1].ID, nil
+	return infos[idx].ID, nil
 }
 
 func humanizeTime(t time.Time) string {

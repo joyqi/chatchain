@@ -6,45 +6,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"chatchain/provider"
 )
-
-// escToCancelStdin must expand a lone ESC into the cancel sequence (navigate to
-// the cancel sentinel + Enter), while passing escape sequences (arrow keys, SS3)
-// and Ctrl+C through untouched.
-func TestEscToCancelStdin(t *testing.T) {
-	seq := string(escCancelSeq)
-	cases := []struct{ in, want string }{
-		{"\x1b", seq},            // lone ESC → cancel sequence
-		{"\x03", seq},            // Ctrl+C → cancel sequence too
-		{"hi\x1b", "hi" + seq},   // trailing ESC
-		{"\x1b[A", "\x1b[A"},     // up arrow passthrough
-		{"\x1bOP", "\x1bOP"},     // F1 (SS3) passthrough
-		{"a\x1b[Bb", "a\x1b[Bb"}, // arrow mid-stream passthrough
-		{"plain", "plain"},       // ordinary text unchanged
-	}
-	for _, c := range cases {
-		r := &escToCancelStdin{r: strings.NewReader(c.in)}
-		buf := make([]byte, 16) // small buffer to exercise the overflow queue
-		var got string
-		for {
-			n, err := r.Read(buf)
-			got += string(buf[:n])
-			if err != nil || (n == 0 && len(r.queue) == 0) {
-				break
-			}
-			if n == 0 {
-				continue
-			}
-		}
-		if got != c.want {
-			t.Errorf("Read(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
 
 // stubProvider implements provider.Provider + provider.RawContentProvider for
 // exercising the session round-trip without a real backend.
