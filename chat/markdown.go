@@ -10,6 +10,7 @@ import (
 
 	"chatchain/internal/promptui"
 
+	"github.com/alecthomas/chroma/v2/quick"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"golang.org/x/term"
@@ -23,9 +24,12 @@ type markdownWriter struct {
 	inFence   bool
 	tableRows [][]string // buffered parsed cells per row
 	tableSeps []bool     // true if row is a separator (|---|---|)
-	// tableView shows a live "rendering table…" preview of the rows while they
-	// buffer (terminals only); flushTable clears it before emitting the table.
+	fenceLang string     // language from the opening ``` fence
+	codeLines []string   // buffered code-block lines, highlighted at the close
+	// tableView / codeView show a live "rendering…" preview of a block while it
+	// buffers (terminals only); the flush clears it before emitting the result.
 	tableView *promptui.StreamView
+	codeView  *promptui.StreamView
 }
 
 func newMarkdownWriter(w io.Writer) *markdownWriter {
@@ -43,9 +47,37 @@ func (m *markdownWriter) Write(p []byte) (int, error) {
 		line := string(m.buf[:idx])
 		m.buf = m.buf[idx+1:]
 
-		if !m.inFence && isTableLine(line) {
+		// Fenced code block: buffer until the closing fence, then highlight once.
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			if m.inFence {
+				m.inFence = false
+				if err := m.flushCode(); err != nil {
+					return len(p), err
+				}
+			} else {
+				if len(m.tableRows) > 0 {
+					if err := m.flushTable(); err != nil {
+						return len(p), err
+					}
+				}
+				m.inFence = true
+				m.fenceLang = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "```"))
+				m.codeLines = nil
+				m.codeView = newBlockPreview(m.w, codeLabel(m.fenceLang))
+			}
+			continue
+		}
+		if m.inFence {
+			m.codeLines = append(m.codeLines, line)
+			if m.codeView != nil {
+				io.WriteString(m.codeView, line+"\n")
+			}
+			continue
+		}
+
+		if isTableLine(line) {
 			if len(m.tableRows) == 0 {
-				m.startTablePreview() // first row of a new table
+				m.tableView = newBlockPreview(m.w, "rendering table…")
 			}
 			cells := parseTableCells(line)
 			m.tableRows = append(m.tableRows, cells)
@@ -73,6 +105,16 @@ func (m *markdownWriter) Write(p []byte) (int, error) {
 
 // Flush writes any remaining buffered content.
 func (m *markdownWriter) Flush() {
+	if m.inFence {
+		// Unterminated code block: emit what we buffered.
+		if len(m.buf) > 0 {
+			m.codeLines = append(m.codeLines, string(m.buf))
+			m.buf = nil
+		}
+		m.inFence = false
+		m.flushCode()
+		return
+	}
 	if len(m.tableRows) > 0 {
 		m.flushTable()
 	}
@@ -96,17 +138,6 @@ func indexOf(b []byte, c byte) int {
 // highlightLine applies ANSI styles to a single line based on markdown syntax.
 func (m *markdownWriter) highlightLine(line string) string {
 	trimmed := strings.TrimSpace(line)
-
-	// Code fence toggle
-	if strings.HasPrefix(trimmed, "```") {
-		m.inFence = !m.inFence
-		return DimStyle.Sprint(line)
-	}
-
-	// Inside code fence: green
-	if m.inFence {
-		return CodeBlockStyle.Sprint(line)
-	}
 
 	// Heading: ## Title → drop the # markers, bold the text (with inline styling).
 	if len(trimmed) > 0 && trimmed[0] == '#' {
@@ -386,25 +417,76 @@ func isTableSeparator(cells []string) bool {
 // flushTable renders the buffered table rows with aligned columns.
 // If the table would exceed terminal width, columns are shrunk proportionally
 // and cell text wraps within the cell across multiple visual lines.
-// startTablePreview opens a live rolling preview of the table rows as they
+// newBlockPreview opens a live rolling preview of a block's raw lines as they
 // stream in, but only when writing to a terminal — off a terminal (pipe, tests)
-// there is no cursor control, so the raw rows would just duplicate the rendered
-// table.
-func (m *markdownWriter) startTablePreview() {
-	f, ok := m.w.(*os.File)
+// there is no cursor control, so the raw lines would just duplicate the rendered
+// result. Returns nil when there is no terminal.
+func newBlockPreview(w io.Writer, label string) *promptui.StreamView {
+	f, ok := w.(*os.File)
 	if !ok || !term.IsTerminal(int(f.Fd())) {
-		return
+		return nil
 	}
-	m.tableView = &promptui.StreamView{
+	return &promptui.StreamView{
 		Spinner:     spinnerFrames,
-		Label:       "rendering table…",
+		Label:       label,
 		HeaderStyle: dim,
 		Window:      3,
 		Indent:      "  ",
 		RuneWidth:   runeWidth,
 		Style:       dim,
-		Stdout:      m.w,
+		Stdout:      w,
 	}
+}
+
+func codeLabel(lang string) string {
+	if lang == "" {
+		return "rendering code…"
+	}
+	return "rendering code (" + lang + ")…"
+}
+
+// flushCode clears the live preview and emits the buffered code block, syntax
+// highlighted for the terminal.
+func (m *markdownWriter) flushCode() error {
+	if m.codeView != nil {
+		m.codeView.Done("")
+		m.codeView = nil
+	}
+	code := strings.Join(m.codeLines, "\n")
+	lang := m.fenceLang
+	m.codeLines = nil
+	m.fenceLang = ""
+	_, err := io.WriteString(m.w, highlightCode(code, lang))
+	return err
+}
+
+// highlightCode syntax-highlights a code block to ANSI via chroma, falling back
+// to a plain block if highlighting fails (e.g. unknown content).
+func highlightCode(code, lang string) string {
+	var sb strings.Builder
+	if err := quick.Highlight(&sb, code, lang, "terminal256", codeStyleName()); err != nil {
+		return CodeBlockStyle.Sprint(code) + "\n"
+	}
+	out := sb.String()
+	if !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	return out
+}
+
+// codeStyleName picks a chroma style for the terminal's background. COLORFGBG
+// (set by many terminals as "fg;bg") flags a light background; otherwise assume
+// dark. chroma's terminal256 formatter emits only foreground colors, so neither
+// style paints a background block.
+func codeStyleName() string {
+	if fgbg := os.Getenv("COLORFGBG"); fgbg != "" {
+		fields := strings.Split(fgbg, ";")
+		switch fields[len(fields)-1] {
+		case "7", "15": // light background
+			return "github"
+		}
+	}
+	return "monokai"
 }
 
 func (m *markdownWriter) flushTable() error {

@@ -64,6 +64,26 @@ func TestTableRender(t *testing.T) {
 	}
 }
 
+func TestCodeBlockRender(t *testing.T) {
+	color.NoColor = false
+	src := "```python\ndef f():\n    return 1\n```\n"
+	var out strings.Builder
+	m := newMarkdownWriter(&out)
+	m.Write([]byte(src))
+	m.Flush()
+	got := out.String()
+
+	if strings.Contains(got, "```") {
+		t.Errorf("code fence not hidden:\n%q", got)
+	}
+	if v := visible(got); !strings.Contains(v, "def f():") || !strings.Contains(v, "return 1") {
+		t.Errorf("code content missing:\n%q", v)
+	}
+	if !strings.Contains(got, "\x1b[38;5;") {
+		t.Errorf("code not syntax-highlighted:\n%q", got)
+	}
+}
+
 func TestHighlightLineHidesMarkers(t *testing.T) {
 	m := newMarkdownWriter(io.Discard)
 	tests := []struct {
