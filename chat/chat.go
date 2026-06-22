@@ -470,7 +470,7 @@ func echoRows(raw string, tw int) int {
 func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, contextWindow int, w io.Writer) error {
 	// Detect the terminal background now, while it is idle, so the OSC query for
 	// the code-block theme never races user keystrokes mid-stream.
-	warmCodeTheme()
+	detectCodeTheme()
 
 	pf := &pasteFilter{r: os.Stdin}
 	// lineEmpty tracks whether the input line is empty; the Listener keeps it in
@@ -802,6 +802,10 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		msg := provider.Message{Role: "user", Content: input, Attachments: pendingAttachments}
 		pendingAttachments = nil
 		history = append(history, msg)
+
+		// Re-detect the terminal background now (idle, before streaming) so code
+		// blocks in this reply follow a light/dark switch made since the last turn.
+		detectCodeTheme()
 
 		// Use tool-call loop if provider supports tools and MCP tools are available
 		if isToolProvider && len(tools) > 0 {

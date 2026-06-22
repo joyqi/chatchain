@@ -6,7 +6,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"sync"
+	"time"
 	"unicode"
 
 	"chatchain/internal/promptui"
@@ -489,29 +489,41 @@ func indentCode(s string) string {
 }
 
 var (
-	codeThemeOnce sync.Once
-	codeTheme     string
+	codeTheme     = "monokai" // chroma style matching the current terminal background
+	bgUnsupported bool        // terminal didn't answer OSC 11; stop re-querying
 )
 
-// codeStyleName picks a chroma style matching the terminal background, detected
-// once via an OSC 11 query (termenv). A light background gets a light theme so
-// dark-on-light text stays readable; otherwise a dark theme. chroma's
-// terminal256 formatter emits only foreground colors, so no background block is
-// painted either way. Detection is cached; warmCodeTheme primes it while the
-// terminal is idle.
-func codeStyleName() string {
-	codeThemeOnce.Do(func() {
-		codeTheme = "monokai" // dark
-		if !termenv.HasDarkBackground() {
-			codeTheme = "github" // light
-		}
-	})
-	return codeTheme
-}
+// codeStyleName returns the chroma style for the current terminal background. A
+// light background gets a light theme so dark-on-light text stays readable;
+// otherwise a dark theme. chroma's terminal256 formatter emits only foreground
+// colors, so no background block is painted either way.
+//
+// Already-printed code keeps its baked-in colors — only new blocks pick up a
+// background change.
+func codeStyleName() string { return codeTheme }
 
-// warmCodeTheme triggers terminal-background detection at a quiet moment (e.g.
-// startup), so the OSC query never races user keystrokes mid-stream.
-func warmCodeTheme() { codeStyleName() }
+// detectCodeTheme re-detects the terminal background (OSC 11 via termenv) and
+// updates codeTheme. Call it only at quiet moments (startup, the start of a
+// turn) — never mid-stream — so the query can't race user keystrokes. A
+// responsive terminal answers in milliseconds, so per-turn re-detection is
+// cheap and tracks light/dark switches; a terminal that ignores OSC 11 hits
+// termenv's 5s timeout once, after which we latch off so later turns don't pay
+// it again.
+func detectCodeTheme() {
+	if bgUnsupported {
+		return
+	}
+	start := time.Now()
+	dark := termenv.HasDarkBackground()
+	if time.Since(start) > time.Second {
+		bgUnsupported = true
+	}
+	if dark {
+		codeTheme = "monokai"
+	} else {
+		codeTheme = "github"
+	}
+}
 
 func (m *markdownWriter) flushTable() error {
 	if m.tableView != nil {
