@@ -8,6 +8,8 @@ import (
 	"strings"
 	"unicode"
 
+	"chatchain/internal/promptui"
+
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"golang.org/x/term"
@@ -21,6 +23,9 @@ type markdownWriter struct {
 	inFence   bool
 	tableRows [][]string // buffered parsed cells per row
 	tableSeps []bool     // true if row is a separator (|---|---|)
+	// tableView shows a live "rendering table…" preview of the rows while they
+	// buffer (terminals only); flushTable clears it before emitting the table.
+	tableView *promptui.StreamView
 }
 
 func newMarkdownWriter(w io.Writer) *markdownWriter {
@@ -39,9 +44,15 @@ func (m *markdownWriter) Write(p []byte) (int, error) {
 		m.buf = m.buf[idx+1:]
 
 		if !m.inFence && isTableLine(line) {
+			if len(m.tableRows) == 0 {
+				m.startTablePreview() // first row of a new table
+			}
 			cells := parseTableCells(line)
 			m.tableRows = append(m.tableRows, cells)
 			m.tableSeps = append(m.tableSeps, isTableSeparator(cells))
+			if m.tableView != nil {
+				io.WriteString(m.tableView, line+"\n")
+			}
 			continue
 		}
 
@@ -375,7 +386,33 @@ func isTableSeparator(cells []string) bool {
 // flushTable renders the buffered table rows with aligned columns.
 // If the table would exceed terminal width, columns are shrunk proportionally
 // and cell text wraps within the cell across multiple visual lines.
+// startTablePreview opens a live rolling preview of the table rows as they
+// stream in, but only when writing to a terminal — off a terminal (pipe, tests)
+// there is no cursor control, so the raw rows would just duplicate the rendered
+// table.
+func (m *markdownWriter) startTablePreview() {
+	f, ok := m.w.(*os.File)
+	if !ok || !term.IsTerminal(int(f.Fd())) {
+		return
+	}
+	m.tableView = &promptui.StreamView{
+		Spinner:     spinnerFrames,
+		Label:       "rendering table…",
+		HeaderStyle: dim,
+		Window:      3,
+		Indent:      "  ",
+		RuneWidth:   runeWidth,
+		Style:       dim,
+		Stdout:      m.w,
+	}
+}
+
 func (m *markdownWriter) flushTable() error {
+	if m.tableView != nil {
+		m.tableView.Done("") // clear the live preview before emitting the table
+		m.tableView = nil
+	}
+
 	rows := m.tableRows
 	seps := m.tableSeps
 	m.tableRows = nil
