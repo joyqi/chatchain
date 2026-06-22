@@ -95,15 +95,14 @@ func (m *markdownWriter) highlightLine(line string) string {
 		return CodeBlockStyle.Sprint(line)
 	}
 
-	// Heading: # ... → bold
+	// Heading: ## Title → drop the # markers, bold the text (with inline styling).
 	if len(trimmed) > 0 && trimmed[0] == '#' {
-		// Count consecutive # at start
 		i := 0
 		for i < len(trimmed) && trimmed[i] == '#' {
 			i++
 		}
 		if i < len(trimmed) && trimmed[i] == ' ' {
-			return BoldStyle.Sprint(line)
+			return BoldStyle.Sprint(strings.TrimSpace(trimmed[i:]))
 		}
 	}
 
@@ -112,71 +111,86 @@ func (m *markdownWriter) highlightLine(line string) string {
 		return DimStyle.Sprint(line)
 	}
 
-	// Blockquote: > ...
-	if strings.HasPrefix(trimmed, "> ") || trimmed == ">" {
-		return DimStyle.Sprint(line)
+	// Blockquote: > ... → a dim quote bar, the > marker hidden.
+	if strings.HasPrefix(trimmed, "> ") {
+		return DimStyle.Sprint("▌ " + trimmed[2:])
+	}
+	if trimmed == ">" {
+		return DimStyle.Sprint("▌")
 	}
 
-	// List item: highlight the marker in dim
+	// List item: normalize the bullet (- * + → •) and dim it, style the rest.
 	if marker, rest, ok := splitListMarker(line); ok {
-		return DimStyle.Sprint(marker) + highlightInline(rest)
+		return renderListMarker(marker) + highlightInline(rest)
 	}
 
 	// Regular line: apply inline highlighting
 	return highlightInline(line)
 }
 
-// highlightInline applies inline markdown highlighting: **bold**, *italic*, `code`.
+// highlightInline applies inline markdown styling and hides the markup itself:
+// **bold**/__bold__ → bold text, *italic*/_italic_ → italic text, `code` →
+// styled text (no backticks), and [text](url) → styled text + a dim URL.
 func highlightInline(line string) string {
 	var out strings.Builder
 	runes := []rune(line)
 	i := 0
 
 	for i < len(runes) {
-		// Inline code: `...`
+		// Link: [text](url) → styled text, brackets hidden, URL dimmed.
+		if runes[i] == '[' {
+			if textEnd := findClose(runes, i+1, ']'); textEnd > i+1 &&
+				textEnd+1 < len(runes) && runes[textEnd+1] == '(' {
+				if urlEnd := findClose(runes, textEnd+2, ')'); urlEnd > textEnd+1 {
+					text := string(runes[i+1 : textEnd])
+					url := string(runes[textEnd+2 : urlEnd])
+					out.WriteString(LinkStyle.Sprint(text))
+					out.WriteString(DimStyle.Sprint(" (" + url + ")"))
+					i = urlEnd + 1
+					continue
+				}
+			}
+		}
+
+		// Inline code: `code` → styled, backticks hidden.
 		if runes[i] == '`' {
-			end := findClose(runes, i+1, '`')
-			if end > 0 {
-				out.WriteString(CodeStyle.Sprint(string(runes[i : end+1])))
+			if end := findClose(runes, i+1, '`'); end > 0 {
+				out.WriteString(CodeStyle.Sprint(string(runes[i+1 : end])))
 				i = end + 1
 				continue
 			}
 		}
 
-		// Bold: **...** or __...__
+		// Bold: **text** / __text__ → bold, markers hidden.
 		if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '*' {
-			end := findDoubleClose(runes, i+2, '*')
-			if end > 0 {
-				out.WriteString(BoldStyle.Sprint(string(runes[i : end+2])))
+			if end := findDoubleClose(runes, i+2, '*'); end > 0 {
+				out.WriteString(BoldStyle.Sprint(string(runes[i+2 : end])))
 				i = end + 2
 				continue
 			}
 		}
 		if i+1 < len(runes) && runes[i] == '_' && runes[i+1] == '_' {
-			end := findDoubleClose(runes, i+2, '_')
-			if end > 0 {
-				out.WriteString(BoldStyle.Sprint(string(runes[i : end+2])))
+			if end := findDoubleClose(runes, i+2, '_'); end > 0 {
+				out.WriteString(BoldStyle.Sprint(string(runes[i+2 : end])))
 				i = end + 2
 				continue
 			}
 		}
 
-		// Italic: *...* or _..._
-		// Avoid matching list bullets or horizontal rules
+		// Italic: *text* / _text_ → italic, markers hidden.
+		// Avoid matching list bullets and horizontal rules.
 		if runes[i] == '*' && i+1 < len(runes) && runes[i+1] != '*' && runes[i+1] != ' ' {
-			end := findClose(runes, i+1, '*')
-			if end > 0 && end > i+1 {
-				out.WriteString("\033[3m" + string(runes[i:end+1]) + "\033[23m")
+			if end := findClose(runes, i+1, '*'); end > i+1 {
+				out.WriteString(ItalicStyle.Sprint(string(runes[i+1 : end])))
 				i = end + 1
 				continue
 			}
 		}
 		if runes[i] == '_' && i+1 < len(runes) && runes[i+1] != '_' && runes[i+1] != ' ' {
-			// Only match if preceded by space or start of line
+			// Only match if preceded by space or start of line.
 			if i == 0 || unicode.IsSpace(runes[i-1]) {
-				end := findClose(runes, i+1, '_')
-				if end > 0 && end > i+1 {
-					out.WriteString("\033[3m" + string(runes[i:end+1]) + "\033[23m")
+				if end := findClose(runes, i+1, '_'); end > i+1 {
+					out.WriteString(ItalicStyle.Sprint(string(runes[i+1 : end])))
 					i = end + 1
 					continue
 				}
@@ -275,6 +289,20 @@ func splitListMarker(line string) (marker, rest string, ok bool) {
 		return "", "", false
 	}
 	return line[:loc[1]], line[loc[1]:], true
+}
+
+// renderListMarker styles a list marker: unordered bullets (- * +) become a dim
+// "•", ordered markers (1. 2)) are kept but dimmed. Leading indentation is
+// preserved so nested lists stay aligned.
+func renderListMarker(marker string) string {
+	bullet := strings.TrimLeft(marker, " \t")
+	indent := marker[:len(marker)-len(bullet)]
+	switch {
+	case strings.HasPrefix(bullet, "- "), strings.HasPrefix(bullet, "* "), strings.HasPrefix(bullet, "+ "):
+		return indent + DimStyle.Sprint("• ")
+	default:
+		return indent + DimStyle.Sprint(bullet)
+	}
 }
 
 func isHorizontalRule(s string) bool {
