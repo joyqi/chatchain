@@ -15,4 +15,6 @@ var (
 	CodeStyle      = color.New(color.FgCyan)
 	CodeBlockStyle = color.New(color.FgGreen)
 	YellowStyle    = color.New(color.FgYellow)
+	ItalicStyle    = color.New(color.Italic)
+	LinkStyle      = color.New(color.FgCyan, color.Underline)
 )
