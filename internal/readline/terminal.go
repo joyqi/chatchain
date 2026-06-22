@@ -456,6 +456,13 @@ func parseCPRResponse(payload []byte) (cursorPosition, error) {
 }
 
 func (t *terminal) Bell() {
+	// In single-edit-line (menu) mode the listener owns navigation, so readline's
+	// default-action bells — e.g. arrow keys hitting the disabled history — are
+	// spurious. Suppress them, since a terminal with a visual bell would otherwise
+	// flash the screen on every up/down keypress.
+	if t.GetConfig().UniqueEditLine {
+		return
+	}
 	t.Write([]byte{CharBell})
 }
 
