@@ -14,6 +14,10 @@ import (
 // collapsed summary (the live header is an animated spinner instead).
 const reasoningSymbol = "◇"
 
+// spinnerFrames are the braille-dot frames shared by the live viewports (matching
+// WithSpinner's set).
+var spinnerFrames = spinner.CharSets[14]
+
 // reasoningStream renders streaming model reasoning as an animated spinner +
 // "Thinking" header above a 3-line rolling window (via promptui.StreamView),
 // collapsing to "◇ thought for Ns" when finished. It is an io.Writer; copy the
@@ -26,7 +30,7 @@ type reasoningStream struct {
 func newReasoningStream() *reasoningStream {
 	return &reasoningStream{
 		sv: &promptui.StreamView{
-			Spinner:     spinner.CharSets[14], // braille dots, matching WithSpinner
+			Spinner:     spinnerFrames,
 			Label:       "Thinking",
 			HeaderStyle: dim,
 			Window:      3,
