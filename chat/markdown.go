@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode"
 
 	"chatchain/internal/promptui"
@@ -13,6 +14,7 @@ import (
 	"github.com/alecthomas/chroma/v2/quick"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
+	"github.com/muesli/termenv"
 	"golang.org/x/term"
 )
 
@@ -474,20 +476,30 @@ func highlightCode(code, lang string) string {
 	return out
 }
 
-// codeStyleName picks a chroma style for the terminal's background. COLORFGBG
-// (set by many terminals as "fg;bg") flags a light background; otherwise assume
-// dark. chroma's terminal256 formatter emits only foreground colors, so neither
-// style paints a background block.
+var (
+	codeThemeOnce sync.Once
+	codeTheme     string
+)
+
+// codeStyleName picks a chroma style matching the terminal background, detected
+// once via an OSC 11 query (termenv). A light background gets a light theme so
+// dark-on-light text stays readable; otherwise a dark theme. chroma's
+// terminal256 formatter emits only foreground colors, so no background block is
+// painted either way. Detection is cached; warmCodeTheme primes it while the
+// terminal is idle.
 func codeStyleName() string {
-	if fgbg := os.Getenv("COLORFGBG"); fgbg != "" {
-		fields := strings.Split(fgbg, ";")
-		switch fields[len(fields)-1] {
-		case "7", "15": // light background
-			return "github"
+	codeThemeOnce.Do(func() {
+		codeTheme = "monokai" // dark
+		if !termenv.HasDarkBackground() {
+			codeTheme = "github" // light
 		}
-	}
-	return "monokai"
+	})
+	return codeTheme
 }
+
+// warmCodeTheme triggers terminal-background detection at a quiet moment (e.g.
+// startup), so the OSC query never races user keystrokes mid-stream.
+func warmCodeTheme() { codeStyleName() }
 
 func (m *markdownWriter) flushTable() error {
 	if m.tableView != nil {
