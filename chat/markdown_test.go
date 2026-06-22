@@ -37,6 +37,33 @@ func TestHighlightInlineHidesMarkers(t *testing.T) {
 	}
 }
 
+func TestTableRender(t *testing.T) {
+	color.NoColor = false
+	src := "| Name | Note |\n|------|------|\n| `--key` | the **secret** |\n| x | y |\n"
+	var out strings.Builder
+	m := newMarkdownWriter(&out)
+	m.Write([]byte(src))
+	m.Flush()
+	got := visible(out.String())
+
+	// Box-drawing borders are present.
+	if !strings.Contains(got, "┌") || !strings.Contains(got, "│") {
+		t.Errorf("table missing box-drawing:\n%s", got)
+	}
+	// Inline markers are hidden inside cells.
+	for _, bad := range []string{"`--key`", "**secret**", "|---"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("rendered table still shows markup %q:\n%s", bad, got)
+		}
+	}
+	// Cell contents survive (markers stripped).
+	for _, want := range []string{"--key", "secret", "Name", "Note"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rendered table missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestHighlightLineHidesMarkers(t *testing.T) {
 	m := newMarkdownWriter(io.Discard)
 	tests := []struct {
