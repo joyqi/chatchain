@@ -462,18 +462,30 @@ func (m *markdownWriter) flushCode() error {
 	return err
 }
 
+// codeIndent is the uniform left margin added to every rendered code-block line,
+// matching the buffering preview's indent.
+const codeIndent = "  "
+
 // highlightCode syntax-highlights a code block to ANSI via chroma, falling back
-// to a plain block if highlighting fails (e.g. unknown content).
+// to a plain block if highlighting fails (e.g. unknown content). Every line is
+// indented by codeIndent.
 func highlightCode(code, lang string) string {
 	var sb strings.Builder
 	if err := quick.Highlight(&sb, code, lang, "terminal256", codeStyleName()); err != nil {
-		return CodeBlockStyle.Sprint(code) + "\n"
+		return indentCode(CodeBlockStyle.Sprint(code))
 	}
-	out := sb.String()
-	if !strings.HasSuffix(out, "\n") {
-		out += "\n"
+	return indentCode(sb.String())
+}
+
+// indentCode prefixes every line of s with codeIndent. ANSI styles in chroma
+// output reset at each token, so the indent (plain) never inherits a color.
+func indentCode(s string) string {
+	s = strings.TrimSuffix(s, "\n")
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		lines[i] = codeIndent + lines[i]
 	}
-	return out
+	return strings.Join(lines, "\n") + "\n"
 }
 
 var (
