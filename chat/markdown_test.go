@@ -76,7 +76,13 @@ func TestCodeBlockRender(t *testing.T) {
 	if strings.Contains(got, "```") {
 		t.Errorf("code fence not hidden:\n%q", got)
 	}
-	if v := visible(got); !strings.Contains(v, "def f():") || !strings.Contains(v, "return 1") {
+	v := strings.TrimRight(visible(got), "\n")
+	for _, ln := range strings.Split(v, "\n") {
+		if !strings.HasPrefix(ln, "  ") {
+			t.Errorf("code line not indented by two spaces: %q", ln)
+		}
+	}
+	if !strings.Contains(v, "def f():") || !strings.Contains(v, "return 1") {
 		t.Errorf("code content missing:\n%q", v)
 	}
 	if !strings.Contains(got, "\x1b[38;5;") {
