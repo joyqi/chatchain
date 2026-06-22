@@ -8,6 +8,8 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/jedib0t/go-pretty/v6/text"
 	"golang.org/x/term"
 )
 
@@ -383,7 +385,6 @@ func (m *markdownWriter) flushTable() error {
 		return nil
 	}
 
-	// Determine max column count
 	maxCols := 0
 	for _, row := range rows {
 		if len(row) > maxCols {
@@ -391,57 +392,7 @@ func (m *markdownWriter) flushTable() error {
 		}
 	}
 
-	// Calculate max display width per column
-	colWidths := make([]int, maxCols)
-	for _, row := range rows {
-		for j := 0; j < maxCols; j++ {
-			cell := ""
-			if j < len(row) {
-				cell = row[j]
-			}
-			w := cellDisplayWidth(cell)
-			if w > colWidths[j] {
-				colWidths[j] = w
-			}
-		}
-	}
-
-	// Ensure minimum column width of 3
-	for j := range colWidths {
-		if colWidths[j] < 3 {
-			colWidths[j] = 3
-		}
-	}
-
-	// Get terminal width
-	tw, _, err := term.GetSize(int(os.Stdout.Fd()))
-	if err != nil || tw <= 0 {
-		tw = 80
-	}
-
-	// Shrink columns to fit terminal width if needed.
-	// Overhead per row: 1 (leading │) + per column (1 space + cell + 1 space + 1 │)
-	overhead := 1 + maxCols*3
-	available := tw - overhead
-	if available < maxCols*3 {
-		available = maxCols * 3
-	}
-	totalContent := 0
-	for _, w := range colWidths {
-		totalContent += w
-	}
-	if totalContent > available {
-		newWidths := make([]int, maxCols)
-		for j, w := range colWidths {
-			newWidths[j] = w * available / totalContent
-			if newWidths[j] < 3 {
-				newWidths[j] = 3
-			}
-		}
-		colWidths = newWidths
-	}
-
-	// Identify header row: the row before the first separator
+	// The header is the data row just before the first |---| separator.
 	headerRow := -1
 	for i, isSep := range seps {
 		if isSep && i > 0 {
@@ -450,288 +401,133 @@ func (m *markdownWriter) flushTable() error {
 		}
 	}
 
-	// Helper to render a horizontal divider line
-	renderDivider := func(heavy bool) string {
-		var line strings.Builder
-		ch := "─"
-		cross := "┼"
-		if heavy {
-			ch = "━"
-			cross = "╋"
-		}
-		line.WriteString(DimStyle.Sprint("│"))
-		for j := 0; j < maxCols; j++ {
-			line.WriteString(DimStyle.Sprint(" " + strings.Repeat(ch, colWidths[j]) + " "))
-			if j < maxCols-1 {
-				line.WriteString(DimStyle.Sprint(cross))
+	// Natural display width per column (markers stripped, <br> split), then
+	// proportionally shrink so the table fits the terminal; go-pretty wraps each
+	// cell to these maxima (ANSI- and CJK-aware) and handles alignment/borders.
+	colWidths := make([]int, maxCols)
+	for _, row := range rows {
+		for j := 0; j < maxCols && j < len(row); j++ {
+			if w := cellDisplayWidth(row[j]); w > colWidths[j] {
+				colWidths[j] = w
 			}
 		}
-		line.WriteString(DimStyle.Sprint("│"))
-		return line.String()
+	}
+	for j := range colWidths {
+		if colWidths[j] < 3 {
+			colWidths[j] = 3
+		}
+	}
+	tw, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || tw <= 0 {
+		tw = 80
+	}
+	overhead := 1 + maxCols*3 // leading border + " cell " + border per column
+	available := tw - overhead
+	if available < maxCols*3 {
+		available = maxCols * 3
+	}
+	total := 0
+	for _, w := range colWidths {
+		total += w
+	}
+	if total > available {
+		// Water-filling: columns that already fit their fair share keep their
+		// natural width; only the wide columns shrink to absorb the deficit, so a
+		// narrow column is never wrapped just because another column is huge.
+		settled := make([]bool, maxCols)
+		remaining, remainingCols := available, maxCols
+		for {
+			denom := remainingCols
+			if denom < 1 {
+				denom = 1
+			}
+			fair := remaining / denom
+			changed := false
+			for j := 0; j < maxCols; j++ {
+				if !settled[j] && colWidths[j] <= fair {
+					settled[j] = true
+					remaining -= colWidths[j]
+					remainingCols--
+					changed = true
+				}
+			}
+			if !changed || remainingCols == 0 {
+				break
+			}
+		}
+		if remainingCols > 0 {
+			fair := remaining / remainingCols
+			if fair < 3 {
+				fair = 3
+			}
+			for j := 0; j < maxCols; j++ {
+				if !settled[j] {
+					colWidths[j] = fair
+				}
+			}
+		}
 	}
 
-	prevWasData := false
+	t := table.NewWriter()
+	t.SetStyle(table.StyleLight)
+	st := t.Style()
+	st.Format.Header = text.FormatDefault // keep header text as-is (no upper-casing)
+	st.Color.Border = text.Colors{text.Faint}
+	st.Color.Separator = text.Colors{text.Faint}
+	st.Options.SeparateRows = false
+
+	cfgs := make([]table.ColumnConfig, maxCols)
+	for j := 0; j < maxCols; j++ {
+		cfgs[j] = table.ColumnConfig{Number: j + 1, WidthMax: colWidths[j]}
+	}
+	t.SetColumnConfigs(cfgs)
 
 	for i, row := range rows {
 		if seps[i] {
-			// Separator after header uses heavy line; skip original separator
-			if _, err := fmt.Fprintln(m.w, renderDivider(i == headerRow+1)); err != nil {
-				return err
-			}
-			prevWasData = false
-			continue
+			continue // markdown |---| row; go-pretty draws its own rules
 		}
-
-		isHeader := i == headerRow
-
-		// Light divider between data rows
-		if prevWasData && !isHeader {
-			if _, err := fmt.Fprintln(m.w, renderDivider(false)); err != nil {
-				return err
-			}
-		}
-
-		// Parse each cell into styled spans, then wrap into visual lines.
-		// Split on <br> first to handle model-generated HTML line breaks.
-		wrappedCells := make([][]string, maxCols)
-		maxLines := 1
+		cells := make(table.Row, maxCols)
 		for j := 0; j < maxCols; j++ {
 			cell := ""
 			if j < len(row) {
 				cell = row[j]
 			}
-			// Split cell on <br> tags (case-insensitive, with optional space)
-			segments := splitBR(cell)
-			var allLines []string
-			for _, seg := range segments {
-				seg = strings.TrimSpace(seg)
-				spans := parseInlineSpans(seg)
-				if isHeader {
-					for k := range spans {
-						spans[k].start = "\033[1m"
-						spans[k].end = "\033[22m"
-					}
-				}
-				allLines = append(allLines, wrapSpans(spans, colWidths[j])...)
-			}
-			if len(allLines) == 0 {
-				allLines = []string{""}
-			}
-			wrappedCells[j] = allLines
-			if len(allLines) > maxLines {
-				maxLines = len(allLines)
+			if i == headerRow {
+				cells[j] = headerCell(cell)
+			} else {
+				cells[j] = styledCell(cell)
 			}
 		}
-
-		// Render visual lines for this row
-		for ln := 0; ln < maxLines; ln++ {
-			var line strings.Builder
-			line.WriteString(DimStyle.Sprint("│"))
-			for j := 0; j < maxCols; j++ {
-				rendered := ""
-				visWidth := 0
-				if ln < len(wrappedCells[j]) {
-					rendered = wrappedCells[j][ln]
-					visWidth = displayWidth(ansiRe.ReplaceAllString(rendered, ""))
-				}
-				pad := colWidths[j] - visWidth
-				if pad < 0 {
-					pad = 0
-				}
-				line.WriteString(" " + rendered + strings.Repeat(" ", pad) + " ")
-				if j < maxCols-1 {
-					line.WriteString(DimStyle.Sprint("│"))
-				}
-			}
-			line.WriteString(DimStyle.Sprint("│"))
-			if _, err := fmt.Fprintln(m.w, line.String()); err != nil {
-				return err
-			}
+		if i == headerRow {
+			t.AppendHeader(cells)
+		} else {
+			t.AppendRow(cells)
 		}
-		prevWasData = !isHeader
 	}
-	return nil
+
+	_, err = fmt.Fprintln(m.w, t.Render())
+	return err
 }
 
-// styledSpan represents a piece of text with an optional ANSI style.
-type styledSpan struct {
-	text  string
-	start string // ANSI escape to start style (empty for plain)
-	end   string // ANSI escape to end style
+// styledCell renders a data cell's inline markdown (markers hidden) and turns
+// <br> tags into newlines so go-pretty lays them out as multi-line cells.
+func styledCell(cell string) string {
+	segs := splitBR(cell)
+	for i, s := range segs {
+		segs[i] = highlightInline(strings.TrimSpace(s))
+	}
+	return strings.Join(segs, "\n")
 }
 
-// parseInlineSpans parses inline markdown into styled spans, stripping delimiters.
-func parseInlineSpans(line string) []styledSpan {
-	var spans []styledSpan
-	runes := []rune(line)
-	i := 0
-	var plain []rune
-
-	flushPlain := func() {
-		if len(plain) > 0 {
-			spans = append(spans, styledSpan{text: string(plain)})
-			plain = nil
-		}
+// headerCell strips a header cell's inline markers and bolds each line. Each
+// segment is bolded on its own so the bold never spans a newline (which would
+// otherwise bleed into go-pretty's borders).
+func headerCell(cell string) string {
+	segs := splitBR(cell)
+	for i, s := range segs {
+		segs[i] = BoldStyle.Sprint(stripInlineMarkdown(strings.TrimSpace(s)))
 	}
-
-	for i < len(runes) {
-		// Inline code: `...`
-		if runes[i] == '`' {
-			end := findClose(runes, i+1, '`')
-			if end > 0 {
-				flushPlain()
-				spans = append(spans, styledSpan{
-					text:  string(runes[i+1 : end]),
-					start: CodeStyle.SprintFunc()("")[0:0], // we'll use Sprint directly
-				})
-				// Use a simpler approach: store style name and render later
-				// Actually just store the ANSI codes
-				spans[len(spans)-1] = styledSpan{
-					text:  string(runes[i+1 : end]),
-					start: "\033[36m", // cyan (CodeStyle)
-					end:   "\033[0m",
-				}
-				i = end + 1
-				continue
-			}
-		}
-
-		// Bold: **...**
-		if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '*' {
-			end := findDoubleClose(runes, i+2, '*')
-			if end > 0 {
-				flushPlain()
-				spans = append(spans, styledSpan{
-					text:  string(runes[i+2 : end]),
-					start: "\033[1m",
-					end:   "\033[22m",
-				})
-				i = end + 2
-				continue
-			}
-		}
-		// Bold: __...__
-		if i+1 < len(runes) && runes[i] == '_' && runes[i+1] == '_' {
-			end := findDoubleClose(runes, i+2, '_')
-			if end > 0 {
-				flushPlain()
-				spans = append(spans, styledSpan{
-					text:  string(runes[i+2 : end]),
-					start: "\033[1m",
-					end:   "\033[22m",
-				})
-				i = end + 2
-				continue
-			}
-		}
-
-		// Italic: *...*
-		if runes[i] == '*' && i+1 < len(runes) && runes[i+1] != '*' && runes[i+1] != ' ' {
-			end := findClose(runes, i+1, '*')
-			if end > 0 && end > i+1 {
-				flushPlain()
-				spans = append(spans, styledSpan{
-					text:  string(runes[i+1 : end]),
-					start: "\033[3m",
-					end:   "\033[23m",
-				})
-				i = end + 1
-				continue
-			}
-		}
-		// Italic: _..._
-		if runes[i] == '_' && i+1 < len(runes) && runes[i+1] != '_' && runes[i+1] != ' ' {
-			if i == 0 || unicode.IsSpace(runes[i-1]) {
-				end := findClose(runes, i+1, '_')
-				if end > 0 && end > i+1 {
-					flushPlain()
-					spans = append(spans, styledSpan{
-						text:  string(runes[i+1 : end]),
-						start: "\033[3m",
-						end:   "\033[23m",
-					})
-					i = end + 1
-					continue
-				}
-			}
-		}
-
-		plain = append(plain, runes[i])
-		i++
-	}
-	flushPlain()
-	return spans
-}
-
-// wrapSpans wraps styled spans into visual lines of at most maxWidth display columns.
-// Each returned string is already ANSI-styled and ready to print.
-func wrapSpans(spans []styledSpan, maxWidth int) []string {
-	if maxWidth <= 0 {
-		// No wrapping possible, render everything on one line
-		var out strings.Builder
-		for _, sp := range spans {
-			out.WriteString(sp.start + sp.text + sp.end)
-		}
-		return []string{out.String()}
-	}
-
-	var lines []string
-	var cur strings.Builder
-	curWidth := 0
-
-	for _, sp := range spans {
-		runes := []rune(sp.text)
-		ri := 0
-		for ri < len(runes) {
-			// Start a styled segment on the current line
-			if sp.start != "" {
-				cur.WriteString(sp.start)
-			}
-			wrote := false
-			for ri < len(runes) {
-				rw := runeWidth(runes[ri])
-				if curWidth+rw > maxWidth {
-					break
-				}
-				cur.WriteRune(runes[ri])
-				curWidth += rw
-				ri++
-				wrote = true
-			}
-			if sp.start != "" {
-				cur.WriteString(sp.end)
-			}
-
-			// If we couldn't fit any rune and line is empty, force one rune
-			if !wrote && curWidth == 0 {
-				if sp.start != "" {
-					cur.WriteString(sp.start)
-				}
-				cur.WriteRune(runes[ri])
-				curWidth += runeWidth(runes[ri])
-				ri++
-				if sp.start != "" {
-					cur.WriteString(sp.end)
-				}
-			}
-
-			// If there are more runes in this span or line is full, break line
-			if ri < len(runes) {
-				lines = append(lines, cur.String())
-				cur.Reset()
-				curWidth = 0
-			}
-		}
-	}
-
-	// Flush remaining content
-	if cur.Len() > 0 {
-		lines = append(lines, cur.String())
-	}
-	if len(lines) == 0 {
-		lines = []string{""}
-	}
-	return lines
+	return strings.Join(segs, "\n")
 }
 
 // cellDisplayWidth returns the visual display width of a table cell after markdown
