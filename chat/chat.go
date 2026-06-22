@@ -387,6 +387,86 @@ func retryWithCountdown(w io.Writer, fn func() error) error {
 	return err
 }
 
+// userPrompt is the input prompt; its plain (ANSI-stripped) form, so its display
+// width can be measured when erasing the echoed line.
+const userPrompt = "❯ "
+
+// rewriteUserMessage replaces the line readline just echoed ("❯ <raw>") with a
+// full-width highlighted block showing only <display>, so a sent message stands
+// out from the assistant's reply. It assumes the cursor is at column 0 on the
+// row directly below the (possibly wrapped) echoed input — true right after
+// rl.Readline returns and before anything else is printed.
+func rewriteUserMessage(w io.Writer, raw, display string) {
+	tw, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || tw <= 0 {
+		tw = 80
+	}
+	// Move up to the first echoed row and clear everything from there down.
+	fmt.Fprintf(w, "\033[%dA\r\033[J", echoRows(raw, tw))
+	// Render the message as a stack of full-width reversed blocks. A two-column
+	// gutter keeps "❯ " on the first row (so the block still reads as a prompt)
+	// and aligns wrapped rows under it; padding fills the row to the full width.
+	gutterWidth := displayWidth(userPrompt)
+	lines := wrapByWidth(display, tw-gutterWidth)
+	for i, line := range lines {
+		gutter := strings.Repeat(" ", gutterWidth)
+		if i == 0 {
+			gutter = userPrompt
+		}
+		pad := tw - displayWidth(line) - gutterWidth
+		if pad < 0 {
+			pad = 0
+		}
+		fmt.Fprint(w, UserBlockStyle.Sprintf("%s%s%s", gutter, line, strings.Repeat(" ", pad)))
+		fmt.Fprint(w, "\n")
+	}
+}
+
+// wrapByWidth hard-wraps plain text into rows whose display width is at most
+// width, breaking on rune boundaries (mirroring how a terminal wraps). CJK runes
+// count as width 2, so a wide rune is never split across rows.
+func wrapByWidth(s string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	var rows []string
+	var b strings.Builder
+	cur := 0
+	for _, r := range s {
+		rw := runeWidth(r)
+		if cur+rw > width {
+			rows = append(rows, b.String())
+			b.Reset()
+			cur = 0
+		}
+		b.WriteRune(r)
+		cur += rw
+	}
+	rows = append(rows, b.String())
+	return rows
+}
+
+// echoRows returns how many terminal rows readline's echo of "prompt + raw"
+// occupied, so the erase in rewriteUserMessage lands on the first row. readline
+// lets the terminal hard-wrap, so the first row begins after the prompt and each
+// wrapped continuation row resumes at column 0.
+func echoRows(raw string, tw int) int {
+	if tw <= 0 {
+		return 1
+	}
+	rows := 1
+	col := displayWidth(userPrompt) // first row starts just after the prompt
+	for _, r := range raw {
+		rw := runeWidth(r)
+		if col+rw > tw {
+			rows++
+			col = 0 // continuation rows wrap flush-left to column 0
+		}
+		col += rw
+	}
+	return rows
+}
+
 func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, contextWindow int, w io.Writer) error {
 	pf := &pasteFilter{r: os.Stdin}
 	// lineEmpty tracks whether the input line is empty; the Listener keeps it in
@@ -396,7 +476,7 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 	var lineEmpty atomic.Bool
 	lineEmpty.Store(true)
 	rl, err := readline.NewEx(&readline.Config{
-		Prompt:          UserStyle.Sprint("You> "),
+		Prompt:          UserStyle.Sprint(userPrompt),
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
 		AutoComplete:    &chatCompleter{},
@@ -544,11 +624,17 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			return nil
 		}
 
+		// rawLine is exactly what readline echoed after the prompt; we use its
+		// width to know how many rows to erase when redrawing a sent message.
+		rawLine := input
 		input = strings.TrimSpace(input)
 		if input == "" {
 			continue
 		}
 
+		// displayInput is what the user saw on screen (paste tags intact); the
+		// sent message is the paste-expanded form below.
+		displayInput := input
 		// Expand paste tags: [#1 first few chars... N lines] → full pasted text
 		input = expandPasteTags(input, pf)
 
@@ -687,6 +773,11 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			showStatus(statusLines(p, budget, history, len(pendingAttachments), dispatch, mgr, sw))
 			continue
 		}
+
+		// Real message: replace readline's echoed "❯ <input>" line with a
+		// full-width highlighted block. Must run before anything else prints, so
+		// the cursor is still on the row directly below the echoed input.
+		rewriteUserMessage(w, rawLine, displayInput)
 
 		// Lazy model selection: if startup selection was skipped (ESC), pick a
 		// model before sending the first real message. Cancelling again skips
@@ -852,12 +943,10 @@ func streamResponse(ctx context.Context, p provider.Provider, history []provider
 	}
 
 	if hasReasoning {
-		DimStyle.Fprint(w, "Reasoning> ")
-		os.Stdout.WriteString("\033[2m")
-		os.Stdout.Write(firstChunk[:firstN])
-		io.Copy(os.Stdout, reasonPr)
-		os.Stdout.WriteString("\033[0m")
-		fmt.Fprintln(w)
+		rv := newReasoningStream()
+		rv.Write(firstChunk[:firstN])
+		io.Copy(rv, reasonPr)
+		rv.finish()
 
 		firstN, readErr = contentPr.Read(firstChunk)
 		if readErr != nil {
@@ -865,7 +954,11 @@ func streamResponse(ctx context.Context, p provider.Provider, history []provider
 			if streamErr != nil {
 				return "", "", streamErr
 			}
-			// Reasoning-only response
+			// Reasoning-only response: render the reasoning as the answer.
+			AssistantStyle.Fprint(w, "Assistant> ")
+			mdw := newMarkdownWriter(os.Stdout)
+			mdw.Write([]byte(thinking))
+			mdw.Flush()
 			return thinking, thinking, nil
 		}
 	}
@@ -958,12 +1051,10 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 			if quiet {
 				io.Copy(io.Discard, reasonPr)
 			} else {
-				DimStyle.Fprint(w, "Reasoning> ")
-				os.Stdout.WriteString("\033[2m")
-				os.Stdout.Write(firstChunk[:firstN])
-				io.Copy(os.Stdout, reasonPr)
-				os.Stdout.WriteString("\033[0m")
-				fmt.Fprintln(w)
+				rv := newReasoningStream()
+				rv.Write(firstChunk[:firstN])
+				io.Copy(rv, reasonPr)
+				rv.finish()
 			}
 
 			firstN, readErr = contentPr.Read(firstChunk)
@@ -975,7 +1066,13 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 				if len(toolCalls) > 0 {
 					goto handleToolCalls
 				}
-				// Reasoning-only response
+				// Reasoning-only response: render the reasoning as the answer.
+				if !quiet {
+					AssistantStyle.Fprint(w, "Assistant> ")
+					mdw := newMarkdownWriter(os.Stdout)
+					mdw.Write([]byte(reasoning))
+					mdw.Flush()
+				}
 				return reasoning, reasoning, nil
 			}
 		}
