@@ -932,6 +932,11 @@ func streamResponse(ctx context.Context, p provider.Provider, history []provider
 	var readErr error
 	hasReasoning := false
 
+	// Blank line opening the assistant's turn. Printed before the spinner so the
+	// separator is visible from the moment "Thinking..." appears, not only once
+	// reasoning streams or collapses.
+	fmt.Fprintln(w)
+
 	WithSpinner("Thinking...", func() {
 		firstN, readErr = reasonPr.Read(firstChunk)
 		if readErr != nil {
@@ -963,7 +968,7 @@ func streamResponse(ctx context.Context, p provider.Provider, history []provider
 				return "", "", streamErr
 			}
 			// Reasoning-only response: render the reasoning as the answer.
-			AssistantStyle.Fprint(w, "Assistant> ")
+			fmt.Fprintln(w) // blank line separating reasoning from the reply
 			mdw := newMarkdownWriter(os.Stdout)
 			mdw.Write([]byte(thinking))
 			mdw.Flush()
@@ -971,7 +976,9 @@ func streamResponse(ctx context.Context, p provider.Provider, history []provider
 		}
 	}
 
-	AssistantStyle.Fprint(w, "Assistant> ")
+	if hasReasoning {
+		fmt.Fprintln(w) // blank line separating reasoning from the reply
+	}
 	mdw := newMarkdownWriter(os.Stdout)
 	mdw.Write(firstChunk[:firstN])
 	io.Copy(mdw, contentPr)
@@ -1018,6 +1025,10 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 		var content, reasoning string
 		var toolCalls []provider.ToolCall
 		var streamErr error
+		// rendered tracks whether anything (reasoning or content) has been printed
+		// in this round after the opening blank line, so the first tool header knows
+		// whether it still needs its own separator.
+		var rendered bool
 		done := make(chan struct{})
 
 		go func() {
@@ -1031,6 +1042,12 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 		var readErr error
 		hasReasoning := false
 
+		// Blank line opening this round. Printed before the spinner so the separator
+		// is visible from the moment "Thinking..." appears, not only once reasoning
+		// streams or collapses.
+		if !quiet {
+			fmt.Fprintln(w)
+		}
 		startSpinner("Thinking...")
 		firstN, readErr = reasonPr.Read(firstChunk)
 		if readErr != nil {
@@ -1063,6 +1080,7 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 				rv.Write(firstChunk[:firstN])
 				io.Copy(rv, reasonPr)
 				rv.finish()
+				rendered = true
 			}
 
 			firstN, readErr = contentPr.Read(firstChunk)
@@ -1076,7 +1094,7 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 				}
 				// Reasoning-only response: render the reasoning as the answer.
 				if !quiet {
-					AssistantStyle.Fprint(w, "Assistant> ")
+					fmt.Fprintln(w) // blank line separating reasoning from the reply
 					mdw := newMarkdownWriter(os.Stdout)
 					mdw.Write([]byte(reasoning))
 					mdw.Flush()
@@ -1090,11 +1108,14 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 			if quiet {
 				io.Copy(io.Discard, contentPr)
 			} else {
-				AssistantStyle.Fprint(w, "Assistant> ")
+				if hasReasoning {
+					fmt.Fprintln(w) // blank line separating reasoning from the reply
+				}
 				mdw := newMarkdownWriter(os.Stdout)
 				mdw.Write(firstChunk[:firstN])
 				io.Copy(mdw, contentPr)
 				mdw.Flush()
+				rendered = true
 			}
 		} else {
 			io.Copy(io.Discard, contentPr)
@@ -1128,9 +1149,15 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 
 		// Execute each tool call: print a header when it starts, run it under a
 		// spinner (elapsed time + ESC), then print a short result summary below.
-		for _, tc := range toolCalls {
+		for i, tc := range toolCalls {
 			if !quiet {
 				stopSpinner() // drop any "Thinking…" frame before the header
+				// Separate each tool call from the prior block. The first tool reuses
+				// the round's opening blank line when nothing was rendered before it,
+				// so it only adds its own separator when reasoning/content preceded it.
+				if i > 0 || rendered {
+					fmt.Fprintln(w)
+				}
 				CodeStyle.Fprintln(w, toolCallHeader(tc))
 			}
 
@@ -1160,9 +1187,19 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 
 }
 
+// toolHeaderMaxArgs is how many arguments are shown inline in the header; any
+// beyond that collapse to a "… +N args" tail so a call with many arguments stays
+// on one readable line.
+const toolHeaderMaxArgs = 3
+
+// toolHeaderMaxValue is the display width an argument value is truncated to (with
+// a trailing ellipsis) so a single long value can't blow up the header.
+const toolHeaderMaxValue = 15
+
 // toolCallHeader renders the one-line "[name key:val key:val]" header shown when
 // a tool call starts. Keys are sorted for stable output; each value is collapsed
-// to one line and truncated.
+// to one line and truncated, and arguments past toolHeaderMaxArgs collapse to a
+// "… +N args" tail.
 func toolCallHeader(tc provider.ToolCall) string {
 	keys := make([]string, 0, len(tc.Arguments))
 	for k := range tc.Arguments {
@@ -1170,11 +1207,19 @@ func toolCallHeader(tc provider.ToolCall) string {
 	}
 	sort.Strings(keys)
 
-	parts := make([]string, 0, len(keys)+1)
+	shown := keys
+	if len(shown) > toolHeaderMaxArgs {
+		shown = shown[:toolHeaderMaxArgs]
+	}
+
+	parts := make([]string, 0, len(shown)+2)
 	parts = append(parts, tc.Name)
-	for _, k := range keys {
+	for _, k := range shown {
 		v := strings.ReplaceAll(fmt.Sprintf("%v", tc.Arguments[k]), "\n", " ")
-		parts = append(parts, k+":"+truncateRunes(v, 40))
+		parts = append(parts, k+":"+truncateRunes(v, toolHeaderMaxValue))
+	}
+	if extra := len(keys) - len(shown); extra > 0 {
+		parts = append(parts, fmt.Sprintf("… +%d args", extra))
 	}
 	return "[" + strings.Join(parts, " ") + "]"
 }

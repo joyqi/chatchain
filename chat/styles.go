@@ -8,7 +8,6 @@ var (
 	// video swaps fg/bg with no explicit color, so the terminal's default text
 	// color becomes the line background and its background becomes the text color.
 	UserBlockStyle = color.New(color.ReverseVideo)
-	AssistantStyle = color.New(color.FgMagenta, color.Bold)
 	ErrorStyle     = color.New(color.FgRed)
 	BoldStyle      = color.New(color.Bold)
 	DimStyle       = color.New(color.Faint)
