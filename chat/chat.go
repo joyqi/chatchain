@@ -384,9 +384,19 @@ func rewriteUserMessage(w io.Writer, raw, display string) {
 	}
 	// Move up to the first echoed row and clear everything from there down.
 	fmt.Fprintf(w, "\033[%dA\r\033[J", echoRows(raw, tw))
-	// Render the message as a stack of full-width reversed blocks. A two-column
-	// gutter keeps "❯ " on the first row (so the block still reads as a prompt)
-	// and aligns wrapped rows under it; padding fills the row to the full width.
+	printUserBlock(w, display)
+}
+
+// printUserBlock renders a user message as a stack of full-width reversed
+// blocks. A two-column gutter keeps "❯ " on the first row (so the block still
+// reads as a prompt) and aligns wrapped rows under it; padding fills the row to
+// the full width. Unlike rewriteUserMessage it does no cursor movement, so it
+// also serves replayed history on session resume.
+func printUserBlock(w io.Writer, display string) {
+	tw, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || tw <= 0 {
+		tw = 80
+	}
 	gutterWidth := displayWidth(userPrompt)
 	lines := wrapByWidth(display, tw-gutterWidth)
 	for i, line := range lines {
@@ -516,6 +526,13 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		DimStyle.Fprintf(w, "Session: %s\n", id)
 	}
 	fmt.Fprintln(w)
+
+	// Resumed sessions replay their recent tail so the user sees where the
+	// conversation left off; brand-new histories (at most a system message)
+	// print nothing.
+	if msgs := lastRounds(history, resumeEchoRounds); len(msgs) > 0 {
+		echoRounds(w, msgs)
+	}
 
 	tp, isToolProvider := p.(provider.ToolProvider)
 	var tools []provider.ToolDef
@@ -723,6 +740,10 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			// context window) under the same provider-type guard.
 			ApplySessionTuning(sess, p, false, false, budget.setWindow)
 			DimStyle.Fprintf(w, "Resumed session %s (%d messages)\n", id, len(history))
+			if msgs := lastRounds(history, resumeEchoRounds); len(msgs) > 0 {
+				fmt.Fprintln(w)
+				echoRounds(w, msgs)
+			}
 			continue
 		}
 		if input == "/compact" || strings.HasPrefix(input, "/compact ") {
