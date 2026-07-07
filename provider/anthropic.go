@@ -17,6 +17,7 @@ import (
 // Compile-time check that AnthropicProvider implements ToolProvider.
 var _ ToolProvider = (*AnthropicProvider)(nil)
 var _ UsageReporter = (*AnthropicProvider)(nil)
+var _ Tunable = (*AnthropicProvider)(nil)
 
 type AnthropicProvider struct {
 	baseProvider
@@ -124,6 +125,9 @@ func (p *AnthropicProvider) buildParams(messages []Message) (anthropic.MessageNe
 	}
 	if p.temperature != nil {
 		params.Temperature = anthropic.Float(*p.temperature)
+	}
+	if p.effort != "" {
+		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffort(p.effort)}
 	}
 	return params, msgs
 }

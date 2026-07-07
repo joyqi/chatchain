@@ -154,6 +154,7 @@ var rootCmd = &cobra.Command{
 		// can supply the model when -M is omitted).
 		var importedHistory []provider.Message
 		var sw *chat.SessionWriter
+		sessionWindow := 0
 		if cmd.Flags().Changed("resume") {
 			id := strings.TrimSpace(resumeID)
 			if id == "" {
@@ -174,6 +175,14 @@ var rootCmd = &cobra.Command{
 			if model == "" && sess.Meta.Provider == p.Type() && sess.Meta.Model != "" {
 				p.SetModel(sess.Meta.Model)
 			}
+			// Replay the session's tuning knobs; explicit flags win (mirroring
+			// the model guard above): temperature only when -t wasn't passed,
+			// context window only when --context-window wasn't. Effort has no
+			// flag, so the session's value always applies.
+			chat.ApplySessionTuning(sess, p,
+				cmd.Flags().Changed("temperature"),
+				strings.TrimSpace(contextWindowFlag) != "",
+				func(n int) { sessionWindow = n })
 			fmt.Printf("Resumed session %s (%d messages)\n\n", id, len(importedHistory))
 		}
 
@@ -216,7 +225,8 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
-		// Resolve context window: flag > config > default (0 → chat default).
+		// Resolve context window: flag > session meta > config > default
+		// (0 → chat default).
 		contextWindow := 0
 		if v := strings.TrimSpace(contextWindowFlag); v != "" {
 			n, perr := chat.ParseWindowSize(v)
@@ -224,6 +234,8 @@ var rootCmd = &cobra.Command{
 				return fmt.Errorf("--context-window: %w", perr)
 			}
 			contextWindow = n
+		} else if sessionWindow > 0 {
+			contextWindow = sessionWindow
 		} else if pc.ContextWindow != "" {
 			n, perr := chat.ParseWindowSize(pc.ContextWindow)
 			if perr != nil {

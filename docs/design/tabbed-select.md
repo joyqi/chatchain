@@ -9,6 +9,8 @@ single-select / multi-select / directory-browser panel.
 - `/file` + `/files` → unified `/file`
 - `/session` + `/sessions` → unified `/session`
 - `/tools` + `/mcp` → unified `/tools` (a read-only tabbed viewer)
+- `/model` + `/context` → unified `/model` (a four-tab questionnaire; see
+  `docs/design/model-settings.md`)
 
 The component is designed to be **reusable**: a future "ask several choice
 questions at once" flow (AskUserQuestion-style — multiple questions, each with a
@@ -144,7 +146,8 @@ Tab-bar widths and row truncation all use the injected `RuneWidth`.
   and from the `Run()` dispatch.
 - Fold now-dead wrappers into panel construction and delete them (avoid dead
   code). `PickSession` and `runSelect` are retained because other call sites
-  (`--resume` at launch, `SelectModel`, context-window picker) still use them.
+  (`--resume` at launch, `SelectModel`) still use them; the old context-window
+  picker is gone with `/context` (folded into `/model`'s Context tab).
 - Update `/help`, the `slashCommands` table, and the docs.
 
 ## Future reuse: several questions at once

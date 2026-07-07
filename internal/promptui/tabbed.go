@@ -381,6 +381,18 @@ func (p *ListPanel) Selected() []int {
 // Cursor returns the highlighted row index.
 func (p *ListPanel) Cursor() int { return p.cursor }
 
+// SetCursor pre-positions the highlight on row i, clamped to the item bounds
+// (used to open a tab on the currently active value).
+func (p *ListPanel) SetCursor(i int) {
+	if max := len(p.Items) - 1; i > max {
+		i = max
+	}
+	if i < 0 {
+		i = 0
+	}
+	p.cursor = i
+}
+
 func (p *ListPanel) rw(r rune) int {
 	if p.RuneWidth != nil {
 		return p.RuneWidth(r)

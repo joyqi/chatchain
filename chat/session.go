@@ -35,16 +35,18 @@ const sessionSchemaVersion = 1
 // ---- on-disk DTOs ----
 
 type sessionMeta struct {
-	Version      int      `json:"v"`
-	ID           string   `json:"id"`
-	CreatedAt    string   `json:"created_at"`
-	UpdatedAt    string   `json:"updated_at"`
-	Provider     string   `json:"provider"`
-	Model        string   `json:"model"`
-	Temperature  *float64 `json:"temperature,omitempty"`
-	BaseURL      string   `json:"base_url,omitempty"`
-	Title        string   `json:"title,omitempty"`
-	MessageCount int      `json:"message_count"`
+	Version       int      `json:"v"`
+	ID            string   `json:"id"`
+	CreatedAt     string   `json:"created_at"`
+	UpdatedAt     string   `json:"updated_at"`
+	Provider      string   `json:"provider"`
+	Model         string   `json:"model"`
+	Temperature   *float64 `json:"temperature,omitempty"`
+	ContextWindow int      `json:"context_window,omitempty"`
+	Effort        string   `json:"effort,omitempty"`
+	BaseURL       string   `json:"base_url,omitempty"`
+	Title         string   `json:"title,omitempty"`
+	MessageCount  int      `json:"message_count"`
 }
 
 type sessionMessage struct {
@@ -193,6 +195,31 @@ func ResumeSession(id string, p provider.Provider) (*SessionWriter, *Session, er
 	return w, &Session{Meta: meta, Messages: view}, nil
 }
 
+// ApplySessionTuning replays a resumed session's persisted tuning knobs onto
+// the live provider and context budget. Like the model replay, it only applies
+// when the session was recorded under the current provider type. Explicit CLI
+// flags win, so callers set skipTemperature/skipWindow when the corresponding
+// flag was passed (effort has no flag); values the session never recorded leave
+// the current tuning untouched. The context window is delivered through
+// setWindow so both resume paths can route it — budget.setWindow for /session
+// in chat, the launch-time window resolution for --resume in cmd.
+func ApplySessionTuning(sess *Session, p provider.Provider, skipTemperature, skipWindow bool, setWindow func(int)) {
+	if sess == nil || sess.Meta.Provider != p.Type() {
+		return
+	}
+	if t, ok := p.(provider.Tunable); ok {
+		if !skipTemperature && sess.Meta.Temperature != nil {
+			t.SetTemperature(sess.Meta.Temperature)
+		}
+		if sess.Meta.Effort != "" {
+			t.SetEffort(sess.Meta.Effort)
+		}
+	}
+	if !skipWindow && sess.Meta.ContextWindow > 0 && setWindow != nil {
+		setWindow(sess.Meta.ContextWindow)
+	}
+}
+
 func (w *SessionWriter) ID() string {
 	if w == nil {
 		return ""
@@ -337,6 +364,43 @@ func (w *SessionWriter) SetModel(model string) error {
 		return nil
 	}
 	w.meta.Model = model
+	if !w.created {
+		return nil
+	}
+	return w.writeMeta()
+}
+
+// SetTemperature / SetEffort / SetContextWindow update the session's tuning
+// metadata the same way SetModel does: in memory always, on disk only once the
+// bundle exists. Unset values (nil temperature, "" effort, 0 window) drop the
+// field from meta.json via omitempty.
+func (w *SessionWriter) SetTemperature(t *float64) error {
+	if w == nil {
+		return nil
+	}
+	w.meta.Temperature = t
+	if !w.created {
+		return nil
+	}
+	return w.writeMeta()
+}
+
+func (w *SessionWriter) SetEffort(level string) error {
+	if w == nil {
+		return nil
+	}
+	w.meta.Effort = level
+	if !w.created {
+		return nil
+	}
+	return w.writeMeta()
+}
+
+func (w *SessionWriter) SetContextWindow(n int) error {
+	if w == nil {
+		return nil
+	}
+	w.meta.ContextWindow = n
 	if !w.created {
 		return nil
 	}

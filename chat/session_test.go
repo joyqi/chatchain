@@ -103,6 +103,139 @@ func TestSessionRoundTrip(t *testing.T) {
 	}
 }
 
+// Tuning metadata (temperature, effort, context window) survives a meta
+// round-trip: setters before the bundle exists are flushed by the first append,
+// and setters on a resumed (already-created) session write through immediately.
+func TestSessionMetaTuningRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	p := &stubProvider{model: "m1"}
+
+	sw, err := NewSessionWriter(p, nil, "")
+	if err != nil {
+		t.Fatalf("NewSessionWriter: %v", err)
+	}
+	id := sw.ID()
+
+	temp := 0.7
+	sw.SetTemperature(&temp)
+	sw.SetEffort("high")
+	sw.SetContextWindow(200_000)
+	if err := sw.AppendMessages([]provider.Message{{Role: "user", Content: "hi"}}); err != nil {
+		t.Fatalf("AppendMessages: %v", err)
+	}
+	sw.Close()
+
+	sess, err := LoadSession(id, p)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if sess.Meta.Temperature == nil || *sess.Meta.Temperature != 0.7 {
+		t.Errorf("temperature not persisted: %v", sess.Meta.Temperature)
+	}
+	if sess.Meta.Effort != "high" {
+		t.Errorf("effort not persisted: %q", sess.Meta.Effort)
+	}
+	if sess.Meta.ContextWindow != 200_000 {
+		t.Errorf("context window not persisted: %d", sess.Meta.ContextWindow)
+	}
+
+	// Update the knobs on a resumed session; nil temperature drops the field.
+	sw2, _, err := ResumeSession(id, p)
+	if err != nil {
+		t.Fatalf("ResumeSession: %v", err)
+	}
+	sw2.SetTemperature(nil)
+	sw2.SetEffort("max")
+	sw2.SetContextWindow(32_000)
+	sw2.Close()
+
+	sess, err = LoadSession(id, p)
+	if err != nil {
+		t.Fatalf("LoadSession after update: %v", err)
+	}
+	if sess.Meta.Temperature != nil {
+		t.Errorf("temperature not cleared: %v", *sess.Meta.Temperature)
+	}
+	if sess.Meta.Effort != "max" || sess.Meta.ContextWindow != 32_000 {
+		t.Errorf("updated tuning not persisted: effort=%q window=%d", sess.Meta.Effort, sess.Meta.ContextWindow)
+	}
+}
+
+// tunableStub is a stubProvider that also implements provider.Tunable, for
+// exercising the resume-time tuning replay without a real backend.
+type tunableStub struct {
+	stubProvider
+	temp   *float64
+	effort string
+}
+
+func (s *tunableStub) SetTemperature(t *float64) { s.temp = t }
+func (s *tunableStub) Temperature() *float64     { return s.temp }
+func (s *tunableStub) SetEffort(level string)    { s.effort = level }
+func (s *tunableStub) Effort() string            { return s.effort }
+
+func TestApplySessionTuning(t *testing.T) {
+	temp := 0.5
+	meta := sessionMeta{Provider: "stub", Temperature: &temp, Effort: "high", ContextWindow: 200_000}
+
+	t.Run("applies all recorded knobs", func(t *testing.T) {
+		p := &tunableStub{}
+		window := 0
+		ApplySessionTuning(&Session{Meta: meta}, p, false, false, func(n int) { window = n })
+		if p.temp == nil || *p.temp != 0.5 {
+			t.Errorf("temperature not applied: %v", p.temp)
+		}
+		if p.effort != "high" {
+			t.Errorf("effort not applied: %q", p.effort)
+		}
+		if window != 200_000 {
+			t.Errorf("window not applied: %d", window)
+		}
+	})
+
+	t.Run("explicit temperature flag wins", func(t *testing.T) {
+		cur := 0.9
+		p := &tunableStub{temp: &cur}
+		ApplySessionTuning(&Session{Meta: meta}, p, true, false, nil)
+		if p.temp == nil || *p.temp != 0.9 {
+			t.Errorf("flag temperature overridden: %v", p.temp)
+		}
+		if p.effort != "high" {
+			t.Errorf("effort should still apply: %q", p.effort)
+		}
+	})
+
+	t.Run("explicit window flag wins", func(t *testing.T) {
+		p := &tunableStub{}
+		window := 0
+		ApplySessionTuning(&Session{Meta: meta}, p, false, true, func(n int) { window = n })
+		if window != 0 {
+			t.Errorf("flag window overridden: %d", window)
+		}
+	})
+
+	t.Run("provider type mismatch applies nothing", func(t *testing.T) {
+		p := &tunableStub{}
+		window := 0
+		other := meta
+		other.Provider = "different"
+		ApplySessionTuning(&Session{Meta: other}, p, false, false, func(n int) { window = n })
+		if p.temp != nil || p.effort != "" || window != 0 {
+			t.Errorf("tuning applied across provider types: temp=%v effort=%q window=%d", p.temp, p.effort, window)
+		}
+	})
+
+	t.Run("unset values leave current tuning", func(t *testing.T) {
+		cur := 0.9
+		p := &tunableStub{temp: &cur, effort: "low"}
+		window := 0
+		ApplySessionTuning(&Session{Meta: sessionMeta{Provider: "stub"}}, p, false, false, func(n int) { window = n })
+		if p.temp == nil || *p.temp != 0.9 || p.effort != "low" || window != 0 {
+			t.Errorf("unset meta clobbered current tuning: temp=%v effort=%q window=%d", p.temp, p.effort, window)
+		}
+	})
+}
+
 // Loading a session under a different provider type drops the opaque raw blob.
 func TestRawContentDroppedOnProviderMismatch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

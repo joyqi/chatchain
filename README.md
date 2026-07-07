@@ -14,8 +14,8 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 - **Non-interactive mode** — single message in, response out, pipe-friendly
 - **Conversation history** — full context maintained within a session
 - **Session persistence** — every interactive session is auto-saved (losslessly: messages, tool calls, attachments, reasoning) to `~/.chatchain/sessions/`. Resume with `/session` in chat or `--resume[=<id>]` at launch; auto-titled by the model after the first reply; `--no-save` runs ephemerally
-- **Context management** — live token accounting against the context window (configurable via `--context-window` / `/context`), with `/compact` LLM-summarization of older history (and automatic compaction before the window fills)
-- **Switch model mid-chat** — `/model` re-selects the model without restarting
+- **Context management** — live token accounting against the context window (configurable via `--context-window` or the `/model` Context tab), with `/compact` LLM-summarization of older history (and automatic compaction before the window fills)
+- **Model settings mid-chat** — `/model` opens a tabbed panel over the model, context window, reasoning effort, and temperature, all persisted with the session and replayed on resume
 - **System prompt** — set via flag or interactive input
 - **Config file** — persistent API keys, default models, custom provider aliases, and MCP server definitions via `~/.chatchain.yaml`
 - **Styled terminal output** — color-coded prompts
@@ -242,8 +242,7 @@ the command is colorized inline (green once complete, cyan while a valid prefix)
 |---------|-------------|
 | `/file [path]` | Attach a file (image, PDF, or text). With a path (Tab completion supported), attaches directly. With no path, opens a tabbed selector: "Attached" to remove attachments, "Add" to browse and add one. |
 | `/session` | Tabbed selector over saved sessions: "Resume" to resume one, "Delete" to multi-select and delete others. |
-| `/model` | Switch the model for the current session |
-| `/context [size]` | Show/set the context window (e.g. `200k`, `1m`); no arg opens a picker |
+| `/model` | Tabbed settings for the current session: "Model" picks the model, "Context" the context window, "Effort" the reasoning effort (`default`, `low`, `medium`, `high`, `xhigh`, `max` — passed to the provider verbatim, so a level the model doesn't support surfaces as an API error and you pick another), "Temperature" a slider (`default` omits the parameter). Enter applies all four tabs; only changed values are announced. |
 | `/compact [hint]` | Summarize older history to free context; optional hint guides what to keep |
 | `/status` | Show provider, model, context usage, and last-turn token counts |
 | `/tools` | Tabbed read-only view of the model's capabilities: a "Tools" tab (every built-in and MCP tool with its source) and an "MCP" tab (server status, endpoints, and tools) |

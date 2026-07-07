@@ -592,8 +592,7 @@
         <tr><th>Command</th><th>Description</th></tr>
         <tr><td><code>/file [path]</code></td><td>Attach a file; with no path, opens a tabbed selector to remove attachments or browse and add one</td></tr>
         <tr><td><code>/session</code></td><td>Tabbed selector: resume a saved session, or multi-select and delete others</td></tr>
-        <tr><td><code>/model</code></td><td>Switch the model for the current session</td></tr>
-        <tr><td><code>/context [size]</code></td><td>Show or set the context window (e.g. <code>200k</code>, <code>1m</code>)</td></tr>
+        <tr><td><code>/model</code></td><td>Tabbed session settings: model, context window, reasoning effort, and temperature — Enter applies all four tabs (effort levels are passed verbatim; unsupported values surface as API errors)</td></tr>
         <tr><td><code>/compact [hint]</code></td><td>Summarize older history to free up context</td></tr>
         <tr><td><code>/status</code></td><td>Show provider, model, context usage, and last-turn tokens</td></tr>
         <tr><td><code>/tools</code></td><td>Tabbed read-only view: a "Tools" tab (built-in + MCP tools) and an "MCP" tab (server status)</td></tr>
@@ -613,7 +612,7 @@
       { type: 'cmd',   text: '$ chatchain openai -M gpt-4o' },
       { type: 'pause', ms: 600 },
       { type: 'system', text: 'Chat started. Press Ctrl+C to exit.' },
-      { type: 'system', text: 'Commands: /file [path], /session, /model, /context, /compact, /status, /tools' },
+      { type: 'system', text: 'Commands: /file [path], /session, /model, /compact, /status, /tools' },
       { type: 'pause', ms: 400 },
       { type: 'blank' },
       { type: 'user',  text: 'What is ChatChain?' },

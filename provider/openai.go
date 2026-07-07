@@ -20,6 +20,7 @@ import (
 var _ ToolProvider = (*OpenAIProvider)(nil)
 var _ RawContentProvider = (*OpenAIProvider)(nil)
 var _ UsageReporter = (*OpenAIProvider)(nil)
+var _ Tunable = (*OpenAIProvider)(nil)
 
 type OpenAIProvider struct {
 	baseProvider
@@ -85,6 +86,9 @@ func (p *OpenAIProvider) buildParams(messages []Message) openai.ChatCompletionNe
 	}
 	if p.temperature != nil {
 		params.Temperature = openai.Float(*p.temperature)
+	}
+	if p.effort != "" {
+		params.ReasoningEffort = shared.ReasoningEffort(p.effort)
 	}
 	for _, msg := range messages {
 		switch msg.Role {

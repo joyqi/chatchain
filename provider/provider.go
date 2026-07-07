@@ -69,6 +69,18 @@ type UsageReporter interface {
 	LastUsage() (input int, output int, ok bool)
 }
 
+// Tunable is an optional interface for providers whose sampling/reasoning
+// parameters can be adjusted after construction (the /model command and session
+// resume). All providers implement it via baseProvider. Unset values (nil
+// temperature, "" effort) mean the parameter is omitted from requests entirely,
+// leaving the provider's own default in effect.
+type Tunable interface {
+	SetTemperature(t *float64) // nil = provider default (omit the parameter)
+	Temperature() *float64
+	SetEffort(level string) // "" = default (omit); low|medium|high|xhigh|max
+	Effort() string
+}
+
 // RawContentProvider is an optional interface for providers that need to preserve
 // raw model response content (e.g. Vertex AI thought signatures) across tool call rounds.
 //

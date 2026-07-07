@@ -40,25 +40,6 @@ func runSelect(label string, items []string, size int) (int, bool) {
 	return idx, true
 }
 
-// pickContextWindow shows a selector of common context window sizes (ESC to
-// cancel → returns 0). The label header shows current usage so the user can
-// judge. Industry max is currently 1M.
-func pickContextWindow(b *contextBudget) (int, error) {
-	vals := []int{8_000, 32_000, 128_000, 200_000, 256_000, 1_000_000}
-	labels := make([]string, len(vals))
-	for i, v := range vals {
-		labels[i] = formatTokens(v)
-		if v == b.window {
-			labels[i] += " (current)"
-		}
-	}
-	idx, ok := runSelect(fmt.Sprintf("Context window — now %s", b.status()), labels, 10)
-	if !ok {
-		return 0, nil // cancelled (ESC / q / Ctrl+C)
-	}
-	return vals[idx], nil
-}
-
 // SelectModel prompts for a model. On user cancel (ESC / q / Ctrl+C / Ctrl+D) it
 // returns ("", nil) — empty, not an error.
 func SelectModel(models []string) (string, error) {
@@ -520,9 +501,16 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 	if len(history) > 0 {
 		budget.update(p, history) // seed from loaded history on resume
 	}
+	// Record the effective window on brand-new sessions so resume replays it.
+	// Resumed sessions keep their stored value: a one-off --context-window
+	// override (or the config default) must not be baked into the bundle, and
+	// rewriting meta.json here would bump UpdatedAt on every resume.
+	if sw != nil && !sw.created {
+		sw.SetContextWindow(budget.window)
+	}
 
 	DimStyle.Fprintln(w, "Chat started. Press Ctrl+C to exit.")
-	DimStyle.Fprintln(w, "Commands: /file [path], /session, /model, /context, /compact, /status, /tools")
+	DimStyle.Fprintln(w, "Commands: /file [path], /session, /model, /compact, /status, /tools")
 	if id := sw.ID(); id != "" {
 		DimStyle.Fprintf(w, "Session: %s\n", id)
 	}
@@ -664,22 +652,14 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			continue
 		}
 		if input == "/model" || strings.HasPrefix(input, "/model ") {
+			// Tabbed questionnaire over every model-tuning knob: model, context
+			// window, reasoning effort, temperature.
 			models, ferr := FetchModels(ctx, p)
 			if ferr != nil {
 				ErrorStyle.Fprintf(w, "Error: %v\n", ferr)
 				continue
 			}
-			selected, serr := SelectModel(models)
-			if serr != nil {
-				ErrorStyle.Fprintf(w, "Error: %v\n", serr)
-				continue
-			}
-			if selected == "" {
-				continue // cancelled (ESC)
-			}
-			p.SetModel(selected)
-			sw.SetModel(selected)
-			DimStyle.Fprintf(w, "Model switched to %s\n", selected)
+			manageModelSettings(w, p, budget, sw, models)
 			continue
 		}
 		if input == "/session" || strings.HasPrefix(input, "/session ") {
@@ -719,30 +699,10 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			if sess.Meta.Provider == p.Type() && sess.Meta.Model != "" {
 				p.SetModel(sess.Meta.Model)
 			}
+			// Replay the session's other tuning knobs (temperature, effort,
+			// context window) under the same provider-type guard.
+			ApplySessionTuning(sess, p, false, false, budget.setWindow)
 			DimStyle.Fprintf(w, "Resumed session %s (%d messages)\n", id, len(history))
-			continue
-		}
-		if input == "/context" || strings.HasPrefix(input, "/context ") {
-			arg := strings.TrimSpace(strings.TrimPrefix(input, "/context"))
-			if arg == "" {
-				selected, perr := pickContextWindow(budget)
-				if perr != nil {
-					ErrorStyle.Fprintf(w, "Error: %v\n", perr)
-					continue
-				}
-				if selected > 0 {
-					budget.setWindow(selected)
-					DimStyle.Fprintf(w, "Context window: %s\n", budget.status())
-				}
-				continue
-			}
-			n, perr := ParseWindowSize(arg)
-			if perr != nil {
-				ErrorStyle.Fprintf(w, "Error: %v\n", perr)
-				continue
-			}
-			budget.setWindow(n)
-			DimStyle.Fprintf(w, "Context window: %s\n", budget.status())
 			continue
 		}
 		if input == "/compact" || strings.HasPrefix(input, "/compact ") {

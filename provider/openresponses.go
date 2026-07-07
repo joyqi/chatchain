@@ -14,11 +14,13 @@ import (
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/responses"
+	"github.com/openai/openai-go/v3/shared"
 )
 
 var _ ToolProvider = (*OpenResponsesProvider)(nil)
 var _ RawContentProvider = (*OpenResponsesProvider)(nil)
 var _ UsageReporter = (*OpenResponsesProvider)(nil)
+var _ Tunable = (*OpenResponsesProvider)(nil)
 
 // openResponsesRawOutput stores the raw output items from a response.completed event.
 // These are replayed verbatim as input items in the next round to preserve
@@ -91,6 +93,9 @@ func (p *OpenResponsesProvider) buildParams(messages []Message) responses.Respon
 	}
 	if p.temperature != nil {
 		params.Temperature = openai.Float(*p.temperature)
+	}
+	if p.effort != "" {
+		params.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffort(p.effort)}
 	}
 	var input responses.ResponseInputParam
 	for _, msg := range messages {

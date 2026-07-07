@@ -65,11 +65,21 @@ func statusLines(p provider.Provider, b *contextBudget, history []provider.Messa
 	items := []statusItem{
 		{"Provider", p.Type()},
 		{"Model", model},
-		{"Context", fmt.Sprintf("%d / %d tokens (%d%%)", b.used, b.window, pct)},
-		{"Token count", source},
-		{"Last turn", last},
-		{"Messages", fmt.Sprintf("%d in context", len(history))},
 	}
+	// Tuning knobs (temperature, reasoning effort) when the provider exposes
+	// them; "default" means the parameter is omitted from requests.
+	if t, ok := p.(provider.Tunable); ok {
+		items = append(items,
+			statusItem{"Temperature", formatTemperature(t.Temperature())},
+			statusItem{"Effort", effortLabel(t.Effort())},
+		)
+	}
+	items = append(items,
+		statusItem{"Context", fmt.Sprintf("%d / %d tokens (%d%%)", b.used, b.window, pct)},
+		statusItem{"Token count", source},
+		statusItem{"Last turn", last},
+		statusItem{"Messages", fmt.Sprintf("%d in context", len(history))},
+	)
 	if pending > 0 {
 		items = append(items, statusItem{"Attachments", fmt.Sprintf("%d pending", pending)})
 	}

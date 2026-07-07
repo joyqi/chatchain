@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 
 	"google.golang.org/genai"
 )
@@ -14,6 +15,7 @@ import (
 var _ ToolProvider = (*GeminiProvider)(nil)
 var _ RawContentProvider = (*GeminiProvider)(nil)
 var _ UsageReporter = (*GeminiProvider)(nil)
+var _ Tunable = (*GeminiProvider)(nil)
 
 type GeminiProvider struct {
 	baseProvider
@@ -148,6 +150,12 @@ func (p *GeminiProvider) config(system *genai.Content) *genai.GenerateContentCon
 	if p.temperature != nil {
 		temp := float32(*p.temperature)
 		cfg.Temperature = &temp
+	}
+	if p.effort != "" {
+		cfg.ThinkingConfig = &genai.ThinkingConfig{
+			IncludeThoughts: true,
+			ThinkingLevel:   genai.ThinkingLevel(strings.ToUpper(p.effort)),
+		}
 	}
 	if system != nil {
 		cfg.SystemInstruction = system

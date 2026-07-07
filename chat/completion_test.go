@@ -19,7 +19,7 @@ func TestSlashHelpers(t *testing.T) {
 			t.Errorf("isSlashCommand(%q) = true, want false", tok)
 		}
 	}
-	for _, tok := range []string{"/", "/f", "/fi", "/file", "/m", "/context"} {
+	for _, tok := range []string{"/", "/f", "/fi", "/file", "/m", "/compact"} {
 		if !isSlashPrefix(tok) {
 			t.Errorf("isSlashPrefix(%q) = false, want true", tok)
 		}
@@ -51,7 +51,7 @@ func TestCommandPainter(t *testing.T) {
 		{"/fi", true},           // valid prefix → cyan
 		{"/file", true},         // exact command → green
 		{"/file foo bar", true}, // command + args; only the token is painted
-		{"/context 1m", true},   //
+		{"/compact hint", true}, //
 	}
 	for _, c := range cases {
 		out := string(commandPainter([]rune(c.in), len([]rune(c.in))))
