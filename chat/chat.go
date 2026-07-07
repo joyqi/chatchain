@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -325,9 +326,9 @@ const maxRetries = 10
 var http4xxPattern = regexp.MustCompile(`\b4\d{2}\b`)
 
 // isRetryable returns true if the error is likely transient and worth retrying.
-// Non-retryable: io.EOF, HTTP 4xx (except 429 rate limit).
+// Non-retryable: io.EOF, user interruption, HTTP 4xx (except 429 rate limit).
 func isRetryable(err error) bool {
-	if err == io.EOF {
+	if err == io.EOF || errors.Is(err, errInterrupted) {
 		return false
 	}
 	msg := err.Error()
@@ -607,6 +608,25 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		DimStyle.Fprintf(w, "Context compacted → %s\n", budget.status())
 	}
 
+	// interruptTurn finishes a turn the user cancelled mid-stream: it applies
+	// the persistence rules from docs/design/interrupt.md via finalizeInterrupt
+	// (keep the partial, keep completed tool rounds, or roll the turn back),
+	// persists only when the table says so, and prints a dim marker. The
+	// watermark is the index of this turn's user message, which is always
+	// >= persisted, so a rollback never truncates below the persisted prefix.
+	interruptTurn := func(watermark int, partial, partialReasoning string) {
+		var persist bool
+		history, persist = finalizeInterrupt(history, watermark, partial, partialReasoning)
+		fmt.Fprintln(w)
+		DimStyle.Fprintln(w, "Interrupted.")
+		fmt.Fprintln(w)
+		if persist {
+			persistTurn()
+			maybeTitle() // a kept partial can title a first-turn session
+		}
+		budget.update(p, history)
+	}
+
 	for {
 		input, err := rl.Readline()
 		if err != nil { // io.EOF or readline.ErrInterrupt
@@ -758,6 +778,13 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 				reply, thinking, err = executeWithTools(ctx, tp, dispatch, &history, tools, w, false)
 				return err
 			})
+			if errors.Is(retryErr, errInterrupted) {
+				// executeWithTools already appended any completed tool rounds to
+				// history; reply/thinking carry the streamed partials. The normal
+				// assistant append below is skipped, so nothing is double-added.
+				interruptTurn(historyLen-1, reply, thinking)
+				continue
+			}
 			if retryErr != nil {
 				ErrorStyle.Fprintf(w, "Error: %v\n\n", retryErr)
 				history = history[:historyLen-1]
@@ -779,6 +806,12 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			reply, thinking, err = streamResponse(ctx, p, history, w)
 			return err
 		})
+		if errors.Is(retryErr, errInterrupted) {
+			// The normal assistant append below is skipped; finalizeInterrupt
+			// decides whether the partial is kept or the turn rolled back.
+			interruptTurn(len(history)-1, reply, thinking)
+			continue
+		}
 		if retryErr != nil {
 			ErrorStyle.Fprintf(w, "Error: %v\n\n", retryErr)
 			history = history[:len(history)-1]
@@ -854,19 +887,53 @@ func truncateRunes(s string, max int) string {
 }
 
 // streamResponse handles the standard streaming display (reasoning + content pipes).
-// Returns (content, reasoning, error).
+// Returns (content, reasoning, error). The whole function is one streaming
+// section (docs/design/interrupt.md): ESC/Ctrl+C cancels the provider call, the
+// buffered partials are returned with errInterrupted, and the watch is stopped
+// before returning — it is never active at the same time as callTool's watch.
 func streamResponse(ctx context.Context, p provider.Provider, history []provider.Message, w io.Writer) (string, string, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var interrupted atomic.Bool
+	stopWatch := startCancelWatch(func() {
+		interrupted.Store(true)
+		cancel()
+	})
+	defer stopWatch()
+
 	reasonPr, reasonPw := io.Pipe()
 	contentPr, contentPw := io.Pipe()
 	var reply, thinking string
 	var streamErr error
+	// Tee both pipes into buffers as they render: an interrupted stream returns
+	// the partial the user actually saw (StreamChat's completion values are not
+	// usable on the error path).
+	var contentBuf, reasonBuf strings.Builder
 	done := make(chan struct{})
 
 	go func() {
 		defer close(done)
 		defer contentPw.Close()
-		reply, thinking, streamErr = p.StreamChat(ctx, history, contentPw, reasonPw)
+		// Providers close the reasoning pipe before the first content write on
+		// the happy path, but an error (e.g. cancellation) may leave it open.
+		// Closing it here keeps the reads below from blocking forever and stops
+		// the reasoning viewport's ticker on mid-stream errors. io.Pipe closes
+		// are once-only, so the provider's earlier close wins.
+		defer reasonPw.Close()
+		reply, thinking, streamErr = p.StreamChat(ctx, history,
+			io.MultiWriter(contentPw, &contentBuf),
+			teeWriteCloser{io.MultiWriter(reasonPw, &reasonBuf), reasonPw})
 	}()
+
+	// fail maps an error exit to the errInterrupted sentinel when our watch
+	// fired: any stream error after a user cancel is treated as interruption
+	// (SDKs wrap context.Canceled inconsistently). Only called after <-done.
+	fail := func(err error) (string, string, error) {
+		if interrupted.Load() {
+			return contentBuf.String(), reasonBuf.String(), errInterrupted
+		}
+		return "", "", err
+	}
 
 	firstChunk := make([]byte, 4096)
 	var firstN int
@@ -891,22 +958,32 @@ func streamResponse(ctx context.Context, p provider.Provider, history []provider
 	if readErr != nil {
 		<-done
 		if streamErr != nil {
-			return "", "", streamErr
+			return fail(streamErr)
 		}
-		return "", "", readErr
+		return fail(readErr)
 	}
 
 	if hasReasoning {
 		rv := newReasoningStream()
+		rvDone := false
+		finishRV := func() {
+			if !rvDone {
+				rvDone = true
+				rv.finish()
+			}
+		}
+		// Done-guarded so the viewport (and its spinner ticker) is collapsed on
+		// every exit path without double-finishing on success.
+		defer finishRV()
 		rv.Write(firstChunk[:firstN])
 		io.Copy(rv, reasonPr)
-		rv.finish()
+		finishRV()
 
 		firstN, readErr = contentPr.Read(firstChunk)
 		if readErr != nil {
 			<-done
-			if streamErr != nil {
-				return "", "", streamErr
+			if interrupted.Load() || streamErr != nil {
+				return fail(streamErr)
 			}
 			// Reasoning-only response: render the reasoning as the answer.
 			fmt.Fprintln(w) // blank line separating reasoning from the reply
@@ -926,8 +1003,11 @@ func streamResponse(ctx context.Context, p provider.Provider, history []provider
 	mdw.Flush()
 	<-done
 
-	if streamErr != nil {
-		return "", "", streamErr
+	// A cancelled stream may surface as an error or — with providers that
+	// tolerate close errors once content flowed — as a truncated success;
+	// either way the user asked to stop, so report interruption.
+	if interrupted.Load() || streamErr != nil {
+		return fail(streamErr)
 	}
 
 	return reply, thinking, nil
@@ -937,6 +1017,8 @@ func streamResponse(ctx context.Context, p provider.Provider, history []provider
 // calls via MCP, feeds results back, and repeats until the model produces a
 // final text response. When quiet=true, no spinner/prefixes/reasoning/markdown
 // are rendered — only the final text reply is returned via the content value.
+// On errInterrupted the streamed partials are returned as content/reasoning;
+// any completed tool rounds are already appended to *history.
 func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, w io.Writer, quiet bool) (string, string, error) {
 	// Persistent spinner across all tool-call rounds
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
@@ -959,119 +1041,20 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 			spinnerRunning = false
 		}
 	}
+	// Done-guarded by spinnerRunning: makes sure the spinner is stopped on
+	// every exit path (interrupt included) without double-stopping.
+	defer stopSpinner()
 
 	for {
-		reasonPr, reasonPw := io.Pipe()
-		contentPr, contentPw := io.Pipe()
-		var content, reasoning string
-		var toolCalls []provider.ToolCall
-		var streamErr error
-		// rendered tracks whether anything (reasoning or content) has been printed
-		// in this round after the opening blank line, so the first tool header knows
-		// whether it still needs its own separator.
-		var rendered bool
-		done := make(chan struct{})
-
-		go func() {
-			defer close(done)
-			defer contentPw.Close()
-			content, reasoning, toolCalls, streamErr = tp.StreamChatWithTools(ctx, *history, tools, contentPw, reasonPw)
-		}()
-
-		firstChunk := make([]byte, 4096)
-		var firstN int
-		var readErr error
-		hasReasoning := false
-
-		// Blank line opening this round. Printed before the spinner so the separator
-		// is visible from the moment "Thinking..." appears, not only once reasoning
-		// streams or collapses.
-		if !quiet {
-			fmt.Fprintln(w)
+		content, reasoning, toolCalls, rendered, err := streamToolRound(ctx, tp, *history, tools, w, quiet, startSpinner, stopSpinner)
+		if err != nil {
+			// errInterrupted carries the streamed partials in content/reasoning.
+			return content, reasoning, err
 		}
-		startSpinner("Thinking...")
-		firstN, readErr = reasonPr.Read(firstChunk)
-		if readErr != nil {
-			readErr = nil
-			firstN, readErr = contentPr.Read(firstChunk)
-		} else {
-			hasReasoning = true
-		}
-
-		if readErr != nil {
-			<-done
-			stopSpinner()
-			if streamErr != nil {
-				return "", "", streamErr
-			}
-			// EOF on content pipe might mean tool calls with no text
-			if len(toolCalls) > 0 {
-				goto handleToolCalls
-			}
-			return "", "", readErr
-		}
-
-		stopSpinner()
-
-		if hasReasoning {
-			if quiet {
-				io.Copy(io.Discard, reasonPr)
-			} else {
-				rv := newReasoningStream()
-				rv.Write(firstChunk[:firstN])
-				io.Copy(rv, reasonPr)
-				rv.finish()
-				rendered = true
-			}
-
-			firstN, readErr = contentPr.Read(firstChunk)
-			if readErr != nil {
-				<-done
-				if streamErr != nil {
-					return "", "", streamErr
-				}
-				if len(toolCalls) > 0 {
-					goto handleToolCalls
-				}
-				// Reasoning-only response: render the reasoning as the answer.
-				if !quiet {
-					fmt.Fprintln(w) // blank line separating reasoning from the reply
-					mdw := newMarkdownWriter(os.Stdout)
-					mdw.Write([]byte(reasoning))
-					mdw.Flush()
-				}
-				return reasoning, reasoning, nil
-			}
-		}
-
-		// Stream content to display
-		if firstN > 0 {
-			if quiet {
-				io.Copy(io.Discard, contentPr)
-			} else {
-				if hasReasoning {
-					fmt.Fprintln(w) // blank line separating reasoning from the reply
-				}
-				mdw := newMarkdownWriter(os.Stdout)
-				mdw.Write(firstChunk[:firstN])
-				io.Copy(mdw, contentPr)
-				mdw.Flush()
-				rendered = true
-			}
-		} else {
-			io.Copy(io.Discard, contentPr)
-		}
-		<-done
-
-		if streamErr != nil {
-			return "", "", streamErr
-		}
-
 		if len(toolCalls) == 0 {
 			return content, reasoning, nil
 		}
 
-	handleToolCalls:
 		if content != "" && !quiet {
 			fmt.Fprintln(w)
 		}
@@ -1126,6 +1109,165 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 		// Spinner restarts as "Thinking…" at the top of the next round.
 	}
 
+}
+
+// streamToolRound runs the streaming part of one executeWithTools round: a
+// single StreamChatWithTools call rendered to the terminal. It is its own
+// streaming section (docs/design/interrupt.md): ESC/Ctrl+C cancels the
+// provider call and the partials rendered so far are returned with
+// errInterrupted. The watch is stopped before returning, so it is never active
+// while callTool runs its own during the tool-execution phase. rendered
+// reports whether anything (reasoning or content) was printed after the
+// round's opening blank line, so the first tool header knows whether it still
+// needs its own separator.
+func streamToolRound(ctx context.Context, tp provider.ToolProvider, history []provider.Message, tools []provider.ToolDef, w io.Writer, quiet bool, startSpinner func(string), stopSpinner func()) (string, string, []provider.ToolCall, bool, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var interrupted atomic.Bool
+	stopWatch := func() {}
+	if !quiet { // Once (quiet) keeps today's behavior: no interrupt watch
+		stopWatch = startCancelWatch(func() {
+			interrupted.Store(true)
+			cancel()
+		})
+	}
+	defer stopWatch()
+
+	reasonPr, reasonPw := io.Pipe()
+	contentPr, contentPw := io.Pipe()
+	var content, reasoning string
+	var toolCalls []provider.ToolCall
+	var streamErr error
+	var rendered bool
+	// Tee both pipes into buffers as they render, so an interrupted round can
+	// return the partial the user actually saw.
+	var contentBuf, reasonBuf strings.Builder
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		defer contentPw.Close()
+		// See streamResponse: guarantees the pipe reads below terminate (and the
+		// reasoning viewport's ticker stops) when the provider errors without
+		// closing the reasoning pipe.
+		defer reasonPw.Close()
+		content, reasoning, toolCalls, streamErr = tp.StreamChatWithTools(ctx, history, tools,
+			io.MultiWriter(contentPw, &contentBuf),
+			teeWriteCloser{io.MultiWriter(reasonPw, &reasonBuf), reasonPw})
+	}()
+
+	// fail maps an error exit to the errInterrupted sentinel when our watch
+	// fired (any stream error after a user cancel counts as interruption).
+	// Only called after <-done.
+	fail := func(err error) (string, string, []provider.ToolCall, bool, error) {
+		if interrupted.Load() {
+			return contentBuf.String(), reasonBuf.String(), nil, rendered, errInterrupted
+		}
+		return "", "", nil, false, err
+	}
+
+	firstChunk := make([]byte, 4096)
+	var firstN int
+	var readErr error
+	hasReasoning := false
+
+	// Blank line opening this round. Printed before the spinner so the separator
+	// is visible from the moment "Thinking..." appears, not only once reasoning
+	// streams or collapses.
+	if !quiet {
+		fmt.Fprintln(w)
+	}
+	startSpinner("Thinking...")
+	firstN, readErr = reasonPr.Read(firstChunk)
+	if readErr != nil {
+		readErr = nil
+		firstN, readErr = contentPr.Read(firstChunk)
+	} else {
+		hasReasoning = true
+	}
+
+	if readErr != nil {
+		<-done
+		stopSpinner()
+		if interrupted.Load() || streamErr != nil {
+			return fail(streamErr)
+		}
+		// EOF on content pipe might mean tool calls with no text
+		if len(toolCalls) > 0 {
+			return content, reasoning, toolCalls, rendered, nil
+		}
+		return fail(readErr)
+	}
+
+	stopSpinner()
+
+	if hasReasoning {
+		if quiet {
+			io.Copy(io.Discard, reasonPr)
+		} else {
+			rv := newReasoningStream()
+			rvDone := false
+			finishRV := func() {
+				if !rvDone {
+					rvDone = true
+					rv.finish()
+				}
+			}
+			// Done-guarded so the viewport (and its spinner ticker) is collapsed
+			// on every exit path without double-finishing on success.
+			defer finishRV()
+			rv.Write(firstChunk[:firstN])
+			io.Copy(rv, reasonPr)
+			finishRV()
+			rendered = true
+		}
+
+		firstN, readErr = contentPr.Read(firstChunk)
+		if readErr != nil {
+			<-done
+			if interrupted.Load() || streamErr != nil {
+				return fail(streamErr)
+			}
+			if len(toolCalls) > 0 {
+				return content, reasoning, toolCalls, rendered, nil
+			}
+			// Reasoning-only response: render the reasoning as the answer.
+			if !quiet {
+				fmt.Fprintln(w) // blank line separating reasoning from the reply
+				mdw := newMarkdownWriter(os.Stdout)
+				mdw.Write([]byte(reasoning))
+				mdw.Flush()
+			}
+			return reasoning, reasoning, nil, rendered, nil
+		}
+	}
+
+	// Stream content to display
+	if firstN > 0 {
+		if quiet {
+			io.Copy(io.Discard, contentPr)
+		} else {
+			if hasReasoning {
+				fmt.Fprintln(w) // blank line separating reasoning from the reply
+			}
+			mdw := newMarkdownWriter(os.Stdout)
+			mdw.Write(firstChunk[:firstN])
+			io.Copy(mdw, contentPr)
+			mdw.Flush()
+			rendered = true
+		}
+	} else {
+		io.Copy(io.Discard, contentPr)
+	}
+	<-done
+
+	// A cancelled stream may surface as an error or as a truncated success;
+	// either way the user asked to stop, so report interruption.
+	if interrupted.Load() || streamErr != nil {
+		return fail(streamErr)
+	}
+
+	return content, reasoning, toolCalls, rendered, nil
 }
 
 // toolHeaderMaxArgs is how many arguments are shown inline in the header; any

@@ -103,6 +103,47 @@ func TestSessionRoundTrip(t *testing.T) {
 	}
 }
 
+// The Interrupted flag on an assistant message survives AppendMessages →
+// loadLog, so a resumed session replays the partial reply as ordinary history.
+func TestInterruptedFlagRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	p := &stubProvider{model: "m1"}
+
+	sw, err := NewSessionWriter(p, nil, "")
+	if err != nil {
+		t.Fatalf("NewSessionWriter: %v", err)
+	}
+	id := sw.ID()
+
+	msgs := []provider.Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: "partial reply", Reasoning: "partial thinking", Interrupted: true},
+	}
+	if err := sw.AppendMessages(msgs); err != nil {
+		t.Fatalf("AppendMessages: %v", err)
+	}
+	sw.Close()
+
+	sess, err := LoadSession(id, p)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if len(sess.Messages) != 2 {
+		t.Fatalf("message count: got %d want 2", len(sess.Messages))
+	}
+	a := sess.Messages[1]
+	if !a.Interrupted {
+		t.Error("interrupted flag not restored")
+	}
+	if a.Content != "partial reply" || a.Reasoning != "partial thinking" {
+		t.Errorf("partial content not restored: %+v", a)
+	}
+	// The flag stays off for ordinary messages (omitempty both ways).
+	if sess.Messages[0].Interrupted {
+		t.Error("interrupted flag leaked onto the user message")
+	}
+}
+
 // Tuning metadata (temperature, effort, context window) survives a meta
 // round-trip: setters before the bundle exists are flushed by the first append,
 // and setters on a resumed (already-created) session write through immediately.

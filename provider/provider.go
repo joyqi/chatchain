@@ -36,6 +36,7 @@ type Message struct {
 	ToolCallID   string       // tool result messages: which call this answers
 	ToolCallName string       // tool result messages: function name
 	IsError      bool         // tool result messages: whether the call failed
+	Interrupted  bool         // set on assistant messages cut short by the user; replayed as ordinary history
 	RawContent   any          // provider-specific raw content (e.g. *genai.Content for thought signatures)
 }
 

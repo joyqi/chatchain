@@ -58,6 +58,7 @@ type sessionMessage struct {
 	ToolCallID   string              `json:"tool_call_id,omitempty"`
 	ToolCallName string              `json:"tool_call_name,omitempty"`
 	IsError      bool                `json:"is_error,omitempty"`
+	Interrupted  bool                `json:"interrupted,omitempty"`
 	Raw          *sessionRaw         `json:"raw,omitempty"`
 	// CompactedThrough is set only on role=="compaction" markers: the number of
 	// leading conversation messages (non-system, non-marker) this summary
@@ -260,6 +261,7 @@ func (w *SessionWriter) toSessionMessage(msg provider.Message) (sessionMessage, 
 		ToolCallID:   msg.ToolCallID,
 		ToolCallName: msg.ToolCallName,
 		IsError:      msg.IsError,
+		Interrupted:  msg.Interrupted,
 	}
 	for _, att := range msg.Attachments {
 		sa, err := w.writeAttachment(att)
@@ -442,6 +444,7 @@ func fromSessionMessage(sm sessionMessage, dir string, p provider.Provider) prov
 		ToolCallID:   sm.ToolCallID,
 		ToolCallName: sm.ToolCallName,
 		IsError:      sm.IsError,
+		Interrupted:  sm.Interrupted,
 	}
 	for _, sa := range sm.Attachments {
 		data, err := readAttachmentRef(dir, sa.DataRef)

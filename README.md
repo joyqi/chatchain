@@ -8,7 +8,7 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 - **MCP tool support** — connect external MCP tool servers (filesystem, GitHub, databases, etc.) and let AI providers use them during chat
 - **Interactive model selection** — arrow-key navigation with filtering
 - **Slash-command completion** — type `/` and the command menu pops up and live-filters as you type; the command is highlighted inline (no manual Tab needed)
-- **Streaming responses** — real-time token output with loading spinner
+- **Streaming responses** — real-time token output with loading spinner; press **Esc** (or Ctrl+C) during a streaming reply to interrupt it — the partial reply is kept in history and marked interrupted
 - **Markdown highlighting** — inline ANSI styling for headings, bold, italic, code, tables, and code blocks in streaming output
 - **File attachments** — send images, PDFs, and text files alongside messages with Tab-completion for file paths
 - **Non-interactive mode** — single message in, response out, pipe-friendly

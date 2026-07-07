@@ -89,6 +89,20 @@ func (p *GeminiProvider) ListModels(ctx context.Context) ([]string, error) {
 	return models, nil
 }
 
+// appendUserContent appends a user-role content, folding it into a trailing
+// user-role content when present: Gemini multiturn requests alternate
+// user/model roles, and an interrupted turn can leave tool results (user-role
+// function responses) directly followed by the next user message — see
+// docs/design/interrupt.md (persistence state 3). Shared by the Gemini and
+// Vertex AI builders.
+func appendUserContent(contents []*genai.Content, c *genai.Content) []*genai.Content {
+	if n := len(contents); n > 0 && contents[n-1].Role == "user" {
+		contents[n-1].Parts = append(contents[n-1].Parts, c.Parts...)
+		return contents
+	}
+	return append(contents, c)
+}
+
 func (p *GeminiProvider) buildContents(messages []Message) ([]*genai.Content, *genai.Content) {
 	var contents []*genai.Content
 	var system *genai.Content
@@ -103,9 +117,9 @@ func (p *GeminiProvider) buildContents(messages []Message) ([]*genai.Content, *g
 					parts = append(parts, genai.NewPartFromBytes(att.Data, att.MimeType))
 				}
 				parts = append(parts, genai.NewPartFromText(msg.Content))
-				contents = append(contents, genai.NewContentFromParts(parts, "user"))
+				contents = appendUserContent(contents, genai.NewContentFromParts(parts, "user"))
 			} else {
-				contents = append(contents, genai.NewContentFromText(msg.Content, "user"))
+				contents = appendUserContent(contents, genai.NewContentFromText(msg.Content, "user"))
 			}
 		case "assistant":
 			if raw, ok := msg.RawContent.(*genai.Content); ok && raw != nil {
@@ -133,7 +147,7 @@ func (p *GeminiProvider) buildContents(messages []Message) ([]*genai.Content, *g
 			if msg.IsError {
 				resp = map[string]any{"error": msg.Content}
 			}
-			contents = append(contents, genai.NewContentFromParts([]*genai.Part{
+			contents = appendUserContent(contents, genai.NewContentFromParts([]*genai.Part{
 				{FunctionResponse: &genai.FunctionResponse{
 					ID:       msg.ToolCallID,
 					Name:     msg.ToolCallName,

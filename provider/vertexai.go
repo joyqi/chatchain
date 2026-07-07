@@ -103,9 +103,9 @@ func (p *VertexAIProvider) buildContents(messages []Message) ([]*genai.Content, 
 					parts = append(parts, genai.NewPartFromBytes(att.Data, att.MimeType))
 				}
 				parts = append(parts, genai.NewPartFromText(msg.Content))
-				contents = append(contents, genai.NewContentFromParts(parts, "user"))
+				contents = appendUserContent(contents, genai.NewContentFromParts(parts, "user"))
 			} else {
-				contents = append(contents, genai.NewContentFromText(msg.Content, "user"))
+				contents = appendUserContent(contents, genai.NewContentFromText(msg.Content, "user"))
 			}
 		case "assistant":
 			// Use raw content if available (preserves thought signatures)
@@ -133,7 +133,7 @@ func (p *VertexAIProvider) buildContents(messages []Message) ([]*genai.Content, 
 			if msg.IsError {
 				resp = map[string]any{"error": msg.Content}
 			}
-			contents = append(contents, genai.NewContentFromParts([]*genai.Part{
+			contents = appendUserContent(contents, genai.NewContentFromParts([]*genai.Part{
 				{FunctionResponse: &genai.FunctionResponse{
 					Name:     msg.ToolCallName,
 					Response: resp,

@@ -70,33 +70,36 @@ func (p *AnthropicProvider) buildParams(messages []Message) (anthropic.MessageNe
 	}
 
 	for _, msg := range messages {
-		if msg.Role != "tool" {
+		// User messages merge into any pending tool results instead of flushing
+		// them first: an interrupted turn can leave the history ending in tool
+		// results directly followed by the next user message (state 3 in
+		// docs/design/interrupt.md), and the API requires user/assistant roles
+		// to alternate — two consecutive user messages are rejected.
+		if msg.Role != "tool" && msg.Role != "user" {
 			flushToolResults()
 		}
 		switch msg.Role {
 		case "system":
 			system = append(system, anthropic.TextBlockParam{Text: msg.Content})
 		case "user":
-			if len(msg.Attachments) > 0 {
-				var blocks []anthropic.ContentBlockParamUnion
-				for _, att := range msg.Attachments {
-					switch {
-					case strings.HasPrefix(att.MimeType, "image/"):
-						blocks = append(blocks, anthropic.NewImageBlockBase64(att.MimeType, base64.StdEncoding.EncodeToString(att.Data)))
-					case att.MimeType == "application/pdf":
-						blocks = append(blocks, anthropic.NewDocumentBlock(anthropic.Base64PDFSourceParam{
-							Data: base64.StdEncoding.EncodeToString(att.Data),
-						}))
-					default:
-						// Text files: inline as text block
-						blocks = append(blocks, anthropic.NewTextBlock("[File: "+att.Filename+"]\n"+string(att.Data)))
-					}
+			var blocks []anthropic.ContentBlockParamUnion
+			for _, att := range msg.Attachments {
+				switch {
+				case strings.HasPrefix(att.MimeType, "image/"):
+					blocks = append(blocks, anthropic.NewImageBlockBase64(att.MimeType, base64.StdEncoding.EncodeToString(att.Data)))
+				case att.MimeType == "application/pdf":
+					blocks = append(blocks, anthropic.NewDocumentBlock(anthropic.Base64PDFSourceParam{
+						Data: base64.StdEncoding.EncodeToString(att.Data),
+					}))
+				default:
+					// Text files: inline as text block
+					blocks = append(blocks, anthropic.NewTextBlock("[File: "+att.Filename+"]\n"+string(att.Data)))
 				}
-				blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
-				msgs = append(msgs, anthropic.NewUserMessage(blocks...))
-			} else {
-				msgs = append(msgs, anthropic.NewUserMessage(anthropic.NewTextBlock(msg.Content)))
 			}
+			blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
+			// Tool results (if any) come first in the merged user message.
+			pendingToolResults = append(pendingToolResults, blocks...)
+			flushToolResults()
 		case "assistant":
 			if len(msg.ToolCalls) > 0 {
 				var blocks []anthropic.ContentBlockParamUnion
