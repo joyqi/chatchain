@@ -16,6 +16,7 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 - **Session persistence** — every interactive session is auto-saved (losslessly: messages, tool calls, attachments, reasoning) to `~/.chatchain/sessions/`. Resume with `/session` in chat or `--resume[=<id>]` at launch (any unique id prefix works), and resuming echoes the last few exchanges back to the terminal; auto-titled by the model after the first reply; `--no-save` runs ephemerally
 - **Context management** — live token accounting against the context window (configurable via `--context-window` or the `/model` Context tab), with `/compact` LLM-summarization of older history; when the window nears full a confirmation is offered before compacting (declining snoozes the prompt until usage grows further)
 - **Model settings mid-chat** — `/model` opens a tabbed panel over the model, context window, reasoning effort, and temperature, all persisted with the session and replayed on resume
+- **Conversation export** — `/export` renders the session to a single self-contained HTML file (inline CSS, dark mode with a toggle, syntax-highlighted code) or a plain Markdown document; saved sessions export the full on-disk log, so compaction never hides older rounds (ephemeral `--no-save` sessions export the current in-memory view)
 - **System prompt** — set via flag or interactive input
 - **Config file** — persistent API keys, default models, custom provider aliases, and MCP server definitions via `~/.chatchain.yaml`
 - **Styled terminal output** — color-coded prompts
@@ -244,6 +245,7 @@ the command is colorized inline (green once complete, cyan while a valid prefix)
 | `/session` | Tabbed selector over saved sessions: "Resume" to resume one, "Delete" to multi-select and delete others. |
 | `/model` | Tabbed settings for the current session: "Model" picks the model, "Context" the context window, "Effort" the reasoning effort (`default`, `low`, `medium`, `high`, `xhigh`, `max` — passed to the provider verbatim, so a level the model doesn't support surfaces as an API error and you pick another), "Temperature" a slider (`default` omits the parameter). Enter applies all four tabs; only changed values are announced. |
 | `/compact [hint]` | Summarize older history to free context; optional hint guides what to keep |
+| `/export [file]` | Export the conversation (saved sessions: the full on-disk log, so compaction never hides older rounds) to a single self-contained HTML file — the default — or Markdown with a `.md`/`.markdown` extension. With no argument, a selector picks the format and the filename is generated from the session title. Never overwrites an existing file. |
 | `/status` | Show provider, model, context usage, and last-turn token counts |
 | `/tools` | Tabbed read-only view of the model's capabilities: a "Tools" tab (every built-in and MCP tool with its source) and an "MCP" tab (server status, endpoints, and tools) |
 

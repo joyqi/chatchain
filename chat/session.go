@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"chatchain/provider"
@@ -175,6 +176,10 @@ type SessionWriter struct {
 	p         provider.Provider
 	convCount int  // conversation messages appended (excludes system + compaction markers)
 	created   bool // whether the on-disk bundle exists yet (lazy)
+
+	// titleMu guards meta.Title: the async first-reply title goroutine writes
+	// it (SetTitle) while the main loop may read it (Title, e.g. /export).
+	titleMu sync.Mutex
 }
 
 // NewSessionWriter prepares a fresh session in memory but does NOT touch disk.
@@ -276,6 +281,23 @@ func (w *SessionWriter) ID() string {
 		return ""
 	}
 	return w.meta.ID
+}
+
+// Title returns the session's current title ("" on a nil writer or before the
+// first turn generates one).
+func (w *SessionWriter) Title() string {
+	if w == nil {
+		return ""
+	}
+	w.titleMu.Lock()
+	defer w.titleMu.Unlock()
+	return w.meta.Title
+}
+
+// onDisk reports whether the session bundle exists on disk — false on a nil
+// writer (--no-save) and before the lazy first append.
+func (w *SessionWriter) onDisk() bool {
+	return w != nil && w.created
 }
 
 func (w *SessionWriter) writeMeta() error {
@@ -404,6 +426,8 @@ func (w *SessionWriter) SetTitle(title string) error {
 	if w == nil {
 		return nil
 	}
+	w.titleMu.Lock()
+	defer w.titleMu.Unlock()
 	w.meta.Title = title
 	if !w.created {
 		return nil
@@ -520,22 +544,17 @@ func fromSessionMessage(sm sessionMessage, dir string, p provider.Provider) prov
 	return msg
 }
 
-// loadLog reads messages.jsonl and reconstructs the derived view (Event Store):
-// system + latest summary + conversation tail after the latest compaction marker.
-// Returns the view and convCount (total conversation messages on disk, for the
-// writer's marker indexing). Truncated/corrupt trailing lines are tolerated.
-func loadLog(dir string, p provider.Provider) (view []provider.Message, convCount int, err error) {
+// scanRecords reads messages.jsonl under dir and calls fn for each intact
+// record, in append order. Blank lines and corrupt/truncated lines are
+// tolerated (a crash mid-write leaves a truncated trailing line). A
+// scanner-level error (oversized line / I/O fault) is different: it stops the
+// read partway, so it is surfaced instead of silently truncating the log.
+func scanRecords(dir string, fn func(sessionMessage)) error {
 	f, err := os.Open(filepath.Join(dir, "messages.jsonl"))
 	if err != nil {
-		return nil, 0, err
+		return err
 	}
 	defer f.Close()
-
-	var system *provider.Message
-	var conv []provider.Message
-	var summary string
-	through := 0
-	hasSummary := false
 
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 32*1024*1024) // allow large lines
@@ -548,26 +567,42 @@ func loadLog(dir string, p provider.Provider) (view []provider.Message, convCoun
 		if err := json.Unmarshal(line, &sm); err != nil {
 			continue // tolerate corrupt/incomplete line
 		}
+		fn(sm)
+	}
+	if err := sc.Err(); err != nil {
+		return fmt.Errorf("read session log: %w", err)
+	}
+	return nil
+}
+
+// loadLog reads messages.jsonl and reconstructs the derived view (Event Store):
+// system + latest summary + conversation tail after the latest compaction marker.
+// Returns the view and convCount (total conversation messages on disk, for the
+// writer's marker indexing). Truncated/corrupt trailing lines are tolerated.
+func loadLog(dir string, p provider.Provider) (view []provider.Message, convCount int, err error) {
+	var system *provider.Message
+	var conv []provider.Message
+	var summary string
+	through := 0
+	hasSummary := false
+
+	err = scanRecords(dir, func(sm sessionMessage) {
 		if sm.Role == "compaction" {
 			hasSummary = true
 			summary = sm.Content
 			through = sm.CompactedThrough
-			continue
+			return
 		}
 		m := fromSessionMessage(sm, dir, p)
 		if m.Role == "system" {
 			s := m
 			system = &s
-			continue
+			return
 		}
 		conv = append(conv, m)
-	}
-	// A per-line json error is tolerated above (a crash mid-write leaves a
-	// truncated trailing line). A scanner error (oversized line / I/O fault) is
-	// different: it stops the read partway, so surface it instead of silently
-	// truncating the session and miscounting convCount.
-	if err := sc.Err(); err != nil {
-		return nil, 0, fmt.Errorf("read session log: %w", err)
+	})
+	if err != nil {
+		return nil, 0, err
 	}
 	convCount = len(conv)
 
@@ -615,6 +650,30 @@ func LoadSession(id string, p provider.Provider) (*Session, error) {
 		return nil, err
 	}
 	return &Session{Meta: meta, Messages: view}, nil
+}
+
+// LoadFullHistory reads a session's complete conversation log: every message
+// record in messages.jsonl, in append order, with compaction markers skipped
+// entirely — unlike loadLog there is no view-weaving, so compaction never
+// hides older rounds. Used by /export, where the archive must be lossless.
+// Attachments and raw content are restored exactly as in loadLog.
+func LoadFullHistory(id string, p provider.Provider) ([]provider.Message, error) {
+	base, err := sessionsDir()
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(base, id)
+	var msgs []provider.Message
+	err = scanRecords(dir, func(sm sessionMessage) {
+		if sm.Role == "compaction" {
+			return
+		}
+		msgs = append(msgs, fromSessionMessage(sm, dir, p))
+	})
+	if err != nil {
+		return nil, err
+	}
+	return msgs, nil
 }
 
 // ListSessions returns all sessions sorted by most-recently-updated first.

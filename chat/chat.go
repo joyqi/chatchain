@@ -193,9 +193,12 @@ func (c *chatCompleter) Do(line []rune, pos int) ([][]rune, int) {
 		return candidates, len([]rune(text))
 	}
 
-	// File path completion for "/file "
+	// File path completion for "/file " and "/export "
 	if strings.HasPrefix(text, "/file ") {
 		return completeFilePath(text[6:])
+	}
+	if strings.HasPrefix(text, "/export ") {
+		return completeFilePath(text[8:])
 	}
 
 	return nil, 0
@@ -521,7 +524,7 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 	}
 
 	DimStyle.Fprintln(w, "Chat started. Press Ctrl+C to exit.")
-	DimStyle.Fprintln(w, "Commands: /file [path], /session, /model, /compact, /status, /tools")
+	DimStyle.Fprintln(w, "Commands: /file [path], /session, /model, /compact, /export, /status, /tools")
 	if id := sw.ID(); id != "" {
 		DimStyle.Fprintf(w, "Session: %s\n", id)
 	}
@@ -755,6 +758,11 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		if input == "/compact" || strings.HasPrefix(input, "/compact ") {
 			hint := strings.TrimSpace(strings.TrimPrefix(input, "/compact"))
 			compactNow(hint, true)
+			continue
+		}
+		if input == "/export" || strings.HasPrefix(input, "/export ") {
+			arg := strings.TrimSpace(strings.TrimPrefix(input, "/export"))
+			exportChat(w, arg, sw, history, p)
 			continue
 		}
 		if input == "/tools" || strings.HasPrefix(input, "/tools ") {

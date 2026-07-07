@@ -594,6 +594,7 @@
         <tr><td><code>/session</code></td><td>Tabbed selector: resume a saved session, or multi-select and delete others</td></tr>
         <tr><td><code>/model</code></td><td>Tabbed session settings: model, context window, reasoning effort, and temperature — Enter applies all four tabs (effort levels are passed verbatim; unsupported values surface as API errors)</td></tr>
         <tr><td><code>/compact [hint]</code></td><td>Summarize older history to free up context</td></tr>
+        <tr><td><code>/export [file]</code></td><td>Export the full conversation to a single self-contained HTML file (default) or Markdown (<code>.md</code>)</td></tr>
         <tr><td><code>/status</code></td><td>Show provider, model, context usage, and last-turn tokens</td></tr>
         <tr><td><code>/tools</code></td><td>Tabbed read-only view: a "Tools" tab (built-in + MCP tools) and an "MCP" tab (server status)</td></tr>
       </table>
@@ -612,7 +613,7 @@
       { type: 'cmd',   text: '$ chatchain openai -M gpt-4o' },
       { type: 'pause', ms: 600 },
       { type: 'system', text: 'Chat started. Press Ctrl+C to exit.' },
-      { type: 'system', text: 'Commands: /file [path], /session, /model, /compact, /status, /tools' },
+      { type: 'system', text: 'Commands: /file [path], /session, /model, /compact, /export, /status, /tools' },
       { type: 'pause', ms: 400 },
       { type: 'blank' },
       { type: 'user',  text: 'What is ChatChain?' },

@@ -15,7 +15,7 @@ import (
 // and the auto-popup trigger (slashTriggerReader). Names are bare (no trailing
 // space); the completer appends the space it inserts when a command is chosen.
 var slashCommands = []string{
-	"/file", "/session", "/model", "/compact", "/status", "/tools",
+	"/file", "/session", "/model", "/compact", "/export", "/status", "/tools",
 }
 
 // isSlashCommand reports whether tok is exactly one of the known commands.

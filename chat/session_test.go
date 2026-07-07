@@ -346,6 +346,64 @@ func TestLazySessionCreation(t *testing.T) {
 	}
 }
 
+// LoadFullHistory returns every conversation message on disk — including the
+// rounds a compaction marker hides from the loadLog view — and skips the
+// marker itself.
+func TestLoadFullHistoryIgnoresCompaction(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	p := &stubProvider{model: "m1"}
+
+	sw, err := NewSessionWriter(p, nil, "")
+	if err != nil {
+		t.Fatalf("NewSessionWriter: %v", err)
+	}
+	id := sw.ID()
+
+	round1 := []provider.Message{
+		{Role: "user", Content: "first question"},
+		{Role: "assistant", Content: "first answer"},
+	}
+	round2 := []provider.Message{
+		{Role: "user", Content: "second question"},
+		{Role: "assistant", Content: "second answer"},
+	}
+	if err := sw.AppendMessages(round1); err != nil {
+		t.Fatalf("AppendMessages: %v", err)
+	}
+	if err := sw.AppendCompaction("SUMMARY", 0); err != nil {
+		t.Fatalf("AppendCompaction: %v", err)
+	}
+	if err := sw.AppendMessages(round2); err != nil {
+		t.Fatalf("AppendMessages: %v", err)
+	}
+	sw.Close()
+
+	view, err := LoadSession(id, p)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	full, err := LoadFullHistory(id, p)
+	if err != nil {
+		t.Fatalf("LoadFullHistory: %v", err)
+	}
+	if len(full) != 4 {
+		t.Fatalf("full history: got %d messages, want 4", len(full))
+	}
+	if len(full) <= len(view.Messages) {
+		t.Fatalf("full history (%d) should exceed the compacted view (%d)", len(full), len(view.Messages))
+	}
+	// The pre-compaction round is intact and unweaved (no summary preamble).
+	if full[0].Content != "first question" || full[1].Content != "first answer" {
+		t.Errorf("pre-compaction round not restored: %+v", full[:2])
+	}
+	// The compaction marker itself is skipped.
+	for _, m := range full {
+		if m.Role == "compaction" || strings.Contains(m.Content, "SUMMARY") {
+			t.Errorf("compaction marker leaked into full history: %+v", m)
+		}
+	}
+}
+
 func TestNewSessionID(t *testing.T) {
 	base := t.TempDir()
 	seen := map[string]bool{}
