@@ -162,6 +162,13 @@ var rootCmd = &cobra.Command{
 				if err != nil {
 					return fmt.Errorf("failed to list sessions: %w", err)
 				}
+			} else {
+				// The flag value may be an id fragment; resolve exact matches
+				// or unique prefixes (works for old ULID ids too).
+				id, err = chat.ResolveSessionID(id)
+				if err != nil {
+					return err
+				}
 			}
 			if id == "" {
 				return fmt.Errorf("no session to resume")

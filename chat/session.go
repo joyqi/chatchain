@@ -2,7 +2,6 @@ package chat
 
 import (
 	"bufio"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,11 +15,11 @@ import (
 
 	"chatchain/provider"
 
-	"github.com/oklog/ulid/v2"
+	gonanoid "github.com/matoous/go-nanoid/v2"
 )
 
 // Session persistence: every interactive session is stored as a directory
-// bundle under ~/.chatchain/sessions/<ulid>/:
+// bundle under ~/.chatchain/sessions/<id>/:
 //
 //	meta.json          session metadata (small, rewritten on each change)
 //	messages.jsonl     one JSON message per line, append-only
@@ -109,8 +108,59 @@ func sessionsDir() (string, error) {
 	return filepath.Join(home, ".chatchain", "sessions"), nil
 }
 
-func newSessionID() string {
-	return ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+// sessionIDAlphabet is Crockford base32, lowercased: no i/l/o/u, so ids stay
+// unambiguous to read and retype.
+const sessionIDAlphabet = "0123456789abcdefghjkmnpqrstvwxyz"
+
+// sessionIDLength (12 chars ≈ 60 random bits) keeps ids short enough to read
+// and type while making local collisions vanishingly unlikely — and creation
+// double-checks against the store anyway.
+const sessionIDLength = 12
+
+// newSessionID returns a fresh random session id with no bundle under base.
+// Fully random — no time prefix, so ids differ from their first character
+// (older sessions used ULIDs, whose shared timestamp prefix made them hard to
+// tell apart); --resume accepts any unique prefix of either form.
+func newSessionID(base string) string {
+	for {
+		id := gonanoid.MustGenerate(sessionIDAlphabet, sessionIDLength)
+		if _, err := os.Stat(filepath.Join(base, id)); os.IsNotExist(err) {
+			return id
+		}
+	}
+}
+
+// resolveSessionID matches a user-supplied id fragment against the known
+// sessions: an exact match wins, otherwise a unique (case-insensitive) prefix;
+// unknown or ambiguous fragments return a descriptive error.
+func resolveSessionID(infos []SessionInfo, fragment string) (string, error) {
+	var matches []string
+	for _, in := range infos {
+		if in.ID == fragment {
+			return in.ID, nil
+		}
+		if strings.HasPrefix(strings.ToLower(in.ID), strings.ToLower(fragment)) {
+			matches = append(matches, in.ID)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("no session matches %q", fragment)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("session id %q is ambiguous: %s", fragment, strings.Join(matches, ", "))
+	}
+}
+
+// ResolveSessionID resolves a --resume id fragment to a full session id (exact
+// match or unique prefix; see resolveSessionID).
+func ResolveSessionID(fragment string) (string, error) {
+	infos, err := ListSessions()
+	if err != nil {
+		return "", err
+	}
+	return resolveSessionID(infos, fragment)
 }
 
 // ---- SessionWriter ----
@@ -136,7 +186,7 @@ func NewSessionWriter(p provider.Provider, temperature *float64, baseURL string)
 	if err != nil {
 		return nil, err
 	}
-	id := newSessionID()
+	id := newSessionID(base)
 	now := time.Now().Format(time.RFC3339)
 	return &SessionWriter{
 		dir: filepath.Join(base, id),

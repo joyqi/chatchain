@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"chatchain/provider"
@@ -342,5 +343,54 @@ func TestLazySessionCreation(t *testing.T) {
 	}
 	if infos[0].Model != "m2" || infos[0].Title != "draft" {
 		t.Errorf("pending model/title not flushed on create: model=%q title=%q", infos[0].Model, infos[0].Title)
+	}
+}
+
+func TestNewSessionID(t *testing.T) {
+	base := t.TempDir()
+	seen := map[string]bool{}
+	for i := 0; i < 100; i++ {
+		id := newSessionID(base)
+		if len(id) != sessionIDLength {
+			t.Fatalf("id %q length = %d, want %d", id, len(id), sessionIDLength)
+		}
+		for _, r := range id {
+			if !strings.ContainsRune(sessionIDAlphabet, r) {
+				t.Fatalf("id %q contains %q outside the alphabet", id, r)
+			}
+		}
+		if seen[id] {
+			t.Fatalf("duplicate id %q in a small batch", id)
+		}
+		seen[id] = true
+	}
+}
+
+func TestResolveSessionID(t *testing.T) {
+	infos := []SessionInfo{
+		{ID: "k7qz3xv9m2ht"},
+		{ID: "k7ab00000000"},
+		{ID: "01JZXK7QZTXA9WBGVE3M8YC5DN"}, // legacy ULID (uppercase)
+	}
+
+	// Exact match wins.
+	if id, err := resolveSessionID(infos, "k7qz3xv9m2ht"); err != nil || id != "k7qz3xv9m2ht" {
+		t.Fatalf("exact: got %q, %v", id, err)
+	}
+	// Unique prefix resolves.
+	if id, err := resolveSessionID(infos, "k7q"); err != nil || id != "k7qz3xv9m2ht" {
+		t.Fatalf("unique prefix: got %q, %v", id, err)
+	}
+	// Case-insensitive prefix matches legacy ULIDs.
+	if id, err := resolveSessionID(infos, "01jzxk"); err != nil || id != "01JZXK7QZTXA9WBGVE3M8YC5DN" {
+		t.Fatalf("ULID prefix: got %q, %v", id, err)
+	}
+	// Ambiguous prefix errors and names the candidates.
+	if _, err := resolveSessionID(infos, "k7"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ambiguous: got %v, want ambiguous error", err)
+	}
+	// Unknown fragment errors.
+	if _, err := resolveSessionID(infos, "zzz"); err == nil {
+		t.Fatal("unknown: got nil error")
 	}
 }

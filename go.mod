@@ -8,9 +8,9 @@ require (
 	github.com/briandowns/spinner v1.23.2
 	github.com/fatih/color v1.18.0
 	github.com/jedib0t/go-pretty/v6 v6.8.1
+	github.com/matoous/go-nanoid/v2 v2.1.0
 	github.com/modelcontextprotocol/go-sdk v1.4.1
 	github.com/muesli/termenv v0.16.0
-	github.com/oklog/ulid/v2 v2.1.1
 	github.com/openai/openai-go/v3 v3.29.0
 	github.com/pkoukk/tiktoken-go v0.1.8
 	github.com/pkoukk/tiktoken-go-loader v0.0.2
