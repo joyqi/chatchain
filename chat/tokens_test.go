@@ -57,3 +57,39 @@ func TestTokenCounter(t *testing.T) {
 		t.Errorf("count of short sentence = %d, want small positive", n)
 	}
 }
+
+func TestShouldOfferCompact(t *testing.T) {
+	// Window 100k, threshold 80% → 80k. Snooze step 5% → 5k.
+	b := &contextBudget{window: 100_000}
+
+	// Below the threshold: never offered, declined or not.
+	b.used = 70_000
+	if b.shouldOfferCompact(0, 0) {
+		t.Error("below threshold: offered, want not")
+	}
+
+	// At the threshold, never declined: offered.
+	b.used = 80_000
+	if !b.shouldOfferCompact(0, 0) {
+		t.Error("at threshold, never declined: not offered, want offered")
+	}
+
+	// Declined at 80k: snoozed until usage grows by 5% of the window.
+	if b.shouldOfferCompact(0, 80_000) {
+		t.Error("just declined: offered, want snoozed")
+	}
+	b.used = 84_000
+	if b.shouldOfferCompact(0, 80_000) {
+		t.Error("grown <5%: offered, want snoozed")
+	}
+	b.used = 85_000
+	if !b.shouldOfferCompact(0, 80_000) {
+		t.Error("grown 5%: not offered, want offered")
+	}
+
+	// extra counts toward the growth, matching shouldCompact's accounting.
+	b.used = 83_000
+	if !b.shouldOfferCompact(2_000, 80_000) {
+		t.Error("used+extra grown 5%: not offered, want offered")
+	}
+}

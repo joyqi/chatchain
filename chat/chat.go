@@ -590,6 +590,11 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		}(firstUser, firstAssistant, sw)
 	}
 
+	// compactDeclined snoozes the auto-compaction prompt: it holds the usage at
+	// the moment the user last declined (0 = never), and the prompt returns only
+	// once usage has grown by compactSnoozePercent of the window since.
+	compactDeclined := 0
+
 	// compactNow summarizes the older history into one summary (LLM call under a
 	// spinner), swaps in the compacted view, writes an Event Store marker, and
 	// re-seeds the budget. persisted is reset to the new view length — everything
@@ -622,6 +627,7 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		}
 		persisted = len(history)
 		budget.reseed(history)
+		compactDeclined = 0 // any successful compaction re-arms the auto prompt
 		DimStyle.Fprintf(w, "Context compacted → %s\n", budget.status())
 	}
 
@@ -777,8 +783,16 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		for _, att := range pendingAttachments {
 			extra += len(att.Data) / 1000
 		}
-		if budget.shouldCompact(extra) {
-			compactNow("", false)
+		// Auto-compaction asks first instead of firing silently: confirming
+		// compacts and then sends as before; declining sends as-is and snoozes
+		// the prompt until usage grows another compactSnoozePercent.
+		if budget.shouldOfferCompact(extra, compactDeclined) {
+			label := fmt.Sprintf("Context %s — compact before sending?", budget.status())
+			if idx, ok := runSelect(label, []string{"Compact now", "Not now"}, 2); ok && idx == 0 {
+				compactNow("", false)
+			} else {
+				compactDeclined = budget.used + extra
+			}
 		}
 
 		msg := provider.Message{Role: "user", Content: input, Attachments: pendingAttachments}

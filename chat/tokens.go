@@ -145,6 +145,21 @@ func (b *contextBudget) shouldCompact(extra int) bool {
 	return b.used+extra >= b.window*compactThresholdPercent/100
 }
 
+// compactSnoozePercent is how much of the window usage must grow, after the
+// user declines the auto-compaction prompt, before it is offered again.
+const compactSnoozePercent = 5
+
+// shouldOfferCompact reports whether the auto-compaction confirmation should be
+// offered before the next request: the threshold is reached and, if the user
+// declined before (declinedAt = usage recorded at that decline; 0 = never),
+// usage has since grown by compactSnoozePercent of the window.
+func (b *contextBudget) shouldOfferCompact(extra, declinedAt int) bool {
+	if !b.shouldCompact(extra) {
+		return false
+	}
+	return declinedAt == 0 || b.used+extra >= declinedAt+b.window*compactSnoozePercent/100
+}
+
 // status renders "used / window (pct)"; a leading ≈ marks a local estimate.
 func (b *contextBudget) status() string {
 	pct := 0
