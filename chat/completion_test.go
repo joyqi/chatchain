@@ -9,7 +9,7 @@ import (
 )
 
 func TestSlashHelpers(t *testing.T) {
-	for _, tok := range []string{"/file", "/files", "/mcp"} {
+	for _, tok := range []string{"/file", "/session", "/tools"} {
 		if !isSlashCommand(tok) {
 			t.Errorf("isSlashCommand(%q) = false, want true", tok)
 		}

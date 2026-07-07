@@ -25,8 +25,7 @@ import (
 
 // runSelect shows a single-select menu over the string items using promptui's
 // clean defaults and native ESC/q/Ctrl+C cancel. It returns the chosen index with
-// ok=true, or (0, false) when the user cancels — the single-select sibling of
-// multiSelect.
+// ok=true, or (0, false) when the user cancels.
 func runSelect(label string, items []string, size int) (int, bool) {
 	prompt := promptui.Select{
 		Label:        label,
@@ -213,7 +212,7 @@ func (c *chatCompleter) Do(line []rune, pos int) ([][]rune, int) {
 	}
 
 	// File path completion for "/file "
-	if strings.HasPrefix(text, "/file ") && !strings.HasPrefix(text, "/files") {
+	if strings.HasPrefix(text, "/file ") {
 		return completeFilePath(text[6:])
 	}
 
@@ -523,7 +522,7 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 	}
 
 	DimStyle.Fprintln(w, "Chat started. Press Ctrl+C to exit.")
-	DimStyle.Fprintln(w, "Commands: /file [path], /files, /session, /sessions, /model, /context, /compact, /status, /mcp, /tools")
+	DimStyle.Fprintln(w, "Commands: /file [path], /session, /model, /context, /compact, /status, /tools")
 	if id := sw.ID(); id != "" {
 		DimStyle.Fprintf(w, "Session: %s\n", id)
 	}
@@ -649,29 +648,19 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		// Handle commands
 		if input == "/file" || strings.HasPrefix(input, "/file ") {
 			path := strings.TrimSpace(strings.TrimPrefix(input, "/file"))
-			if path == "" {
-				// No path given: browse and pick one.
-				picked, perr := pickFile()
-				if perr != nil {
-					ErrorStyle.Fprintf(w, "Error: %v\n", perr)
-					continue
+			if path != "" {
+				// Explicit path: attach directly.
+				att, aerr := ReadAttachment(path)
+				if aerr != nil {
+					ErrorStyle.Fprintf(w, "Error: %v\n", aerr)
+				} else {
+					pendingAttachments = append(pendingAttachments, att)
+					DimStyle.Fprintf(w, "Attached: %s (%s, %d bytes)\n", att.Filename, att.MimeType, len(att.Data))
 				}
-				if picked == "" {
-					continue // cancelled
-				}
-				path = picked
+				continue
 			}
-			att, err := ReadAttachment(path)
-			if err != nil {
-				ErrorStyle.Fprintf(w, "Error: %v\n", err)
-			} else {
-				pendingAttachments = append(pendingAttachments, att)
-				DimStyle.Fprintf(w, "Attached: %s (%s, %d bytes)\n", att.Filename, att.MimeType, len(att.Data))
-			}
-			continue
-		}
-		if input == "/files" || strings.HasPrefix(input, "/files ") {
-			pendingAttachments = cleanAttachments(w, pendingAttachments)
+			// No path: tabbed selector — remove attached files, or browse to add.
+			pendingAttachments = manageAttachments(w, pendingAttachments)
 			continue
 		}
 		if input == "/model" || strings.HasPrefix(input, "/model ") {
@@ -694,14 +683,14 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			continue
 		}
 		if input == "/session" || strings.HasPrefix(input, "/session ") {
-			id, perr := PickSession()
+			// Tabbed selector: resume a session, or delete others.
+			id, perr := manageSessions(w, sw.ID())
 			if perr != nil {
 				ErrorStyle.Fprintf(w, "Error: %v\n", perr)
 				continue
 			}
 			if id == "" {
-				DimStyle.Fprintln(w, "No session selected.")
-				continue
+				continue // nothing to resume (cancelled, or a delete action)
 			}
 			if id == sw.ID() {
 				DimStyle.Fprintln(w, "Already in this session.")
@@ -733,10 +722,6 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			DimStyle.Fprintf(w, "Resumed session %s (%d messages)\n", id, len(history))
 			continue
 		}
-		if input == "/sessions" || strings.HasPrefix(input, "/sessions ") {
-			cleanSessions(w, sw.ID())
-			continue
-		}
 		if input == "/context" || strings.HasPrefix(input, "/context ") {
 			arg := strings.TrimSpace(strings.TrimPrefix(input, "/context"))
 			if arg == "" {
@@ -765,12 +750,8 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			compactNow(hint, true)
 			continue
 		}
-		if input == "/mcp" || strings.HasPrefix(input, "/mcp ") {
-			printMCPStatus(mgr, w)
-			continue
-		}
 		if input == "/tools" || strings.HasPrefix(input, "/tools ") {
-			printToolStatus(dispatch, mgr, w)
+			showCapabilities(dispatch, mgr)
 			continue
 		}
 		if input == "/status" || strings.HasPrefix(input, "/status ") {
@@ -1261,17 +1242,17 @@ func printToolResult(w io.Writer, result string, isError bool) {
 	}
 }
 
-// printToolStatus lists every tool advertised to the model — its source (a
-// built-in tool or which MCP server it came from) and a one-line description — in
-// a scrollable read-only Viewer. The tool-level counterpart to /mcp.
-func printToolStatus(dispatch tool.Dispatcher, mgr *mcpmgr.Manager, w io.Writer) {
+// toolStatusLines lists every tool advertised to the model — its source (a
+// built-in tool or which MCP server it came from) and a one-line description — as
+// display lines prefixed by a one-line summary. Rendered by showCapabilities in
+// the "Tools" tab.
+func toolStatusLines(dispatch tool.Dispatcher, mgr *mcpmgr.Manager) []string {
 	var defs []provider.ToolDef
 	if dispatch != nil {
 		defs = dispatch.Tools()
 	}
 	if len(defs) == 0 {
-		DimStyle.Fprintln(w, "No tools available.")
-		return
+		return []string{DimStyle.Sprint("No tools available.")}
 	}
 
 	// Map each MCP tool name to its server; anything else is a built-in.
@@ -1284,25 +1265,29 @@ func printToolStatus(dispatch tool.Dispatcher, mgr *mcpmgr.Manager, w io.Writer)
 		}
 	}
 
-	lines := make([]string, len(defs))
-	for i, d := range defs {
+	lines := make([]string, 0, len(defs)+1)
+	lines = append(lines, DimStyle.Sprintf("%d tool(s) available", len(defs)))
+	for _, d := range defs {
 		tag := CodeBlockStyle.Sprint("[built-in]") // green
 		if srv, ok := source[d.Name]; ok {
 			tag = YellowStyle.Sprintf("[mcp: %s]", srv)
 		}
 		desc := strings.ReplaceAll(d.Description, "\n", " ")
-		lines[i] = fmt.Sprintf("%s  %s  %s", BoldStyle.Sprintf("%-18s", d.Name), tag, DimStyle.Sprint(desc))
+		lines = append(lines, fmt.Sprintf("%s  %s  %s", BoldStyle.Sprintf("%-18s", d.Name), tag, DimStyle.Sprint(desc)))
 	}
-
-	v := promptui.Viewer{Label: fmt.Sprintf("Tools (%d)", len(defs)), Lines: lines, Height: 15}
-	_ = v.Run()
+	return lines
 }
 
-func printMCPStatus(mgr *mcpmgr.Manager, w io.Writer) {
+// mcpStatusLines describes every configured MCP server — connection state,
+// endpoint, tools, and any error — as display lines prefixed by a one-line
+// summary. Rendered by showCapabilities in the "MCP" tab.
+func mcpStatusLines(mgr *mcpmgr.Manager) []string {
+	if mgr == nil {
+		return []string{DimStyle.Sprint("No MCP servers configured.")}
+	}
 	servers := mgr.Servers()
 	if len(servers) == 0 {
-		DimStyle.Fprintln(w, "No MCP servers configured.")
-		return
+		return []string{DimStyle.Sprint("No MCP servers configured.")}
 	}
 
 	totalTools := 0
@@ -1310,7 +1295,7 @@ func printMCPStatus(mgr *mcpmgr.Manager, w io.Writer) {
 		totalTools += s.ToolCount
 	}
 
-	var lines []string
+	lines := []string{DimStyle.Sprintf("%d server(s) · %d tool(s)", len(servers), totalTools)}
 	for _, s := range servers {
 		status := ErrorStyle.Sprint("disconnected")
 		if s.Connected {
@@ -1327,12 +1312,19 @@ func printMCPStatus(mgr *mcpmgr.Manager, w io.Writer) {
 			lines = append(lines, ErrorStyle.Sprintf("  error: %s", strings.SplitN(s.Err, "\n", 2)[0]))
 		}
 	}
+	return lines
+}
 
-	v := promptui.Viewer{
-		Label:  fmt.Sprintf("MCP servers (%d · %d tools)", len(servers), totalTools),
-		Lines:  lines,
-		Wrap:   true, // the tools line is long — wrap instead of pan
-		Height: 15,
+// showCapabilities opens a tabbed read-only viewer over the model's capabilities:
+// a "Tools" tab (every advertised tool) and an "MCP" tab (server status). The
+// merged /tools command, with the former /mcp folded into the second tab.
+func showCapabilities(dispatch tool.Dispatcher, mgr *mcpmgr.Manager) {
+	tools := promptui.NewViewPanel("Tools", toolStatusLines(dispatch, mgr))
+	mcp := promptui.NewViewPanel("MCP", mcpStatusLines(mgr))
+	mcp.Wrap = true // the per-server tool list is long — wrap it, like the old /mcp
+	tb := &promptui.Tabbed{
+		Panels:    []promptui.Panel{tools, mcp},
+		RuneWidth: runeWidth,
 	}
-	_ = v.Run()
+	_, _ = tb.Run()
 }

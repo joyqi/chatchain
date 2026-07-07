@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"chatchain/internal/promptui"
 	"chatchain/provider"
 )
 
@@ -110,87 +111,65 @@ func attachmentLabel(a provider.Attachment) string {
 	return fmt.Sprintf("%s (%s, %s)", a.Filename, a.MimeType, humanSize(len(a.Data)))
 }
 
-// pickFile opens an interactive directory browser starting at the working
-// directory: "../" and subdirectories navigate, a file selects and returns its
-// path. Returns "" if cancelled. Hidden entries are skipped. Uses runSelect, so
-// Esc/q/Ctrl+C cancel cleanly with no residue.
-func pickFile() (string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		dir, _ = os.UserHomeDir()
-	}
-	type fsItem struct {
-		label string
-		path  string
-		isDir bool
-	}
-	for {
-		entries, rerr := os.ReadDir(dir)
-		if rerr != nil {
-			return "", rerr
-		}
-		var items []fsItem
-		if parent := filepath.Dir(dir); parent != dir {
-			items = append(items, fsItem{"../", parent, true})
-		}
-		var dirs, files []fsItem
-		for _, e := range entries {
-			name := e.Name()
-			if strings.HasPrefix(name, ".") {
-				continue // skip hidden entries
-			}
-			p := filepath.Join(dir, name)
-			if e.IsDir() {
-				dirs = append(dirs, fsItem{name + "/", p, true})
-			} else {
-				files = append(files, fsItem{name, p, false})
-			}
-		}
-		items = append(items, dirs...)
-		items = append(items, files...)
-
-		labels := make([]string, len(items))
-		for i, it := range items {
-			labels[i] = it.label
-		}
-		idx, ok := runSelect("Attach a file · "+dir, labels, 15)
-		if !ok {
-			return "", nil // cancelled
-		}
-		chosen := items[idx]
-		if chosen.isDir {
-			dir = chosen.path
-			continue
-		}
-		return chosen.path, nil
-	}
-}
-
-// cleanAttachments shows the pending attachments as a multi-select and removes
-// the chosen ones, returning the kept set. Cancelling leaves them unchanged.
-func cleanAttachments(w io.Writer, pending []provider.Attachment) []provider.Attachment {
-	if len(pending) == 0 {
-		DimStyle.Fprintln(w, "No attachments.")
-		return pending
-	}
+// manageAttachments opens a two-tab selector over the pending attachments: the
+// "Attached" tab multi-selects attached files to remove, the "Add" tab is a
+// directory browser to add one. It returns the resulting attachment set; on
+// cancel (Esc/Ctrl+C) the set is unchanged. The two panels' logic used to live
+// in cleanAttachments and pickFile respectively.
+func manageAttachments(w io.Writer, pending []provider.Attachment) []provider.Attachment {
 	rows := make([]string, len(pending))
 	for i, a := range pending {
 		rows[i] = attachmentLabel(a)
 	}
-	idxs, ok := multiSelect("Attachments", rows)
-	if !ok || len(idxs) == 0 {
-		return pending
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd, _ = os.UserHomeDir()
 	}
-	remove := make(map[int]bool, len(idxs))
-	for _, i := range idxs {
-		remove[i] = true
+
+	attached := promptui.NewListPanel("Attached", rows, true)
+	attached.RuneWidth = runeWidth
+	browser := promptui.NewBrowserPanel("Add", cwd)
+	browser.RuneWidth = runeWidth
+
+	tb := &promptui.Tabbed{
+		Panels:    []promptui.Panel{attached, browser},
+		RuneWidth: runeWidth,
 	}
-	var kept []provider.Attachment
-	for i, a := range pending {
-		if !remove[i] {
-			kept = append(kept, a)
+	focused, rerr := tb.Run()
+	if rerr != nil {
+		return pending // cancelled — leave the set as is
+	}
+
+	switch focused {
+	case 0: // Attached: remove the checked attachments
+		idxs := attached.Selected()
+		if len(idxs) == 0 {
+			return pending
 		}
+		remove := make(map[int]bool, len(idxs))
+		for _, i := range idxs {
+			remove[i] = true
+		}
+		var kept []provider.Attachment
+		for i, a := range pending {
+			if !remove[i] {
+				kept = append(kept, a)
+			}
+		}
+		DimStyle.Fprintf(w, "Removed %d attachment(s).\n", len(idxs))
+		return kept
+	case 1: // Add: attach the browsed file
+		path := browser.Chosen()
+		if path == "" {
+			return pending
+		}
+		att, aerr := ReadAttachment(path)
+		if aerr != nil {
+			ErrorStyle.Fprintf(w, "Error: %v\n", aerr)
+			return pending
+		}
+		DimStyle.Fprintf(w, "Attached: %s (%s, %d bytes)\n", att.Filename, att.MimeType, len(att.Data))
+		return append(pending, att)
 	}
-	DimStyle.Fprintf(w, "Removed %d attachment(s).\n", len(idxs))
-	return kept
+	return pending
 }

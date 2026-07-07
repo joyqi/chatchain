@@ -6,68 +6,73 @@ import (
 	"chatchain/internal/promptui"
 )
 
-// multiSelect runs a Space-toggle / Enter-submit / Esc-cancel multi-select over
-// the given rows, returning the checked indices (ok=true on submit, false on
-// cancel). It uses promptui's native multi-select with its default templates,
-// help line, and ESC/q cancel — so the label is just a title, with no key hints,
-// templates, stdin rewriting, or prompt-restart hackery.
-func multiSelect(label string, rows []string) ([]int, bool) {
-	if len(rows) == 0 {
-		return nil, false
-	}
-	size := len(rows)
-	if size > 15 {
-		size = 15
-	}
-	prompt := promptui.Select{
-		Label: label,
-		Items: rows,
-		Size:  size,
-	}
-	idxs, err := prompt.RunMultiple()
-	if err != nil {
-		return nil, false
-	}
-	return idxs, true
-}
-
-// cleanSessions runs a multi-select cleanup of saved sessions, deleting the
-// chosen bundles. The active session is excluded — you can't delete the one
-// you're in.
-func cleanSessions(w io.Writer, currentID string) {
+// manageSessions opens a two-tab selector over saved sessions: the "Resume" tab
+// single-selects a session to resume, the "Delete" tab multi-selects sessions to
+// delete (the active session is excluded — you can't delete the one you're in).
+// It returns the ID to resume, or "" when the user cancels or picks a delete
+// action. Deletions happen here; the caller only handles the resume. The resume
+// tab mirrors PickSession (still used by --resume at launch); the delete tab
+// folds in the former cleanSessions logic.
+func manageSessions(w io.Writer, currentID string) (string, error) {
 	infos, err := ListSessions()
 	if err != nil {
-		ErrorStyle.Fprintf(w, "Error: %v\n", err)
-		return
+		return "", err
 	}
-	var sessions []SessionInfo
+	if len(infos) == 0 {
+		DimStyle.Fprintln(w, "No sessions.")
+		return "", nil
+	}
+
+	// "Resume" lists every session; "Delete" excludes the active one.
+	resumeRows := make([]string, len(infos))
+	for i, in := range infos {
+		resumeRows[i] = sessionLabel(in)
+	}
+	var deletable []SessionInfo
 	for _, in := range infos {
 		if in.ID != currentID {
-			sessions = append(sessions, in)
+			deletable = append(deletable, in)
 		}
 	}
-	if len(sessions) == 0 {
-		DimStyle.Fprintln(w, "No other sessions to clean.")
-		return
+	deleteRows := make([]string, len(deletable))
+	for i, in := range deletable {
+		deleteRows[i] = sessionLabel(in)
 	}
 
-	rows := make([]string, len(sessions))
-	for i, in := range sessions {
-		rows[i] = sessionLabel(in)
+	resume := promptui.NewListPanel("Resume", resumeRows, false)
+	resume.RuneWidth = runeWidth
+	del := promptui.NewListPanel("Delete", deleteRows, true)
+	del.RuneWidth = runeWidth
+
+	tb := &promptui.Tabbed{
+		Panels:    []promptui.Panel{resume, del},
+		RuneWidth: runeWidth,
+	}
+	focused, rerr := tb.Run()
+	if rerr != nil {
+		return "", nil // cancelled
 	}
 
-	idxs, ok := multiSelect("Clean sessions", rows)
-	if !ok || len(idxs) == 0 {
-		return
-	}
-
-	deleted := 0
-	for _, i := range idxs {
-		if derr := DeleteSession(sessions[i].ID); derr != nil {
-			ErrorStyle.Fprintf(w, "Failed to delete %s: %v\n", sessions[i].ID, derr)
-		} else {
-			deleted++
+	switch focused {
+	case 0: // Resume: resume the highlighted session
+		sel := resume.Selected()
+		if len(sel) == 0 {
+			return "", nil
+		}
+		return infos[sel[0]].ID, nil
+	case 1: // Delete: delete the checked sessions
+		idxs := del.Selected()
+		deleted := 0
+		for _, i := range idxs {
+			if derr := DeleteSession(deletable[i].ID); derr != nil {
+				ErrorStyle.Fprintf(w, "Failed to delete %s: %v\n", deletable[i].ID, derr)
+			} else {
+				deleted++
+			}
+		}
+		if deleted > 0 {
+			DimStyle.Fprintf(w, "Deleted %d session(s).\n", deleted)
 		}
 	}
-	DimStyle.Fprintf(w, "Deleted %d session(s).\n", deleted)
+	return "", nil
 }

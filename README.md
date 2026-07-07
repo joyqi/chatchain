@@ -240,16 +240,13 @@ the command is colorized inline (green once complete, cyan while a valid prefix)
 
 | Command | Description |
 |---------|-------------|
-| `/file [path]` | Attach a file (image, PDF, or text). With no path, opens a file browser; with a path, supports Tab completion. |
-| `/files` | Manage attached files — multi-select (Space) and remove (Enter) |
-| `/session` | List saved sessions and resume one |
-| `/sessions` | Clean up saved sessions — multi-select and delete |
+| `/file [path]` | Attach a file (image, PDF, or text). With a path (Tab completion supported), attaches directly. With no path, opens a tabbed selector: "Attached" to remove attachments, "Add" to browse and add one. |
+| `/session` | Tabbed selector over saved sessions: "Resume" to resume one, "Delete" to multi-select and delete others. |
 | `/model` | Switch the model for the current session |
 | `/context [size]` | Show/set the context window (e.g. `200k`, `1m`); no arg opens a picker |
 | `/compact [hint]` | Summarize older history to free context; optional hint guides what to keep |
 | `/status` | Show provider, model, context usage, and last-turn token counts |
-| `/mcp` | Show connected MCP servers and their tools |
-| `/tools` | List every available tool (built-in and MCP) with its source |
+| `/tools` | Tabbed read-only view of the model's capabilities: a "Tools" tab (every built-in and MCP tool with its source) and an "MCP" tab (server status, endpoints, and tools) |
 
 Attached files are sent with your next message, then cleared automatically.
 
@@ -328,11 +325,10 @@ You> /file photo.png
   Attached: photo.png (image/png, 245760 bytes)
 You> /file report.pdf
   Attached: report.pdf (application/pdf, 102400 bytes)
-You> /files
-  [1] photo.png (image/png, 240.0 KB)
-  [2] report.pdf (application/pdf, 100.0 KB)
+You> /file
+  (tabbed selector — "Attached" to remove, "Add" to browse and add)
 You> Summarize the report and describe the photo
-Assistant> ...
+...
 ```
 
 ## Project Structure
