@@ -482,7 +482,7 @@ func buildExportHTML(meta exportMeta, msgs []provider.Message) (string, error) {
 				b.WriteString("</div>\n")
 			}
 			for _, tc := range m.ToolCalls {
-				fmt.Fprintf(&b, "<details class=\"muted tool\"><summary>⚙ %s</summary>\n", html.EscapeString(tc.Name))
+				fmt.Fprintf(&b, "<details class=\"muted tool\"><summary>⚙ %s</summary>\n", html.EscapeString(displayToolName(tc.Name)))
 				if len(tc.Arguments) > 0 {
 					args, jerr := json.MarshalIndent(tc.Arguments, "", "  ")
 					if jerr != nil {

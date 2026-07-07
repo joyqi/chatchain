@@ -89,10 +89,10 @@ func summarize(ctx context.Context, p provider.Provider, middle []provider.Messa
 				b.WriteByte('\n')
 			}
 			for _, tc := range m.ToolCalls {
-				fmt.Fprintf(&b, "Assistant called tool %s(%v)\n", tc.Name, tc.Arguments)
+				fmt.Fprintf(&b, "Assistant called tool %s(%v)\n", displayToolName(tc.Name), tc.Arguments)
 			}
 		case "tool":
-			fmt.Fprintf(&b, "Tool %s result: %s\n", m.ToolCallName, truncateRunes(m.Content, 2000))
+			fmt.Fprintf(&b, "Tool %s result: %s\n", displayToolName(m.ToolCallName), truncateRunes(m.Content, 2000))
 		}
 	}
 

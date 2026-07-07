@@ -5,7 +5,7 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 ## Features
 
 - **Multi-provider** — OpenAI, OpenAI Responses API, Anthropic, Gemini, and Vertex AI, with custom base URL support
-- **MCP tool support** — connect external MCP tool servers (filesystem, GitHub, databases, etc.) and let AI providers use them during chat
+- **MCP tool support** — connect external MCP tool servers (filesystem, GitHub, databases, etc.) and let AI providers use them during chat, with tool names namespaced per server (`mcp__<server>__<tool>`) so same-named tools never collide
 - **Interactive model selection** — arrow-key navigation with filtering
 - **Slash-command completion** — type `/` and the command menu pops up and live-filters as you type; the command is highlighted inline (no manual Tab needed)
 - **Streaming responses** — real-time token output with loading spinner; press **Esc** (or Ctrl+C) during a streaming reply to interrupt it — the partial reply is kept in history and marked interrupted

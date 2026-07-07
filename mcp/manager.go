@@ -3,6 +3,8 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
@@ -28,19 +30,104 @@ type ServerConfig struct {
 // ServerStatus holds runtime info about a connected MCP server.
 type ServerStatus struct {
 	Name      string   // display name
+	Segment   string   // manager-assigned wire-name segment (unique across connected servers; empty when not Connected)
 	Endpoint  string   // command or URL
 	Connected bool     // whether connection succeeded
 	ToolCount int      // number of tools from this server
-	Tools     []string // tool names
+	Tools     []string // raw tool names as reported by the server (not wire names)
 	Err       string   // connection/tool-listing error (empty when Connected)
+}
+
+// toolTarget locates a registered tool: which session serves it and the raw
+// (un-namespaced) name that server knows it by. The corresponding ToolDef
+// carries the wire name (see ComposeWireName).
+type toolTarget struct {
+	session int    // index into Manager.sessions
+	raw     string // server-side tool name
 }
 
 // Manager manages connections to MCP servers and dispatches tool calls.
 type Manager struct {
 	sessions  []*mcp.ClientSession
 	tools     []provider.ToolDef
-	toolIndex map[string]int // tool name → session index
-	servers   []ServerStatus // per-server status
+	toolIndex map[string]toolTarget // wire tool name → target
+	segments  map[string]bool       // wire-name segments already assigned to servers
+	servers   []ServerStatus        // per-server status
+}
+
+// wireNameMaxLen is the longest tool name accepted by every supported
+// provider: OpenAI and Anthropic constrain tool names to [a-zA-Z0-9_-]{1,64},
+// and Gemini enforces the same 64-char cap on function declaration names.
+const wireNameMaxLen = 64
+
+// wireNamePrefix marks a tool name as MCP-namespaced: "mcp__<server>__<tool>".
+const wireNamePrefix = "mcp__"
+
+// sanitizeNameSegment maps a name (server config key, --mcp flag value, or
+// server-side tool name) to a wire-safe segment: every character outside
+// [A-Za-z0-9_] becomes "_" (hyphens too — Gemini's functionDeclaration name
+// pattern forbids them, even though OpenAI and Anthropic would accept them),
+// runs of "_" collapse to a single "_", and leading/trailing "_" are trimmed.
+// A name that sanitizes to nothing falls back to "srv". Collapse + trim
+// guarantee a segment never contains "__", so in a composed wire name the
+// first "__" after the "mcp__" prefix is always the server/tool separator.
+func sanitizeNameSegment(name string) string {
+	var b strings.Builder
+	b.Grow(len(name))
+	prevUnderscore := false
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			prevUnderscore = false
+		default:
+			if prevUnderscore {
+				continue
+			}
+			prevUnderscore = true
+			r = '_'
+		}
+		b.WriteRune(r)
+	}
+	s := strings.Trim(b.String(), "_")
+	if s == "" {
+		return "srv"
+	}
+	return s
+}
+
+// ComposeWireName composes the name an MCP tool is advertised under:
+// "mcp__<segment>__<tool>". segment must be an already-sanitized server
+// segment (the manager assigns one per server, see addServer); only the tool
+// part is sanitized here, so the result satisfies the strictest provider
+// charset (Gemini forbids hyphens, which MCP servers commonly use in tool
+// names). If composing is lossy — sanitizing changed the tool segment — or
+// the name exceeds wireNameMaxLen, the name is trimmed to fit and suffixed
+// with "_" plus an 8-char lowercase hex hash of the unsanitized composition,
+// keeping distinct raw tool names distinct and within the limit. The function
+// is pure, so recomposing from ServerStatus.Segment and a raw tool name
+// always matches what was registered.
+func ComposeWireName(segment, tool string) string {
+	base := wireNamePrefix + segment + "__"
+	wire := base + sanitizeNameSegment(tool)
+	if wire == base+tool && len(wire) <= wireNameMaxLen {
+		return wire
+	}
+	sum := sha256.Sum256([]byte(base + tool))
+	suffix := "_" + hex.EncodeToString(sum[:4])
+	if len(wire)+len(suffix) > wireNameMaxLen {
+		wire = wire[:wireNameMaxLen-len(suffix)]
+	}
+	return wire + suffix
+}
+
+// WireToolName derives the wire name for a tool of a single, standalone
+// server: sanitizeNameSegment(server) fed into ComposeWireName. It is for
+// single-server contexts and tests; the Manager registers tools under its
+// per-server assigned segments (unique across connected servers), so
+// recomposing a managed server's wire names must use ServerStatus.Segment
+// with ComposeWireName instead.
+func WireToolName(server, tool string) string {
+	return ComposeWireName(sanitizeNameSegment(server), tool)
 }
 
 // LogFunc is used for verbose logging without importing the chat package.
@@ -61,7 +148,7 @@ type serverResult struct {
 // server, emitted in config order); pass nil to suppress.
 func NewManager(ctx context.Context, configs []ServerConfig, logf LogFunc) (*Manager, error) {
 	m := &Manager{
-		toolIndex: make(map[string]int),
+		toolIndex: make(map[string]toolTarget),
 	}
 	if len(configs) == 0 {
 		return m, nil
@@ -87,20 +174,61 @@ func NewManager(ctx context.Context, configs []ServerConfig, logf LogFunc) (*Man
 				logf("%s", line)
 			}
 		}
-		if !r.status.Connected {
-			m.servers = append(m.servers, r.status)
-			continue
-		}
-		idx := len(m.sessions)
-		m.sessions = append(m.sessions, r.session)
-		for _, td := range r.tools {
-			m.tools = append(m.tools, td)
-			m.toolIndex[td.Name] = idx
-		}
-		m.servers = append(m.servers, r.status)
+		m.addServer(r, logf)
 	}
 
 	return m, nil
+}
+
+// assignSegment reserves a unique wire-name segment for a server: the
+// sanitized server name, or — when another connected server already holds it
+// (two servers with the same name, or names that sanitize identically, e.g.
+// "my-server" and "my_server") — the first free "<segment>_2", "<segment>_3",
+// … suffix, deterministic in connect (config) order.
+func (m *Manager) assignSegment(name string) string {
+	if m.segments == nil {
+		m.segments = make(map[string]bool)
+	}
+	base := sanitizeNameSegment(name)
+	seg := base
+	for n := 2; m.segments[seg]; n++ {
+		seg = fmt.Sprintf("%s_%d", base, n)
+	}
+	m.segments[seg] = true
+	return seg
+}
+
+// addServer merges one server's connect outcome into the manager. A failed
+// server only contributes its status; a connected one is assigned a unique
+// wire-name segment (exposed as ServerStatus.Segment) and contributes its
+// session and tools, each registered under its wire name (see
+// ComposeWireName) mapped to the session index and the server's raw tool
+// name. Unique segments that never contain "__", per-server tool uniqueness
+// (MCP spec), and the hash suffix on lossy/truncated tool segments together
+// make wire names unique, so the duplicate check below should be unreachable;
+// it is a guardrail that skips the duplicate (never overwrites the earlier
+// registration) and reports it through logf.
+func (m *Manager) addServer(r serverResult, logf LogFunc) {
+	if !r.status.Connected {
+		m.servers = append(m.servers, r.status)
+		return
+	}
+	idx := len(m.sessions)
+	m.sessions = append(m.sessions, r.session)
+	r.status.Segment = m.assignSegment(r.status.Name)
+	for _, td := range r.tools {
+		raw := td.Name
+		td.Name = ComposeWireName(r.status.Segment, raw)
+		if _, dup := m.toolIndex[td.Name]; dup {
+			if logf != nil {
+				logf("Warning: MCP server %s: duplicate wire tool name %s, skipping\n", r.status.Name, td.Name)
+			}
+			continue
+		}
+		m.tools = append(m.tools, td)
+		m.toolIndex[td.Name] = toolTarget{session: idx, raw: raw}
+	}
+	m.servers = append(m.servers, r.status)
 }
 
 // connectServer connects to a single MCP server and lists its tools. It never
@@ -175,6 +303,9 @@ func (m *Manager) Servers() []ServerStatus {
 }
 
 // Tools returns the aggregated list of tools from all connected servers.
+// Each ToolDef.Name is the namespaced wire name ("mcp__<segment>__<tool>",
+// see ComposeWireName), which is what gets advertised to models and must be
+// passed back to CallTool.
 func (m *Manager) Tools() []provider.ToolDef {
 	if m == nil {
 		return nil
@@ -182,15 +313,17 @@ func (m *Manager) Tools() []provider.ToolDef {
 	return m.tools
 }
 
-// CallTool dispatches a tool call to the appropriate MCP server.
+// CallTool dispatches a tool call to the appropriate MCP server. name is the
+// wire name the tool was advertised under (see ComposeWireName); it is
+// translated back to the server's raw tool name for the actual call.
 func (m *Manager) CallTool(ctx context.Context, name string, arguments map[string]any) (string, bool, error) {
-	idx, ok := m.toolIndex[name]
+	target, ok := m.toolIndex[name]
 	if !ok {
 		return "", true, fmt.Errorf("unknown tool: %s", name)
 	}
 
-	result, err := m.sessions[idx].CallTool(ctx, &mcp.CallToolParams{
-		Name:      name,
+	result, err := m.sessions[target.session].CallTool(ctx, &mcp.CallToolParams{
+		Name:      target.raw,
 		Arguments: arguments,
 	})
 	if err != nil {

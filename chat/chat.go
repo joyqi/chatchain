@@ -1128,8 +1128,9 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 				CodeStyle.Fprintln(w, toolCallHeader(tc))
 			}
 
-			startSpinner(tc.Name)
-			resultText, isError, callErr := callTool(ctx, dispatch, tc, s, tc.Name, quiet)
+			label := displayToolName(tc.Name)
+			startSpinner(label)
+			resultText, isError, callErr := callTool(ctx, dispatch, tc, s, label, quiet)
 			if callErr != nil {
 				resultText = fmt.Sprintf("Error calling tool: %v", callErr)
 				isError = true
@@ -1339,7 +1340,7 @@ func toolCallHeader(tc provider.ToolCall) string {
 	}
 
 	parts := make([]string, 0, len(shown)+2)
-	parts = append(parts, tc.Name)
+	parts = append(parts, displayToolName(tc.Name))
 	for _, k := range shown {
 		v := strings.ReplaceAll(fmt.Sprintf("%v", tc.Arguments[k]), "\n", " ")
 		parts = append(parts, k+":"+truncateRunes(v, toolHeaderMaxValue))
@@ -1400,25 +1401,39 @@ func toolStatusLines(dispatch tool.Dispatcher, mgr *mcpmgr.Manager) []string {
 		return []string{DimStyle.Sprint("No tools available.")}
 	}
 
-	// Map each MCP tool name to its server; anything else is a built-in.
+	// Map each MCP tool's wire name to its server (ServerStatus.Tools holds raw
+	// names, so recompose the wire name from the manager-assigned segment,
+	// which is what registration used); anything else is a built-in. The tag
+	// keeps the original server name — the segment is a wire detail.
 	source := make(map[string]string)
 	if mgr != nil {
 		for _, s := range mgr.Servers() {
 			for _, name := range s.Tools {
-				source[name] = s.Name
+				source[mcpmgr.ComposeWireName(s.Segment, name)] = s.Name
 			}
+		}
+	}
+
+	// Pad names to the longest one so the source tags line up; namespaced
+	// display names ("server:tool") routinely exceed any fixed width.
+	names := make([]string, len(defs))
+	width := 0
+	for i, d := range defs {
+		names[i] = displayToolName(d.Name)
+		if len(names[i]) > width {
+			width = len(names[i])
 		}
 	}
 
 	lines := make([]string, 0, len(defs)+1)
 	lines = append(lines, DimStyle.Sprintf("%d tool(s) available", len(defs)))
-	for _, d := range defs {
+	for i, d := range defs {
 		tag := CodeBlockStyle.Sprint("[built-in]") // green
 		if srv, ok := source[d.Name]; ok {
 			tag = YellowStyle.Sprintf("[mcp: %s]", srv)
 		}
 		desc := strings.ReplaceAll(d.Description, "\n", " ")
-		lines = append(lines, fmt.Sprintf("%s  %s  %s", BoldStyle.Sprintf("%-18s", d.Name), tag, DimStyle.Sprint(desc)))
+		lines = append(lines, fmt.Sprintf("%s  %s  %s", BoldStyle.Sprintf("%-*s", width, names[i]), tag, DimStyle.Sprint(desc)))
 	}
 	return lines
 }
