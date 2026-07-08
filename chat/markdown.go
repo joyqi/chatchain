@@ -49,7 +49,7 @@ func syncMDRenderer() {
 // Markdown-path text styles, all bound to mdRenderer so they obey the
 // color-profile rule above. They mirror the fatih/color styles in styles.go
 // (which the rest of the app keeps) with the same 16-color SGR output;
-// only headings go further, giving each level its own weight.
+// H1 additionally gets an underline.
 // TabWidth(NoTabConversion) keeps lipgloss from rewriting tabs inside the
 // text — this writer styles lines without altering their content.
 var (
@@ -60,21 +60,19 @@ var (
 	mdLink   = mdPlain.Foreground(lipgloss.Color("6")).Underline(true) // link text, as LinkStyle
 	mdDim    = mdPlain.Faint(true)                                     // quote bars, bullets, rules, URLs
 	mdH1     = mdBold.Underline(true)                                  // # heading
-	mdH2     = mdBold                                                  // ## heading
-	mdH3     = mdBold.Faint(true)                                      // ### heading and deeper
+	mdH2     = mdBold                                                  // ## and deeper: plain bold
 )
 
-// headingStyle maps a heading level to its style: H1 bold+underline, H2 bold,
-// H3 and deeper bold+faint — subtle, but enough to tell the levels apart.
+// headingStyle maps a heading level to its style: H1 bold+underline, every
+// other level plain bold. (Bold+faint "level differentiation" for H3+ was
+// tried and reverted: ###/#### are the levels models emit most, and terminals
+// render the 1;2 combination faint-dominant — whole documents looked washed
+// out.)
 func headingStyle(level int) lipgloss.Style {
-	switch level {
-	case 1:
+	if level == 1 {
 		return mdH1
-	case 2:
-		return mdH2
-	default:
-		return mdH3
 	}
+	return mdH2
 }
 
 // markdownWriter wraps an io.Writer and applies ANSI highlighting to markdown
@@ -255,7 +253,11 @@ func (m *markdownWriter) highlightLine(line string) string {
 			i++
 		}
 		if i < len(trimmed) && trimmed[i] == ' ' {
-			return headingStyle(i).Render(strings.TrimSpace(trimmed[i:]))
+			// Inline markers inside the heading (**bold**, `code`, *italic*)
+			// are stripped rather than styled: the heading has one style of
+			// its own, and nested SGR resets from highlightInline would cut
+			// it mid-line (same reasoning as blockquotes).
+			return headingStyle(i).Render(stripInlineMarkdown(strings.TrimSpace(trimmed[i:])))
 		}
 	}
 

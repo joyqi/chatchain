@@ -312,7 +312,9 @@ func TestHighlightLineHidesMarkers(t *testing.T) {
 }
 
 // TestHeadingLevels checks the per-level heading styles — H1 bold+underline,
-// H2 bold, H3 and deeper bold+faint — with the # markers hidden throughout.
+// every other level plain bold (never faint: models emit ###/#### constantly
+// and faint-dominant terminals washed whole documents out) — with the #
+// markers hidden throughout.
 func TestHeadingLevels(t *testing.T) {
 	color.NoColor = false
 	m := newMarkdownWriter(io.Discard)
@@ -323,8 +325,8 @@ func TestHeadingLevels(t *testing.T) {
 	}{
 		{"# Top", "Top", []string{"1", "4"}, []string{"2"}},
 		{"## Second", "Second", []string{"1"}, []string{"2", "4"}},
-		{"### Third", "Third", []string{"1", "2"}, []string{"4"}},
-		{"##### Fifth", "Fifth", []string{"1", "2"}, []string{"4"}},
+		{"### Third", "Third", []string{"1"}, []string{"2", "4"}},
+		{"##### Fifth", "Fifth", []string{"1"}, []string{"2", "4"}},
 	}
 	for _, tt := range tests {
 		got := m.highlightLine(tt.in)
@@ -482,5 +484,17 @@ func TestTableKeepsFlags(t *testing.T) {
 	out := renderMD(t, "| C | N |\n|---|---|\n| \U0001F1EA\U0001F1FA \u6b27\u6d32 | x |\n\n")
 	if !strings.ContainsRune(out, '\U0001F1EA') || !strings.ContainsRune(out, '\U0001F1FA') {
 		t.Fatalf("flag emoji lost from table cell:\n%s", stripANSI(out))
+	}
+}
+
+// Inline markers inside headings are hidden, not rendered literally.
+func TestHeadingStripsInlineMarkers(t *testing.T) {
+	out := renderMD(t, "## **Bold** and `code` title\n\n")
+	plain := stripANSI(out)
+	if strings.Contains(plain, "**") || strings.Contains(plain, "`") {
+		t.Fatalf("inline markers leaked into heading:\n%s", plain)
+	}
+	if !strings.Contains(plain, "Bold and code title") {
+		t.Fatalf("heading text mangled:\n%s", plain)
 	}
 }
