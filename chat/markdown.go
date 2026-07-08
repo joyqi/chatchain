@@ -12,11 +12,70 @@ import (
 	"chatchain/internal/promptui"
 
 	"github.com/alecthomas/chroma/v2/quick"
-	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/jedib0t/go-pretty/v6/text"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/list"
+	"github.com/charmbracelet/lipgloss/table"
+	"github.com/fatih/color"
+	"github.com/mattn/go-runewidth"
 	"github.com/muesli/termenv"
+	"github.com/rivo/uniseg"
 	"golang.org/x/term"
 )
+
+// mdRenderer is the single lipgloss renderer used by the markdown path.
+//
+// Color-profile rule: fatih/color (used app-wide) emits 16-color SGR gated
+// solely by the global color.NoColor flag, while lipgloss by default binds a
+// renderer to its output and silently strips ANSI when that output is not a
+// terminal — which would desync the two stacks and break tests that render
+// into a bytes.Buffer and assert on escape codes. We therefore never let
+// lipgloss auto-detect: syncMDRenderer pins the profile to ANSI (16-color)
+// when color.NoColor is false and Ascii when it is true, so both stacks
+// always toggle together. The renderer's writer is irrelevant (io.Discard) —
+// it only exists so profile detection is never consulted.
+var mdRenderer = lipgloss.NewRenderer(io.Discard)
+
+// syncMDRenderer aligns mdRenderer's color profile with the global
+// color.NoColor flag (see mdRenderer). Called before each lipgloss render
+// because tests and CLI flags flip color.NoColor at runtime.
+func syncMDRenderer() {
+	if color.NoColor {
+		mdRenderer.SetColorProfile(termenv.Ascii)
+	} else {
+		mdRenderer.SetColorProfile(termenv.ANSI)
+	}
+}
+
+// Markdown-path text styles, all bound to mdRenderer so they obey the
+// color-profile rule above. They mirror the fatih/color styles in styles.go
+// (which the rest of the app keeps) with the same 16-color SGR output;
+// only headings go further, giving each level its own weight.
+// TabWidth(NoTabConversion) keeps lipgloss from rewriting tabs inside the
+// text — this writer styles lines without altering their content.
+var (
+	mdPlain  = mdRenderer.NewStyle().TabWidth(lipgloss.NoTabConversion)
+	mdBold   = mdPlain.Bold(true)                                      // **bold**, table headers
+	mdItalic = mdPlain.Italic(true)                                    // *italic*
+	mdCode   = mdPlain.Foreground(lipgloss.Color("6"))                 // `code`: cyan, as CodeStyle
+	mdLink   = mdPlain.Foreground(lipgloss.Color("6")).Underline(true) // link text, as LinkStyle
+	mdDim    = mdPlain.Faint(true)                                     // quote bars, bullets, rules, URLs
+	mdH1     = mdBold.Underline(true)                                  // # heading
+	mdH2     = mdBold                                                  // ## heading
+	mdH3     = mdBold.Faint(true)                                      // ### heading and deeper
+)
+
+// headingStyle maps a heading level to its style: H1 bold+underline, H2 bold,
+// H3 and deeper bold+faint — subtle, but enough to tell the levels apart.
+func headingStyle(level int) lipgloss.Style {
+	switch level {
+	case 1:
+		return mdH1
+	case 2:
+		return mdH2
+	default:
+		return mdH3
+	}
+}
 
 // markdownWriter wraps an io.Writer and applies ANSI highlighting to markdown
 // syntax elements line by line, without modifying the original text content.
@@ -28,10 +87,16 @@ type markdownWriter struct {
 	tableSeps []bool     // true if row is a separator (|---|---|)
 	fenceLang string     // language from the opening ``` fence
 	codeLines []string   // buffered code-block lines, highlighted at the close
-	// tableView / codeView show a live "rendering…" preview of a block while it
-	// buffers (terminals only); the flush clears it before emitting the result.
+	inList    bool       // a list block is buffering
+	listItems []listItem // parsed items of the buffering list block
+	listLoose bool       // a blank line was kept inside the block (loose list)
+	listBlank bool       // one blank line is held, pending the next line's verdict
+	// tableView / codeView / listView show a live "rendering…" preview of a
+	// block while it buffers (terminals only); the flush clears it before
+	// emitting the result.
 	tableView *promptui.StreamView
 	codeView  *promptui.StreamView
+	listView  *promptui.StreamView
 }
 
 func newMarkdownWriter(w io.Writer) *markdownWriter {
@@ -62,6 +127,12 @@ func (m *markdownWriter) Write(p []byte) (int, error) {
 						return len(p), err
 					}
 				}
+				// A fence inside a list is out of scope: flush the list first.
+				if m.inList {
+					if err := m.finishList(); err != nil {
+						return len(p), err
+					}
+				}
 				m.inFence = true
 				m.fenceLang = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "```"))
 				m.codeLines = nil
@@ -75,6 +146,19 @@ func (m *markdownWriter) Write(p []byte) (int, error) {
 				io.WriteString(m.codeView, line+"\n")
 			}
 			continue
+		}
+
+		// A buffering list block consumes marker lines, indented continuation
+		// text, and one held blank line; anything else flushes the block and
+		// falls through to be processed normally.
+		if m.inList {
+			consumed, err := m.listConsume(line)
+			if err != nil {
+				return len(p), err
+			}
+			if consumed {
+				continue
+			}
 		}
 
 		if isTableLine(line) {
@@ -96,6 +180,11 @@ func (m *markdownWriter) Write(p []byte) (int, error) {
 			}
 		}
 
+		if isListLine(line) {
+			m.startList(line)
+			continue
+		}
+
 		highlighted := m.highlightLine(line)
 		if _, err := io.WriteString(m.w, highlighted+"\n"); err != nil {
 			return len(p), err
@@ -115,6 +204,23 @@ func (m *markdownWriter) Flush() {
 		}
 		m.inFence = false
 		m.flushCode()
+		return
+	}
+	if m.inList {
+		if len(m.buf) > 0 {
+			// A partial trailing line may still belong to the list.
+			line := string(m.buf)
+			m.buf = nil
+			if consumed, _ := m.listConsume(line); consumed {
+				m.finishList()
+				return
+			}
+			// listConsume flushed the block; emit the line like the plain path
+			// below (no trailing newline — the source had none).
+			io.WriteString(m.w, m.highlightLine(line))
+			return
+		}
+		m.finishList()
 		return
 	}
 	if len(m.tableRows) > 0 {
@@ -139,30 +245,33 @@ func indexOf(b []byte, c byte) int {
 
 // highlightLine applies ANSI styles to a single line based on markdown syntax.
 func (m *markdownWriter) highlightLine(line string) string {
+	syncMDRenderer()
 	trimmed := strings.TrimSpace(line)
 
-	// Heading: ## Title → drop the # markers, bold the text (with inline styling).
+	// Heading: ## Title → drop the # markers, style the text by level.
 	if len(trimmed) > 0 && trimmed[0] == '#' {
 		i := 0
 		for i < len(trimmed) && trimmed[i] == '#' {
 			i++
 		}
 		if i < len(trimmed) && trimmed[i] == ' ' {
-			return BoldStyle.Sprint(strings.TrimSpace(trimmed[i:]))
+			return headingStyle(i).Render(strings.TrimSpace(trimmed[i:]))
 		}
 	}
 
 	// Horizontal rule: --- or *** or ___
 	if isHorizontalRule(trimmed) {
-		return DimStyle.Sprint(line)
+		return mdDim.Render(line)
 	}
 
-	// Blockquote: > ... → a dim quote bar, the > marker hidden.
+	// Blockquote: > ... → a dim quote bar, the > marker hidden. Inline markers
+	// are stripped rather than styled: the quote is one dim span, and nested
+	// SGR resets would cut the faint attribute mid-line.
 	if strings.HasPrefix(trimmed, "> ") {
-		return DimStyle.Sprint("▌ " + trimmed[2:])
+		return mdDim.Render("▌ " + stripInlineMarkdown(trimmed[2:]))
 	}
 	if trimmed == ">" {
-		return DimStyle.Sprint("▌")
+		return mdDim.Render("▌")
 	}
 
 	// List item: normalize the bullet (- * + → •) and dim it, style the rest.
@@ -178,6 +287,7 @@ func (m *markdownWriter) highlightLine(line string) string {
 // **bold**/__bold__ → bold text, *italic*/_italic_ → italic text, `code` →
 // styled text (no backticks), and [text](url) → styled text + a dim URL.
 func highlightInline(line string) string {
+	syncMDRenderer()
 	var out strings.Builder
 	runes := []rune(line)
 	i := 0
@@ -190,8 +300,8 @@ func highlightInline(line string) string {
 				if urlEnd := findClose(runes, textEnd+2, ')'); urlEnd > textEnd+1 {
 					text := string(runes[i+1 : textEnd])
 					url := string(runes[textEnd+2 : urlEnd])
-					out.WriteString(LinkStyle.Sprint(text))
-					out.WriteString(DimStyle.Sprint(" (" + url + ")"))
+					out.WriteString(mdLink.Render(text))
+					out.WriteString(mdDim.Render(" (" + url + ")"))
 					i = urlEnd + 1
 					continue
 				}
@@ -201,7 +311,7 @@ func highlightInline(line string) string {
 		// Inline code: `code` → styled, backticks hidden.
 		if runes[i] == '`' {
 			if end := findClose(runes, i+1, '`'); end > 0 {
-				out.WriteString(CodeStyle.Sprint(string(runes[i+1 : end])))
+				out.WriteString(mdCode.Render(string(runes[i+1 : end])))
 				i = end + 1
 				continue
 			}
@@ -210,14 +320,14 @@ func highlightInline(line string) string {
 		// Bold: **text** / __text__ → bold, markers hidden.
 		if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '*' {
 			if end := findDoubleClose(runes, i+2, '*'); end > 0 {
-				out.WriteString(BoldStyle.Sprint(string(runes[i+2 : end])))
+				out.WriteString(mdBold.Render(string(runes[i+2 : end])))
 				i = end + 2
 				continue
 			}
 		}
 		if i+1 < len(runes) && runes[i] == '_' && runes[i+1] == '_' {
 			if end := findDoubleClose(runes, i+2, '_'); end > 0 {
-				out.WriteString(BoldStyle.Sprint(string(runes[i+2 : end])))
+				out.WriteString(mdBold.Render(string(runes[i+2 : end])))
 				i = end + 2
 				continue
 			}
@@ -227,7 +337,7 @@ func highlightInline(line string) string {
 		// Avoid matching list bullets and horizontal rules.
 		if runes[i] == '*' && i+1 < len(runes) && runes[i+1] != '*' && runes[i+1] != ' ' {
 			if end := findClose(runes, i+1, '*'); end > i+1 {
-				out.WriteString(ItalicStyle.Sprint(string(runes[i+1 : end])))
+				out.WriteString(mdItalic.Render(string(runes[i+1 : end])))
 				i = end + 1
 				continue
 			}
@@ -236,7 +346,7 @@ func highlightInline(line string) string {
 			// Only match if preceded by space or start of line.
 			if i == 0 || unicode.IsSpace(runes[i-1]) {
 				if end := findClose(runes, i+1, '_'); end > i+1 {
-					out.WriteString(ItalicStyle.Sprint(string(runes[i+1 : end])))
+					out.WriteString(mdItalic.Render(string(runes[i+1 : end])))
 					i = end + 1
 					continue
 				}
@@ -339,16 +449,271 @@ func splitListMarker(line string) (marker, rest string, ok bool) {
 
 // renderListMarker styles a list marker: unordered bullets (- * +) become a dim
 // "•", ordered markers (1. 2)) are kept but dimmed. Leading indentation is
-// preserved so nested lists stay aligned.
+// preserved so nested lists stay aligned. This is the fallback for stray list
+// lines that bypass the buffered block path (e.g. a partial line at Flush);
+// whole list blocks are rendered by flushList.
 func renderListMarker(marker string) string {
 	bullet := strings.TrimLeft(marker, " \t")
 	indent := marker[:len(marker)-len(bullet)]
 	switch {
 	case strings.HasPrefix(bullet, "- "), strings.HasPrefix(bullet, "* "), strings.HasPrefix(bullet, "+ "):
-		return indent + DimStyle.Sprint("• ")
+		return indent + mdDim.Render("• ")
 	default:
-		return indent + DimStyle.Sprint(bullet)
+		return indent + mdDim.Render(bullet)
 	}
+}
+
+// listItem is one parsed item of a buffering list block.
+type listItem struct {
+	level  int      // nesting depth, derived from source indentation
+	marker string   // "•", "☐", "☑", or the ordered token as written ("3.", "7)")
+	lines  []string // item text: first line + continuations ("" = paragraph break)
+}
+
+// taskMarkerRe matches a task-list checkbox at the start of an item's text.
+var taskMarkerRe = regexp.MustCompile(`^\[([ xX])\](?: |$)`)
+
+// isListLine reports whether the line opens a list item. Horizontal rules like
+// "- - -" also match the marker regex, so they are excluded explicitly.
+func isListLine(line string) bool {
+	if isHorizontalRule(strings.TrimSpace(line)) {
+		return false
+	}
+	return listMarkerRe.MatchString(line)
+}
+
+// indentLevel converts a list marker's leading whitespace into a nesting
+// level: every two columns are one level (a tab counts as two columns), so
+// two-space, three-space, and tab-indented nested bullets all land on the
+// level their author intended.
+func indentLevel(indent string) int {
+	cols := 0
+	for _, r := range indent {
+		if r == '\t' {
+			cols += 2
+		} else {
+			cols++
+		}
+	}
+	return cols / 2
+}
+
+// startList opens a list block with the given marker line as its first item.
+func (m *markdownWriter) startList(line string) {
+	m.inList = true
+	m.listView = newBlockPreview(m.w, "rendering list…")
+	m.listAppendItem(line)
+	m.listPreview(line)
+}
+
+// listConsume feeds one line to the buffering list block. It reports whether
+// the line was consumed; when it was not, the block (and any held blank line)
+// has already been flushed and the caller must process the line normally.
+func (m *markdownWriter) listConsume(line string) (bool, error) {
+	trimmed := strings.TrimSpace(line)
+	switch {
+	case trimmed == "":
+		if m.listBlank {
+			// A second blank line ends the list; both blanks re-emit after it
+			// (the held one here, the current one via the caller).
+			return false, m.finishList()
+		}
+		m.listBlank = true
+		m.listPreview(line)
+		return true, nil
+	case isListLine(line):
+		if m.listBlank {
+			// The held blank separated two items: the list is loose.
+			m.listBlank = false
+			m.listLoose = true
+		}
+		m.listAppendItem(line)
+		m.listPreview(line)
+		return true, nil
+	case line[0] == ' ' || line[0] == '\t':
+		// An indented table under a list item is still a table (LLMs commonly
+		// nest one below a bullet): flush the list and let the caller's table
+		// branch take the line — the same courtesy the fence branch extends.
+		if isTableLine(trimmed) {
+			return false, m.finishList()
+		}
+		// Indented text continues the previous item.
+		it := &m.listItems[len(m.listItems)-1]
+		if m.listBlank {
+			// The held blank split the item into paragraphs: keep the break
+			// inside the item and treat the list as loose.
+			m.listBlank = false
+			m.listLoose = true
+			it.lines = append(it.lines, "")
+		}
+		it.lines = append(it.lines, trimmed)
+		m.listPreview(line)
+		return true, nil
+	default:
+		return false, m.finishList()
+	}
+}
+
+// listAppendItem parses a marker line into a new item of the buffering block.
+func (m *markdownWriter) listAppendItem(line string) {
+	marker, rest, _ := splitListMarker(line)
+	bullet := strings.TrimLeft(marker, " \t")
+	level := indentLevel(marker[:len(marker)-len(bullet)])
+	if n := len(m.listItems); n == 0 {
+		level = 0 // a block always starts at the top level
+	} else if prev := m.listItems[n-1].level; level > prev+1 {
+		level = prev + 1 // never skip a level, whatever the source indentation
+	}
+	glyph := "•"
+	if bullet[0] >= '0' && bullet[0] <= '9' {
+		glyph = strings.TrimSpace(bullet) // ordered: keep the number as written
+	} else if t := taskMarkerRe.FindString(rest); t != "" {
+		if strings.ContainsAny(t, "xX") {
+			glyph = "☑"
+		} else {
+			glyph = "☐"
+		}
+		rest = rest[len(t):]
+	}
+	m.listItems = append(m.listItems, listItem{level: level, marker: glyph, lines: []string{rest}})
+}
+
+// listPreview mirrors a consumed raw line into the live block preview.
+func (m *markdownWriter) listPreview(line string) {
+	if m.listView != nil {
+		io.WriteString(m.listView, line+"\n")
+	}
+}
+
+// finishList flushes the buffering list block and re-emits a held blank line
+// after it (the blank turned out to end the list, not to make it loose).
+func (m *markdownWriter) finishList() error {
+	err := m.flushList()
+	if m.listBlank {
+		m.listBlank = false
+		if _, werr := io.WriteString(m.w, "\n"); err == nil {
+			err = werr
+		}
+	}
+	return err
+}
+
+// flushList clears the live preview and renders the buffered list block.
+func (m *markdownWriter) flushList() error {
+	if m.listView != nil {
+		m.listView.Done("") // clear the live preview before emitting the list
+		m.listView = nil
+	}
+	items := m.listItems
+	loose := m.listLoose
+	m.listItems = nil
+	m.listLoose = false
+	m.inList = false
+	if len(items) == 0 {
+		return nil
+	}
+	_, err := fmt.Fprintln(m.w, renderList(items, loose))
+	return err
+}
+
+// renderList lays out a parsed list block with lipgloss/list. Each top-level
+// item (with its nested descendants) is rendered as its own list and the
+// blocks are joined with a blank line in between when the list is loose —
+// lipgloss/list has no notion of inter-item spacing, so looseness is this
+// thin manual layer on top. Enumerator alignment across the blocks is kept by
+// padding every top-level marker to the same width first.
+func renderList(items []listItem, loose bool) string {
+	syncMDRenderer()
+	// EnumeratorStyle replaces lipgloss's default PaddingRight(1), so the dim
+	// marker style must bring its own.
+	enumStyle := mdDim.PaddingRight(1)
+
+	topW := 0
+	for _, it := range items {
+		if it.level == 0 {
+			if w := displayWidth(it.marker); w > topW {
+				topW = w
+			}
+		}
+	}
+
+	var blocks []string
+	for start := 0; start < len(items); {
+		end := start + 1
+		for end < len(items) && items[end].level > 0 {
+			end++
+		}
+		blocks = append(blocks, buildList(items[start:end], enumStyle, topW).String())
+		start = end
+	}
+
+	sep := "\n"
+	if loose {
+		sep = "\n\n"
+	}
+	return strings.Join(blocks, sep)
+}
+
+// buildList assembles one lipgloss list for a run of items whose first entry
+// sets the base level; deeper runs become nested sublists attached to the
+// item before them. Markers are the items' own (bullets, task glyphs, ordered
+// numbers as written — lipgloss's stock enumerators renumber from 1, so a
+// closure serves each item its recorded marker instead), left-padded to a
+// common width of at least minWidth so ordered numbers right-align. The
+// indenter matches that width, giving continuation lines and sublists a
+// hanging indent aligned with the item text.
+func buildList(items []listItem, enumStyle lipgloss.Style, minWidth int) *list.List {
+	base := items[0].level
+	l := list.New()
+	var markers []string
+	for i := 0; i < len(items); {
+		if items[i].level > base {
+			j := i
+			for j < len(items) && items[j].level > base {
+				j++
+			}
+			// A nested *list.List merges into the item right before it.
+			l.Item(buildList(items[i:j], enumStyle, 0))
+			i = j
+			continue
+		}
+		l.Item(listItemText(items[i]))
+		markers = append(markers, items[i].marker)
+		i++
+	}
+
+	w := minWidth
+	for _, s := range markers {
+		if dw := displayWidth(s); dw > w {
+			w = dw
+		}
+	}
+	for i, s := range markers {
+		if pad := w - displayWidth(s); pad > 0 {
+			markers[i] = strings.Repeat(" ", pad) + s
+		}
+	}
+
+	return l.
+		Enumerator(func(_ list.Items, i int) string {
+			if i < len(markers) {
+				return markers[i]
+			}
+			return "•"
+		}).
+		EnumeratorStyle(enumStyle).
+		Indenter(func(list.Items, int) string { return strings.Repeat(" ", w) })
+}
+
+// listItemText renders an item's buffered lines with inline markdown styling;
+// continuation lines join with newlines so lipgloss/list hangs them under the
+// first line.
+func listItemText(it listItem) string {
+	lines := make([]string, len(it.lines))
+	for i, ln := range it.lines {
+		lines[i] = highlightInline(ln)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func isHorizontalRule(s string) bool {
@@ -387,9 +752,45 @@ func parseTableCells(line string) []string {
 	parts := strings.Split(trimmed, "|")
 	cells := make([]string, len(parts))
 	for i, p := range parts {
-		cells[i] = strings.TrimSpace(p)
+		// Tabs are normalized to a single space at the parse boundary so every
+		// downstream ruler agrees: uniseg measures \t as 0 columns, lipgloss's
+		// style renderer would expand it to 4 spaces, and the table resizer's
+		// height estimate treats it as 1 — the disagreement made cell content
+		// after a tab wrap invisibly and get clipped by the row height. A
+		// literal tab inside a bordered row would also misalign on real
+		// terminals (tab stops), so a plain space is the safe rendering.
+		cells[i] = strings.TrimSpace(stripVariationSelectors(strings.ReplaceAll(p, "\t", " ")))
 	}
 	return cells
+}
+
+// stripVariationSelectors removes the emoji/text presentation selectors
+// (U+FE0F/U+FE0E) from table cells so bordered layouts stay aligned on every
+// terminal. No two parties agree on a VS16 sequence's width: uniseg (and
+// iTerm2, kitty) say "\u2696\ufe0f" is 2 columns while Terminal.app advances the
+// cursor by the base rune's width (1) and lets the glyph overflow — so any
+// padding computed for such a sequence misaligns somewhere. The bare base
+// rune has one consistent answer everywhere (narrow 1, wide 2), at the
+// cosmetic cost of a monochrome glyph on some terminals. Applied only where
+// content is padded to measured widths (table cells); free-flowing text keeps
+// its selectors.
+//
+// Flag emoji (regional-indicator pairs) and ZWJ/skin-tone sequences share the
+// same cross-terminal ambiguity but are deliberately left untouched: they
+// have no lossless narrow form (replacing flags with their country codes was
+// tried and rejected — the flags matter more than the borders), so tables
+// containing them may misalign on terminals whose cursor advance disagrees
+// with uniseg. That is accepted.
+func stripVariationSelectors(s string) string {
+	if !strings.ContainsRune(s, '\uFE0F') && !strings.ContainsRune(s, '\uFE0E') {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if r == '\uFE0F' || r == '\uFE0E' {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 var (
@@ -416,9 +817,6 @@ func isTableSeparator(cells []string) bool {
 	return true
 }
 
-// flushTable renders the buffered table rows with aligned columns.
-// If the table would exceed terminal width, columns are shrunk proportionally
-// and cell text wraps within the cell across multiple visual lines.
 // newBlockPreview opens a live rolling preview of a block's raw lines as they
 // stream in, but only when writing to a terminal — off a terminal (pipe, tests)
 // there is no cursor control, so the raw lines would just duplicate the rendered
@@ -468,8 +866,13 @@ const codeIndent = "  "
 
 // highlightCode syntax-highlights a code block to ANSI via chroma, falling back
 // to a plain block if highlighting fails (e.g. unknown content). Every line is
-// indented by codeIndent.
+// indented by codeIndent. When color.NoColor is set, chroma is bypassed so the
+// block carries no escape codes — the same switch that silences the lipgloss
+// and fatih/color styles (see mdRenderer).
 func highlightCode(code, lang string) string {
+	if color.NoColor {
+		return indentCode(code)
+	}
 	var sb strings.Builder
 	if err := quick.Highlight(&sb, code, lang, "terminal256", codeStyleName()); err != nil {
 		return indentCode(CodeBlockStyle.Sprint(code))
@@ -525,6 +928,10 @@ func detectCodeTheme() {
 	}
 }
 
+// flushTable renders the buffered table rows with aligned columns via
+// lipgloss/table. If the table would exceed terminal width, columns are
+// shrunk (water-filling) and cell text wraps within the cell across multiple
+// visual lines.
 func (m *markdownWriter) flushTable() error {
 	if m.tableView != nil {
 		m.tableView.Done("") // clear the live preview before emitting the table
@@ -557,8 +964,9 @@ func (m *markdownWriter) flushTable() error {
 	}
 
 	// Natural display width per column (markers stripped, <br> split), then
-	// proportionally shrink so the table fits the terminal; go-pretty wraps each
-	// cell to these maxima (ANSI- and CJK-aware) and handles alignment/borders.
+	// proportionally shrink so the table fits the terminal; lipgloss wraps each
+	// cell to these maxima (ANSI- and grapheme-aware) and handles
+	// alignment/borders.
 	colWidths := make([]int, maxCols)
 	for _, row := range rows {
 		for j := 0; j < maxCols && j < len(row); j++ {
@@ -623,25 +1031,31 @@ func (m *markdownWriter) flushTable() error {
 		}
 	}
 
-	t := table.NewWriter()
-	t.SetStyle(table.StyleLight)
-	st := t.Style()
-	st.Format.Header = text.FormatDefault // keep header text as-is (no upper-casing)
-	st.Color.Border = text.Colors{text.Faint}
-	st.Color.Separator = text.Colors{text.Faint}
-	st.Options.SeparateRows = false
+	syncMDRenderer()
+	baseCell := mdRenderer.NewStyle().Padding(0, 1)
+	tbl := table.New().
+		Border(lipgloss.NormalBorder()).
+		BorderStyle(mdRenderer.NewStyle().Faint(true)).
+		BorderRow(true). // a ├─┼─┤ rule between every pair of rows
+		StyleFunc(func(_, col int) lipgloss.Style {
+			if col < 0 || col >= maxCols {
+				return baseCell
+			}
+			// A style Width pins the whole column: lipgloss pads short cells
+			// and wraps long ones to it. +2 covers the one-space padding on
+			// each side of the cell content.
+			return baseCell.Width(colWidths[col] + 2)
+		})
 
-	cfgs := make([]table.ColumnConfig, maxCols)
-	for j := 0; j < maxCols; j++ {
-		cfgs[j] = table.ColumnConfig{Number: j + 1, WidthMax: colWidths[j]}
-	}
-	t.SetColumnConfigs(cfgs)
-
+	// The header goes in as an ordinary first row rather than via Headers():
+	// lipgloss/table clamps header cells to a single line (MaxHeight(1) +
+	// truncation), which would break multi-line <br> headers. With
+	// BorderRow(true) the rule under the header is drawn either way.
 	for i, row := range rows {
 		if seps[i] {
-			continue // markdown |---| row; go-pretty draws its own rules
+			continue // markdown |---| row; BorderRow draws the rules instead
 		}
-		cells := make(table.Row, maxCols)
+		cells := make([]string, maxCols)
 		for j := 0; j < maxCols; j++ {
 			cell := ""
 			if j < len(row) {
@@ -653,19 +1067,15 @@ func (m *markdownWriter) flushTable() error {
 				cells[j] = styledCell(cell)
 			}
 		}
-		if i == headerRow {
-			t.AppendHeader(cells)
-		} else {
-			t.AppendRow(cells)
-		}
+		tbl.Row(cells...)
 	}
 
-	_, err = fmt.Fprintln(m.w, t.Render())
+	_, err = fmt.Fprintln(m.w, tbl.Render())
 	return err
 }
 
 // styledCell renders a data cell's inline markdown (markers hidden) and turns
-// <br> tags into newlines so go-pretty lays them out as multi-line cells.
+// <br> tags into newlines so lipgloss lays them out as multi-line cells.
 func styledCell(cell string) string {
 	segs := splitBR(cell)
 	for i, s := range segs {
@@ -676,11 +1086,11 @@ func styledCell(cell string) string {
 
 // headerCell strips a header cell's inline markers and bolds each line. Each
 // segment is bolded on its own so the bold never spans a newline (which would
-// otherwise bleed into go-pretty's borders).
+// otherwise bleed into the table borders).
 func headerCell(cell string) string {
 	segs := splitBR(cell)
 	for i, s := range segs {
-		segs[i] = BoldStyle.Sprint(stripInlineMarkdown(strings.TrimSpace(s)))
+		segs[i] = mdBold.Render(stripInlineMarkdown(strings.TrimSpace(s)))
 	}
 	return strings.Join(segs, "\n")
 }
@@ -698,29 +1108,22 @@ func cellDisplayWidth(cell string) int {
 	return maxW
 }
 
-// displayWidth returns the display width of a string, accounting for CJK characters.
+// displayWidth returns the terminal display width of a string. It measures
+// uniseg grapheme clusters, which is sequence-aware: a VS16 emoji such as
+// "⚖️" (U+2696 U+FE0F) counts as 2 columns — matching how terminals render
+// it — and combining marks and ZWJ sequences collapse into their cluster.
+// This is the same measurement lipgloss uses, so tables built from these
+// widths stay aligned. Use it for any whole string; see runeWidth for the
+// single-rune seam.
 func displayWidth(s string) int {
-	w := 0
-	for _, r := range s {
-		w += runeWidth(r)
-	}
-	return w
+	return uniseg.StringWidth(s)
 }
 
-// runeWidth returns the display width of a rune (2 for CJK/fullwidth, 1 otherwise).
+// runeWidth returns the display width of a single rune. A lone rune has no
+// sequence context (no following VS16, ZWJ, or combining mark), so grapheme
+// segmentation cannot apply and go-runewidth's per-rune tables are the right
+// tool. This is the seam injected into promptui components that walk text one
+// rune at a time.
 func runeWidth(r rune) int {
-	if unicode.Is(unicode.Han, r) ||
-		unicode.Is(unicode.Hangul, r) ||
-		unicode.Is(unicode.Katakana, r) ||
-		unicode.Is(unicode.Hiragana, r) ||
-		(r >= 0x2E80 && r <= 0x2FDF) || // CJK Radicals Supplement, Kangxi Radicals
-		(r >= 0x3000 && r <= 0x303F) || // CJK Symbols and Punctuation (、。〈〉 etc.)
-		(r >= 0x3200 && r <= 0x33FF) || // Enclosed CJK Letters, CJK Compatibility
-		(r >= 0xFE10 && r <= 0xFE1F) || // Vertical Forms
-		(r >= 0xFE30 && r <= 0xFE6F) || // CJK Compatibility Forms, Small Form Variants
-		(r >= 0xFF01 && r <= 0xFF60) || // Fullwidth forms
-		(r >= 0xFFE0 && r <= 0xFFE6) { // Fullwidth signs
-		return 2
-	}
-	return 1
+	return runewidth.RuneWidth(r)
 }

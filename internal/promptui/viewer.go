@@ -8,6 +8,7 @@ import (
 	"chatchain/internal/promptui/screenbuf"
 	"chatchain/internal/readline"
 
+	"github.com/mattn/go-runewidth"
 	"golang.org/x/term"
 )
 
@@ -184,8 +185,9 @@ func (v *Viewer) Run() error {
 	return nil
 }
 
-// visibleWidth returns the number of visible runes in s, skipping ANSI CSI
-// escape sequences (e.g. color codes). CJK double-width is approximated as 1.
+// visibleWidth returns the display width of s in terminal columns, skipping
+// ANSI CSI escape sequences (e.g. color codes). Double-width runes (CJK,
+// emoji) count as 2 columns.
 func visibleWidth(s string) int {
 	col := 0
 	for i := 0; i < len(s); {
@@ -193,14 +195,16 @@ func visibleWidth(s string) int {
 			i += n
 			continue
 		}
-		_, size := utf8.DecodeRuneInString(s[i:])
-		col++
+		r, size := utf8.DecodeRuneInString(s[i:])
+		col += runewidth.RuneWidth(r)
 		i += size
 	}
 	return col
 }
 
-// clipLine returns the slice of s covering visible columns [start, start+width).
+// clipLine returns the slice of s covering visible columns [start, start+width),
+// counting double-width runes (CJK, emoji) as two columns. A wide rune that
+// straddles either edge of the window is dropped rather than shown halved.
 // ANSI CSI escape sequences are always emitted (regardless of position) so the
 // color state carries into the visible window and resets are preserved.
 func clipLine(s string, start, width int) string {
@@ -215,11 +219,12 @@ func clipLine(s string, start, width int) string {
 			i += n
 			continue
 		}
-		_, size := utf8.DecodeRuneInString(s[i:])
-		if col >= start && col < start+width {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		rw := runewidth.RuneWidth(r)
+		if col >= start && col+rw <= start+width {
 			b = append(b, s[i:i+size]...)
 		}
-		col++
+		col += rw
 		i += size
 	}
 	return string(b)
@@ -241,10 +246,12 @@ func ansiLen(s string, i int) int {
 	return j - i
 }
 
-// wrapLine soft-wraps s into rows of at most width visible columns, ANSI-aware.
-// The active SGR style is tracked across rows: each row re-establishes it at the
-// start and closes it at the end, so colors stay correct after a wrap. A reset
-// (\x1b[0m / \x1b[m) clears the tracked style.
+// wrapLine soft-wraps s into rows of at most width visible columns, ANSI- and
+// width-aware: double-width runes (CJK, emoji) count as two columns, and the
+// row is flushed before a wide rune that would overflow it, so no row ever
+// exceeds width. The active SGR style is tracked across rows: each row
+// re-establishes it at the start and closes it at the end, so colors stay
+// correct after a wrap. A reset (\x1b[0m / \x1b[m) clears the tracked style.
 func wrapLine(s string, width int) []string {
 	if width < 1 {
 		return []string{s}
@@ -274,9 +281,15 @@ func wrapLine(s string, width int) []string {
 			i += n
 			continue
 		}
-		_, size := utf8.DecodeRuneInString(s[i:])
+		r, size := utf8.DecodeRuneInString(s[i:])
+		rw := runewidth.RuneWidth(r)
+		// Flush before an overflowing wide rune; col > 0 guards against a
+		// zero-progress loop when a single rune is wider than the whole row.
+		if col > 0 && col+rw > width {
+			flush()
+		}
 		cur = append(cur, s[i:i+size]...)
-		col++
+		col += rw
 		i += size
 		if col >= width {
 			flush()
