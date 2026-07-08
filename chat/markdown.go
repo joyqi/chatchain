@@ -61,7 +61,25 @@ var (
 	mdDim    = mdPlain.Faint(true)                                     // quote bars, bullets, rules, URLs
 	mdH1     = mdBold.Underline(true)                                  // # heading
 	mdH2     = mdBold                                                  // ## and deeper: plain bold
+	// mdQuote frames a blockquote block: a continuous left bar (│) drawn by
+	// lipgloss's border on every row (so it stays connected across wrapped and
+	// blank rows, unlike a per-line glyph), tinted the same cyan as code so it
+	// ties into the palette, with one column of padding before the text. The
+	// quote text itself keeps its normal foreground and inline styling — the
+	// border owns the left column, so there is no faint span to cut. Under
+	// color.NoColor lipgloss still draws the bar glyph but drops its color.
+	mdQuote = mdRenderer.NewStyle().
+		TabWidth(lipgloss.NoTabConversion).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.Color("6")).
+		PaddingLeft(1)
 )
+
+// quoteBorderCols is the terminal columns the quote frame adds around its text:
+// the left border glyph (1) plus PaddingLeft (1). The lipgloss style Width
+// includes padding but not the border, so the content width passed to Width is
+// termWidth-1 and text wraps at termWidth-quoteBorderCols.
+const quoteBorderCols = 2
 
 // headingStyle maps a heading level to its style: H1 bold+underline, every
 // other level plain bold. (Bold+faint "level differentiation" for H3+ was
@@ -74,6 +92,18 @@ func headingStyle(level int) lipgloss.Style {
 	}
 	return mdH2
 }
+
+// mdUnit classifies the last thing the writer emitted so the routing helpers
+// (emitBlank/emitText/beginBlock/endBlock) can guarantee exactly one blank line
+// around block-level elements while never splitting a paragraph.
+type mdUnit int
+
+const (
+	unitNone  mdUnit = iota // nothing emitted yet (suppresses leading blanks)
+	unitBlank               // the last emitted unit was a blank line
+	unitText                // the last emitted unit was a paragraph line
+	unitBlock               // the last emitted unit was a rendered block element
+)
 
 // markdownWriter wraps an io.Writer and applies ANSI highlighting to markdown
 // syntax elements line by line, without modifying the original text content.
@@ -89,16 +119,25 @@ type markdownWriter struct {
 	listItems []listItem // parsed items of the buffering list block
 	listLoose bool       // a blank line was kept inside the block (loose list)
 	listBlank bool       // one blank line is held, pending the next line's verdict
-	// tableView / codeView / listView show a live "rendering…" preview of a
-	// block while it buffers (terminals only); the flush clears it before
-	// emitting the result.
+	inQuote   bool       // a blockquote block is buffering
+	quoteBody []string   // buffered inner quote lines (one leading "> "/">" stripped)
+	lastUnit  mdUnit     // classification of the last emitted unit (spacing state machine)
+	width     int        // width override for block layout; 0 = the terminal width
+	// (a blockquote renders its inner content through a child writer whose width
+	// is reduced by the quote frame, so nested tables/quotes fit inside the bar)
+	// tableView / codeView / listView / quoteView show a live "rendering…"
+	// preview of a block while it buffers (terminals only); the flush clears it
+	// before emitting the result.
 	tableView *promptui.StreamView
 	codeView  *promptui.StreamView
 	listView  *promptui.StreamView
+	quoteView *promptui.StreamView
 }
 
 func newMarkdownWriter(w io.Writer) *markdownWriter {
-	return &markdownWriter{w: w}
+	// lastUnit starts unitNone so leading blank lines (before any content) are
+	// suppressed and no separator is inserted before the first block or text.
+	return &markdownWriter{w: w, lastUnit: unitNone}
 }
 
 func (m *markdownWriter) Write(p []byte) (int, error) {
@@ -131,6 +170,12 @@ func (m *markdownWriter) Write(p []byte) (int, error) {
 						return len(p), err
 					}
 				}
+				// A fence ends any open quote block, mirroring the list case.
+				if m.inQuote {
+					if err := m.flushQuote(); err != nil {
+						return len(p), err
+					}
+				}
 				m.inFence = true
 				m.fenceLang = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "```"))
 				m.codeLines = nil
@@ -159,6 +204,18 @@ func (m *markdownWriter) Write(p []byte) (int, error) {
 			}
 		}
 
+		// A buffering quote block consumes consecutive quote lines; the first
+		// non-quote line flushes it and falls through to be processed normally.
+		if m.inQuote {
+			if isQuoteLine(line) {
+				m.quoteAppend(line)
+				continue
+			}
+			if err := m.flushQuote(); err != nil {
+				return len(p), err
+			}
+		}
+
 		if isTableLine(line) {
 			if len(m.tableRows) == 0 {
 				m.tableView = newBlockPreview(m.w, "rendering table…")
@@ -183,9 +240,32 @@ func (m *markdownWriter) Write(p []byte) (int, error) {
 			continue
 		}
 
-		highlighted := m.highlightLine(line)
-		if _, err := io.WriteString(m.w, highlighted+"\n"); err != nil {
-			return len(p), err
+		if isQuoteLine(line) {
+			m.startQuote(line)
+			continue
+		}
+
+		// Plain path: classify the line for the spacing state machine. A blank
+		// collapses; a heading or horizontal rule is a block-level element
+		// bounded by one blank line above and below; anything else is a
+		// paragraph line that stays adjacent to its neighbours.
+		switch {
+		case strings.TrimSpace(line) == "":
+			if err := m.emitBlank(); err != nil {
+				return len(p), err
+			}
+		case isBlockLine(line):
+			if err := m.beginBlock(); err != nil {
+				return len(p), err
+			}
+			if _, err := io.WriteString(m.w, m.highlightLine(line)+"\n"); err != nil {
+				return len(p), err
+			}
+			m.endBlock()
+		default:
+			if err := m.emitText(m.highlightLine(line)); err != nil {
+				return len(p), err
+			}
 		}
 	}
 
@@ -213,12 +293,31 @@ func (m *markdownWriter) Flush() {
 				m.finishList()
 				return
 			}
-			// listConsume flushed the block; emit the line like the plain path
-			// below (no trailing newline — the source had none).
-			io.WriteString(m.w, m.highlightLine(line))
+			// listConsume flushed the block; emit the trailing partial line
+			// through emitText so the block→paragraph boundary blank is honored
+			// and lastUnit stays consistent.
+			m.emitText(m.highlightLine(line))
 			return
 		}
 		m.finishList()
+		return
+	}
+	if m.inQuote {
+		if len(m.buf) > 0 {
+			// A partial trailing line still inside the quote continues it;
+			// anything else flushes the quote and prints on its own.
+			line := string(m.buf)
+			m.buf = nil
+			if isQuoteLine(line) {
+				m.quoteAppend(line)
+				m.flushQuote()
+				return
+			}
+			m.flushQuote()
+			m.emitText(m.highlightLine(line))
+			return
+		}
+		m.flushQuote()
 		return
 	}
 	if len(m.tableRows) > 0 {
@@ -227,8 +326,20 @@ func (m *markdownWriter) Flush() {
 	if len(m.buf) > 0 {
 		line := string(m.buf)
 		m.buf = nil
-		highlighted := m.highlightLine(line)
-		io.WriteString(m.w, highlighted)
+		// A single quote line with no trailing newline (a whole reply that is
+		// just "> x", or an interrupted stream) never triggered startQuote in
+		// the Write loop, so route it through the quote block here — otherwise
+		// highlightLine, which no longer styles quotes, would print the raw ">".
+		if isQuoteLine(line) {
+			m.startQuote(line)
+			m.flushQuote()
+			return
+		}
+		// A trailing partial plain line: route through emitText so a preceding
+		// block gets its separating blank and lastUnit stays consistent. A
+		// heading/rule as the final partial line is rare; treat it as text
+		// (no closing blank is meaningful at EOF anyway).
+		m.emitText(m.highlightLine(line))
 	}
 }
 
@@ -266,15 +377,8 @@ func (m *markdownWriter) highlightLine(line string) string {
 		return mdDim.Render(line)
 	}
 
-	// Blockquote: > ... → a dim quote bar, the > marker hidden. Inline markers
-	// are stripped rather than styled: the quote is one dim span, and nested
-	// SGR resets would cut the faint attribute mid-line.
-	if strings.HasPrefix(trimmed, "> ") {
-		return mdDim.Render("▌ " + stripInlineMarkdown(trimmed[2:]))
-	}
-	if trimmed == ">" {
-		return mdDim.Render("▌")
-	}
+	// Blockquotes are rendered as a buffered block by the Write loop
+	// (startQuote/flushQuote), so they never reach highlightLine.
 
 	// List item: normalize the bullet (- * + → •) and dim it, style the rest.
 	if marker, rest, ok := splitListMarker(line); ok {
@@ -283,6 +387,30 @@ func (m *markdownWriter) highlightLine(line string) string {
 
 	// Regular line: apply inline highlighting
 	return highlightInline(line)
+}
+
+// isHeadingLine reports whether the line is an ATX heading (one or more '#'
+// markers followed by a space and text) — the same shape highlightLine styles
+// with headingStyle.
+func isHeadingLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if len(trimmed) == 0 || trimmed[0] != '#' {
+		return false
+	}
+	i := 0
+	for i < len(trimmed) && trimmed[i] == '#' {
+		i++
+	}
+	return i < len(trimmed) && trimmed[i] == ' '
+}
+
+// isBlockLine reports whether a plain-path line is a block-level element that
+// must be bounded by one blank line above and below: a heading or a horizontal
+// rule. (Tables, lists, quotes, and fences are handled by their own buffered
+// paths and never reach here.)
+func isBlockLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return isHeadingLine(line) || isHorizontalRule(trimmed)
 }
 
 // highlightInline applies inline markdown styling and hides the markup itself:
@@ -593,7 +721,11 @@ func (m *markdownWriter) finishList() error {
 	err := m.flushList()
 	if m.listBlank {
 		m.listBlank = false
-		if _, werr := io.WriteString(m.w, "\n"); err == nil {
+		// Route the held blank through emitBlank so it participates in the
+		// blank-run collapse. flushList set lastUnit=unitBlock, so this genuine
+		// separator survives; whatever follows already gets exactly one blank
+		// from its own boundary, so this never doubles up.
+		if werr := m.emitBlank(); err == nil {
 			err = werr
 		}
 	}
@@ -614,8 +746,153 @@ func (m *markdownWriter) flushList() error {
 	if len(items) == 0 {
 		return nil
 	}
+	if err := m.beginBlock(); err != nil {
+		return err
+	}
 	_, err := fmt.Fprintln(m.w, renderList(items, loose))
+	m.endBlock() // the rendered list is a block unit
 	return err
+}
+
+// isQuoteLine reports whether the line opens or continues a blockquote: its
+// trimmed form starts with "> " or is exactly ">".
+func isQuoteLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return trimmed == ">" || strings.HasPrefix(trimmed, "> ")
+}
+
+// stripQuoteMarker removes exactly one leading "> " (or a bare ">") from a
+// quote line, returning the inner content (empty for a bare ">").
+func stripQuoteMarker(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == ">" {
+		return ""
+	}
+	return strings.TrimPrefix(trimmed, "> ")
+}
+
+// startQuote opens a blockquote block with the given line as its first inner
+// line.
+func (m *markdownWriter) startQuote(line string) {
+	m.inQuote = true
+	m.quoteBody = nil
+	m.quoteView = newBlockPreview(m.w, "rendering quote…")
+	m.quoteAppend(line)
+}
+
+// quoteAppend buffers one quote line's inner content and mirrors the raw line
+// into the live preview.
+func (m *markdownWriter) quoteAppend(line string) {
+	m.quoteBody = append(m.quoteBody, stripQuoteMarker(line))
+	if m.quoteView != nil {
+		io.WriteString(m.quoteView, line+"\n")
+	}
+}
+
+// flushQuote clears the live preview and renders the buffered blockquote as a
+// single lipgloss block so the left bar stays continuous down every row. The
+// flush counts as non-blank output for the blank-run collapse.
+func (m *markdownWriter) flushQuote() error {
+	if m.quoteView != nil {
+		m.quoteView.Done("") // clear the live preview before emitting the quote
+		m.quoteView = nil
+	}
+	body := m.quoteBody
+	m.quoteBody = nil
+	m.inQuote = false
+	if len(body) == 0 {
+		return nil
+	}
+	if err := m.beginBlock(); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintln(m.w, m.renderQuote(body))
+	m.endBlock() // the rendered quote is a block unit
+	return err
+}
+
+// termWidth returns the width for block layout: the writer's override when set
+// (a blockquote's child writer), otherwise the terminal width (80 on error).
+func (m *markdownWriter) termWidth() int {
+	if m.width > 0 {
+		return m.width
+	}
+	tw, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || tw <= 0 {
+		return 80
+	}
+	return tw
+}
+
+// renderQuote frames the buffered inner content in the mdQuote block style with
+// a continuous left bar. The inner lines are a mini-document: they are rendered
+// recursively through a child markdownWriter (so lists, headings, tables,
+// nested quotes, and inline markdown inside a quote all work by reusing the
+// full pipeline), at a width reduced by the quote frame so nested blocks fit.
+// The bar is then prepended to every line of that pre-rendered content — no
+// Width is set on the style, so lipgloss never re-wraps the child's tables.
+func (m *markdownWriter) renderQuote(body []string) string {
+	syncMDRenderer()
+
+	inner := m.termWidth() - quoteBorderCols
+	if inner < quoteBorderCols+1 {
+		inner = quoteBorderCols + 1
+	}
+	var buf strings.Builder
+	child := newMarkdownWriter(&buf)
+	child.width = inner
+	_, _ = child.Write([]byte(strings.Join(body, "\n") + "\n"))
+	child.Flush()
+
+	content := strings.TrimRight(buf.String(), "\n")
+	return mdQuote.Render(content)
+}
+
+// emitBlank writes a blank separator line, collapsing runs of blanks and
+// suppressing leading blanks: it does nothing when the last unit was already a
+// blank (or nothing has been emitted yet), otherwise it writes one "\n".
+func (m *markdownWriter) emitBlank() error {
+	if m.lastUnit == unitBlank || m.lastUnit == unitNone {
+		return nil // collapse a run of blanks (and drop leading blanks)
+	}
+	m.lastUnit = unitBlank
+	_, err := io.WriteString(m.w, "\n")
+	return err
+}
+
+// emitText writes one already-styled paragraph line. If the previous unit was a
+// block, one separating blank line is inserted first (block→paragraph
+// boundary); after a text unit no separator is written so consecutive plain
+// lines stay in the same paragraph.
+func (m *markdownWriter) emitText(s string) error {
+	if m.lastUnit == unitBlock {
+		if _, err := io.WriteString(m.w, "\n"); err != nil {
+			return err
+		}
+	}
+	m.lastUnit = unitText
+	_, err := io.WriteString(m.w, s+"\n")
+	return err
+}
+
+// beginBlock is called right before a block-level element renders its content.
+// It inserts one separating blank line when the previous unit was text or a
+// block (text→block or block→block boundary); after a blank or at the start it
+// writes nothing. It deliberately does not update lastUnit — the block's render
+// followed by endBlock does that.
+func (m *markdownWriter) beginBlock() error {
+	if m.lastUnit == unitText || m.lastUnit == unitBlock {
+		_, err := io.WriteString(m.w, "\n")
+		return err
+	}
+	return nil
+}
+
+// endBlock records that a rendered block was just written. The blank line that
+// follows a block is produced lazily by the next unit's separator, so nothing
+// is emitted here — this only updates the state machine.
+func (m *markdownWriter) endBlock() {
+	m.lastUnit = unitBlock
 }
 
 // renderList lays out a parsed list block with lipgloss/list. Each top-level
@@ -858,7 +1135,11 @@ func (m *markdownWriter) flushCode() error {
 	lang := m.fenceLang
 	m.codeLines = nil
 	m.fenceLang = ""
+	if err := m.beginBlock(); err != nil {
+		return err
+	}
 	_, err := io.WriteString(m.w, highlightCode(code, lang))
+	m.endBlock() // the rendered code block is a block unit
 	return err
 }
 
@@ -982,10 +1263,7 @@ func (m *markdownWriter) flushTable() error {
 			colWidths[j] = 3
 		}
 	}
-	tw, _, err := term.GetSize(int(os.Stdout.Fd()))
-	if err != nil || tw <= 0 {
-		tw = 80
-	}
+	tw := m.termWidth()
 	overhead := 1 + maxCols*3 // leading border + " cell " + border per column
 	available := tw - overhead
 	if available < maxCols*3 {
@@ -1072,7 +1350,11 @@ func (m *markdownWriter) flushTable() error {
 		tbl.Row(cells...)
 	}
 
-	_, err = fmt.Fprintln(m.w, tbl.Render())
+	if err := m.beginBlock(); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintln(m.w, tbl.Render())
+	m.endBlock() // the rendered table is a block unit
 	return err
 }
 

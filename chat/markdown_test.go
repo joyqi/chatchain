@@ -255,14 +255,17 @@ func TestListLooseKeepsBlank(t *testing.T) {
 	})
 }
 
-// TestListFlushedByParagraph checks that a plain line flushes the block with
-// no blank line invented in between (tight list).
+// TestListFlushedByParagraph checks that a plain line flushes the block and
+// the state machine inserts exactly one blank line at the block→paragraph
+// boundary, even though the source had no blank there (the new invariant:
+// block-level elements are always bounded by one blank).
 func TestListFlushedByParagraph(t *testing.T) {
 	color.NoColor = false
 	src := "- one\n- two\nplain paragraph\n"
 	assertLines(t, renderMD(t, src), []string{
 		"• one",
 		"• two",
+		"",
 		"plain paragraph",
 	})
 }
@@ -297,7 +300,6 @@ func TestHighlightLineHidesMarkers(t *testing.T) {
 	}{
 		{"# Title", "Title"},
 		{"### Deep heading", "Deep heading"},
-		{"> quoted", "▌ quoted"},
 		{"- item", "• item"},
 		{"* item", "• item"},
 		{"1. first", "1. first"},
@@ -347,14 +349,13 @@ func TestHeadingLevels(t *testing.T) {
 	}
 }
 
-// TestQuoteAndRuleDim checks that the blockquote bar and horizontal rules keep
-// their dim rendering (a single faint SGR wrapping the whole line).
-func TestQuoteAndRuleDim(t *testing.T) {
+// TestRuleDim checks that horizontal rules keep their dim rendering (a single
+// faint SGR wrapping the whole line). Blockquotes are no longer a highlightLine
+// concern (they render as a buffered block — see TestBlockquote*).
+func TestRuleDim(t *testing.T) {
 	color.NoColor = false
 	m := newMarkdownWriter(io.Discard)
 	tests := []struct{ in, want string }{
-		{"> quoted", "\x1b[2m▌ quoted\x1b[0m"},
-		{">", "\x1b[2m▌\x1b[0m"},
 		{"---", "\x1b[2m---\x1b[0m"},
 		{"* * *", "\x1b[2m* * *\x1b[0m"},
 	}
@@ -428,7 +429,7 @@ func TestMarkdownNoColorDisablesStyling(t *testing.T) {
 	if strings.Contains(got, "\x1b") {
 		t.Errorf("NoColor output contains escape codes:\n%q", got)
 	}
-	for _, want := range []string{"Title", "bold, it, code", "docs (http://x)", "▌ quoted", "---", "• item one", "┌"} {
+	for _, want := range []string{"Title", "bold, it, code", "docs (http://x)", "│ quoted", "---", "• item one", "┌"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("NoColor output missing %q:\n%s", want, got)
 		}
@@ -496,5 +497,374 @@ func TestHeadingStripsInlineMarkers(t *testing.T) {
 	}
 	if !strings.Contains(plain, "Bold and code title") {
 		t.Fatalf("heading text mangled:\n%s", plain)
+	}
+}
+
+// renderMDRaw runs src through a markdownWriter and returns the raw output,
+// escape codes intact (renderMD strips them).
+func renderMDRaw(t *testing.T, src string) string {
+	t.Helper()
+	var out strings.Builder
+	m := newMarkdownWriter(&out)
+	if _, err := m.Write([]byte(src)); err != nil {
+		t.Fatalf("Write(%q): %v", src, err)
+	}
+	m.Flush()
+	return out.String()
+}
+
+// TestBlockquoteContinuousBar checks that a multi-line quote renders as one
+// block with a continuous left bar: the │ glyph appears on every quote row
+// (border-rune count == number of quote content rows), and an empty ">" line
+// becomes an interior blank row that still carries the bar.
+func TestBlockquoteContinuousBar(t *testing.T) {
+	color.NoColor = false
+	// four content rows: two text lines, one empty ">", one more text line.
+	out := renderMD(t, "> first line\n> second line\n>\n> last line\n")
+	lines := trimmedLines(out)
+	if len(lines) != 4 {
+		t.Fatalf("got %d quote rows, want 4:\n%s", len(lines), out)
+	}
+	bars := strings.Count(out, "│")
+	if bars != 4 {
+		t.Errorf("border rune count = %d, want 4 (one per content row):\n%s", bars, out)
+	}
+	// The interior blank row (from ">") carries only the bar, no text.
+	if strings.TrimSpace(strings.TrimPrefix(lines[2], "│")) != "" {
+		t.Errorf("empty > line is not a blank interior row: %q", lines[2])
+	}
+	for i, want := range []string{"first line", "second line", "", "last line"} {
+		got := strings.TrimSpace(strings.TrimPrefix(lines[i], "│"))
+		if got != want {
+			t.Errorf("row %d text = %q, want %q", i, got, want)
+		}
+	}
+}
+
+// TestBlockquoteTextNotFaint checks the quote text is normal foreground (no
+// lone faint SGR "2" wrapping it) while inline markdown is preserved: **bold**
+// renders bold (SGR 1) with its "**" markers hidden. The bar may carry color 6.
+func TestBlockquoteTextNotFaint(t *testing.T) {
+	color.NoColor = false
+	raw := renderMDRaw(t, "> a **bold** word and `code`\n")
+
+	params := sgrParams(raw)
+	if params["2"] {
+		t.Errorf("quote text is faint (SGR 2 present), want normal foreground:\n%q", raw)
+	}
+	if !params["1"] {
+		t.Errorf("inline bold inside quote lost its SGR 1:\n%q", raw)
+	}
+	if !params["6"] && !params["36"] {
+		t.Errorf("quote bar missing its accent color (6):\n%q", raw)
+	}
+	plain := stripANSI(raw)
+	if strings.Contains(plain, "**") || strings.Contains(plain, "`") {
+		t.Errorf("inline markers leaked into quote:\n%s", plain)
+	}
+	if !strings.Contains(plain, "a bold word and code") {
+		t.Errorf("quote text mangled:\n%s", plain)
+	}
+}
+
+// TestBlockquoteInterruptedByParagraph checks the mutual flush wiring: a quote
+// flushes on the first non-quote line, and the state machine inserts exactly
+// one blank at the block→paragraph boundary (the new invariant bounds every
+// block with one blank, even when the source had none).
+func TestBlockquoteInterruptedByParagraph(t *testing.T) {
+	color.NoColor = false
+	assertLines(t, renderMD(t, "> quoted\nplain paragraph\n"), []string{
+		"│ quoted",
+		"",
+		"plain paragraph",
+	})
+}
+
+// TestBlockquoteNoColorKeepsBar checks that with color.NoColor a blockquote
+// still shows the │ bar but emits zero escape bytes (lipgloss draws the border
+// glyph; the color drops).
+func TestBlockquoteNoColorKeepsBar(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+	raw := renderMDRaw(t, "> first\n> second\n")
+	if strings.Contains(raw, "\x1b") {
+		t.Errorf("NoColor blockquote contains escape codes:\n%q", raw)
+	}
+	if !strings.Contains(raw, "│") {
+		t.Errorf("NoColor blockquote lost its bar:\n%q", raw)
+	}
+	if strings.Count(raw, "│") != 2 {
+		t.Errorf("NoColor blockquote bar count = %d, want 2:\n%q", strings.Count(raw, "│"), raw)
+	}
+}
+
+// TestBlankRunCollapse checks that a run of 2+ blank lines between paragraphs
+// collapses to a single blank, and leading blank lines are suppressed.
+func TestBlankRunCollapse(t *testing.T) {
+	color.NoColor = false
+	assertLines(t, renderMD(t, "a\n\n\n\nb\n"), []string{
+		"a",
+		"",
+		"b",
+	})
+	// Leading blanks before any content are dropped entirely.
+	assertLines(t, renderMD(t, "\n\n\nfirst\n"), []string{
+		"first",
+	})
+	// A single blank between paragraphs is preserved (pure collapse, not
+	// re-spacing).
+	assertLines(t, renderMD(t, "a\n\nb\n"), []string{
+		"a",
+		"",
+		"b",
+	})
+}
+
+// TestBlankRunCollapseCodeFencePreserved checks that blank lines inside a code
+// fence are content and pass through verbatim (collapse applies only to the
+// normal line path).
+func TestBlankRunCollapseCodeFencePreserved(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+	// Two blank lines between x and y must both survive; the normal-path
+	// collapse must not reach into a fence. (Rendered code indents every line,
+	// blank ones included, so blank rows appear as the indent prefix.)
+	out := renderMD(t, "```\nx\n\n\ny\n```\n")
+	rows := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	blanks := 0
+	for _, r := range rows {
+		if strings.TrimSpace(r) == "" {
+			blanks++
+		}
+	}
+	if blanks != 2 {
+		t.Errorf("code-fence interior blank rows = %d, want 2 (not collapsed):\n%q", blanks, out)
+	}
+}
+
+// TestBlankBetweenBlockAndParagraph checks that a single blank line between a
+// list block and a following paragraph is preserved (not doubled, not removed):
+// the block flush counts as non-blank output so the separator survives.
+func TestBlankBetweenBlockAndParagraph(t *testing.T) {
+	color.NoColor = false
+	assertLines(t, renderMD(t, "- one\n- two\n\nafter\n"), []string{
+		"• one",
+		"• two",
+		"",
+		"after",
+	})
+}
+
+// blanksBetween counts the blank lines strictly between the first line whose
+// trimmed text contains startNeedle and the next line whose trimmed text
+// contains endNeedle. It fails the test if either anchor is missing or the end
+// anchor does not follow the start anchor. Used to assert the "exactly one
+// blank around every block" invariant on a document without hard-coding line
+// numbers.
+func blanksBetween(t *testing.T, rendered, startNeedle, endNeedle string) int {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
+	start := -1
+	for i, ln := range lines {
+		if strings.Contains(strings.TrimSpace(ln), startNeedle) {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("start anchor %q not found in:\n%s", startNeedle, rendered)
+	}
+	blanks := 0
+	for i := start + 1; i < len(lines); i++ {
+		if strings.Contains(strings.TrimSpace(lines[i]), endNeedle) {
+			return blanks
+		}
+		if strings.TrimSpace(lines[i]) == "" {
+			blanks++
+		}
+	}
+	t.Fatalf("end anchor %q not found after %q in:\n%s", endNeedle, startNeedle, rendered)
+	return -1
+}
+
+// TestBlockAdjacencyNoSourceBlanks feeds a document whose block-level elements
+// (paragraph, list, heading, table) sit directly against each other with NO
+// blank lines in the source, and asserts the state machine inserts exactly one
+// blank line at every block boundary: no pair glued together, none doubled.
+func TestBlockAdjacencyNoSourceBlanks(t *testing.T) {
+	color.NoColor = false
+	src := "A para\n" +
+		"- item\n" +
+		"- item\n" +
+		"## Heading\n" +
+		"Next para\n" +
+		"| a | b |\n" +
+		"|---|---|\n" +
+		"| 1 | 2 |\n" +
+		"Tail\n"
+	out := renderMD(t, src)
+
+	pairs := []struct{ start, end string }{
+		{"A para", "item"},       // para → list
+		{"item", "Heading"},      // list → heading
+		{"Heading", "Next para"}, // heading → para
+		{"Next para", "a"},       // para → table (table header cell "a")
+		{"2", "Tail"},            // table → tail paragraph
+	}
+	for _, p := range pairs {
+		if n := blanksBetween(t, out, p.start, p.end); n != 1 {
+			t.Errorf("blank lines between %q and %q = %d, want 1:\n%s", p.start, p.end, n, out)
+		}
+	}
+}
+
+// TestParagraphIntegrity checks that three consecutive plain lines with NO
+// blank lines between them render as one paragraph — three adjacent lines, no
+// blank inserted anywhere (the whole subtlety of the state machine).
+func TestParagraphIntegrity(t *testing.T) {
+	color.NoColor = false
+	assertLines(t, renderMD(t, "line one\nline two\nline three\n"), []string{
+		"line one",
+		"line two",
+		"line three",
+	})
+}
+
+// TestBlankCollapseStillWorks checks a run of blank lines between two
+// paragraphs collapses to exactly one blank.
+func TestBlankCollapseStillWorks(t *testing.T) {
+	color.NoColor = false
+	assertLines(t, renderMD(t, "a\n\n\nb"), []string{
+		"a",
+		"",
+		"b",
+	})
+}
+
+// TestHeadingBounding checks a heading between two paragraphs gets exactly one
+// blank line above and below it, even with no source blanks.
+func TestHeadingBounding(t *testing.T) {
+	color.NoColor = false
+	assertLines(t, renderMD(t, "text\n## H\ntext\n"), []string{
+		"text",
+		"",
+		"H",
+		"",
+		"text",
+	})
+}
+
+// TestHorizontalRuleBounding checks a horizontal rule between two paragraphs
+// gets exactly one blank line above and below it, even with no source blanks.
+func TestHorizontalRuleBounding(t *testing.T) {
+	color.NoColor = false
+	assertLines(t, renderMD(t, "text\n---\ntext\n"), []string{
+		"text",
+		"",
+		"---",
+		"",
+		"text",
+	})
+}
+
+// TestNoDanglingTrailingBlank checks a document ending in a block (a table)
+// emits no trailing blank lines after it — the closing blank is produced lazily
+// by the next unit's separator, and there is no next unit at EOF.
+func TestNoDanglingTrailingBlank(t *testing.T) {
+	color.NoColor = false
+	out := renderMD(t, "para\n| a | b |\n|---|---|\n| 1 | 2 |\n")
+	if strings.HasSuffix(out, "\n\n") {
+		t.Errorf("document ending in a block has a dangling trailing blank:\n%q", out)
+	}
+	// And the para → table boundary still has its single blank.
+	if n := blanksBetween(t, out, "para", "a"); n != 1 {
+		t.Errorf("blank lines between para and table = %d, want 1:\n%s", n, out)
+	}
+}
+
+// TestBlockAdjacencyNoColor checks the adjacency document renders with zero
+// escape bytes under color.NoColor while keeping the same block spacing (one
+// blank at every boundary).
+func TestBlockAdjacencyNoColor(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+	src := "A para\n" +
+		"- item\n" +
+		"- item\n" +
+		"## Heading\n" +
+		"Next para\n" +
+		"| a | b |\n" +
+		"|---|---|\n" +
+		"| 1 | 2 |\n" +
+		"Tail\n"
+	var out strings.Builder
+	m := newMarkdownWriter(&out)
+	if _, err := m.Write([]byte(src)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	m.Flush()
+	raw := out.String()
+	if strings.Contains(raw, "\x1b") {
+		t.Errorf("NoColor adjacency output contains escape codes:\n%q", raw)
+	}
+	rendered := visible(raw)
+	pairs := []struct{ start, end string }{
+		{"A para", "item"},
+		{"item", "Heading"},
+		{"Heading", "Next para"},
+		{"Next para", "a"},
+		{"2", "Tail"},
+	}
+	for _, p := range pairs {
+		if n := blanksBetween(t, rendered, p.start, p.end); n != 1 {
+			t.Errorf("NoColor blank lines between %q and %q = %d, want 1:\n%s", p.start, p.end, n, rendered)
+		}
+	}
+}
+
+// A single-line quote with no trailing newline (a whole reply of "> x", or an
+// interrupted stream) must still render the │ bar, not the raw ">".
+func TestBlockquoteSingleLineNoTrailingNewline(t *testing.T) {
+	plain := stripANSI(renderMD(t, "> just one line")) // note: no trailing newline
+	if strings.Contains(plain, ">") {
+		t.Fatalf("raw quote marker leaked:\n%q", plain)
+	}
+	if !strings.Contains(plain, "│") || !strings.Contains(plain, "just one line") {
+		t.Fatalf("quote bar/text missing:\n%q", plain)
+	}
+}
+
+// Blockquote inner content is parsed recursively: lists, headings, tables, and
+// nested quotes inside a quote render as their block forms (not raw markdown),
+// each row still fronted by the continuous │ bar.
+func TestBlockquoteRecursiveBlocks(t *testing.T) {
+	// List inside a quote → bullets, not raw "- ".
+	list := stripANSI(renderMD(t, "> - one\n> - two\n\n"))
+	if strings.Contains(list, "- one") || !strings.Contains(list, "•") {
+		t.Fatalf("list not parsed inside quote:\n%s", list)
+	}
+	// Heading inside a quote → markers hidden.
+	head := stripANSI(renderMD(t, "> ## Title\n> body\n\n"))
+	if strings.Contains(head, "##") {
+		t.Fatalf("heading marker leaked inside quote:\n%s", head)
+	}
+	// Table inside a quote → box drawing, not raw pipes.
+	tbl := stripANSI(renderMD(t, "> | a | b |\n> |---|---|\n> | 1 | 2 |\n\n"))
+	if !strings.Contains(tbl, "┌") || !strings.Contains(tbl, "┼") {
+		t.Fatalf("table not parsed inside quote:\n%s", tbl)
+	}
+	// Nested quote → two bar columns on the inner line.
+	nest := stripANSI(renderMD(t, "> outer\n> > inner\n\n"))
+	if strings.Contains(nest, ">") {
+		t.Fatalf("raw > leaked in nested quote:\n%s", nest)
+	}
+	if !strings.Contains(nest, "│ │") {
+		t.Fatalf("nested quote lacks a second bar:\n%s", nest)
+	}
+	// Every rendered row is still fronted by the bar.
+	for _, ln := range strings.Split(strings.TrimRight(tbl, "\n"), "\n") {
+		if !strings.HasPrefix(ln, "│") {
+			t.Fatalf("quote row without leading bar: %q", ln)
+		}
 	}
 }
