@@ -33,6 +33,7 @@ var (
 	resumeID          string
 	noSave            bool
 	contextWindowFlag string
+	agentFlag         bool
 )
 
 var rootCmd = &cobra.Command{
@@ -115,6 +116,11 @@ var rootCmd = &cobra.Command{
 			return err
 		}
 
+		// Agent mode is explicitly opt-in: the --agent flag or the provider's
+		// `agent: true` config. It anchors the AGENTS.md/skills overlay in the
+		// REPL and auto-enables the read_file built-in tool everywhere.
+		agentMode := agentFlag || pc.Agent
+
 		// Build MCP server configs from CLI flags + config file
 		mcpConfigs := buildMCPConfigs(cfg)
 		var logf mcpmgr.LogFunc
@@ -124,6 +130,19 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
+		// The working directory is recorded in session meta in both modes; in
+		// agent mode the project root additionally anchors the AGENTS.md/skills
+		// overlay and (interactively) the project session bucket and scoped
+		// pickers.
+		cwd, cwdErr := os.Getwd()
+		var agentOpts chat.AgentOptions
+		if agentMode {
+			if cwdErr != nil {
+				return fmt.Errorf("failed to resolve working directory: %w", cwdErr)
+			}
+			agentOpts = chat.AgentOptions{Enabled: true, Root: chat.ProjectRoot(cwd)}
+		}
+
 		// Non-interactive mode: connect MCP synchronously (quiet), then respond.
 		if chatMessage != "" {
 			var mgr *mcpmgr.Manager
@@ -131,8 +150,8 @@ var rootCmd = &cobra.Command{
 				mgr, _ = mcpmgr.NewManager(context.Background(), mcpConfigs, logf)
 				defer mgr.Close()
 			}
-			dispatch := buildDispatcher(pc, mgr)
-			return chat.Once(context.Background(), p, chatMessage, systemPrompt, dispatch, os.Stdout)
+			dispatch := buildDispatcher(pc, mgr, agentMode)
+			return chat.Once(context.Background(), p, chatMessage, systemPrompt, dispatch, agentOpts, os.Stdout)
 		}
 
 		// Interactive: kick off MCP connect concurrently in the background so it
@@ -150,6 +169,7 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("--no-save cannot be combined with --resume")
 		}
 
+
 		// Resume an existing session (before model selection: a resumed session
 		// can supply the model when -M is omitted).
 		var importedHistory []provider.Message
@@ -158,14 +178,15 @@ var rootCmd = &cobra.Command{
 		if cmd.Flags().Changed("resume") {
 			id := strings.TrimSpace(resumeID)
 			if id == "" {
-				id, err = chat.PickSession()
+				id, err = chat.PickSession(agentOpts.Root)
 				if err != nil {
 					return fmt.Errorf("failed to list sessions: %w", err)
 				}
 			} else {
 				// The flag value may be an id fragment; resolve exact matches
-				// or unique prefixes (works for old ULID ids too).
-				id, err = chat.ResolveSessionID(id)
+				// or unique prefixes (works for old ULID ids too). Agent mode
+				// tries the project's bucket first, then the global store.
+				id, err = chat.ResolveSessionID(id, agentOpts.Root)
 				if err != nil {
 					return err
 				}
@@ -225,8 +246,14 @@ var rootCmd = &cobra.Command{
 		}
 
 		// Create a fresh session writer unless resuming or ephemeral (--no-save).
+		// Agent-mode sessions land in the project's bucket keyed by its root;
+		// normal-mode sessions stay flat but still record where they started.
 		if sw == nil && !noSave {
-			sw, err = chat.NewSessionWriter(p, temp, baseURL)
+			sessionCwd := cwd
+			if agentMode {
+				sessionCwd = agentOpts.Root
+			}
+			sw, err = chat.NewSessionWriter(p, temp, baseURL, sessionCwd, agentMode)
 			if err != nil {
 				return fmt.Errorf("failed to create session: %w", err)
 			}
@@ -261,8 +288,8 @@ var rootCmd = &cobra.Command{
 			defer mgr.Close()
 		}
 
-		dispatch := buildDispatcher(pc, mgr)
-		return chat.Run(p, systemPrompt, importedHistory, dispatch, mgr, sw, contextWindow, os.Stdout)
+		dispatch := buildDispatcher(pc, mgr, agentMode)
+		return chat.Run(p, systemPrompt, importedHistory, dispatch, mgr, sw, contextWindow, agentOpts, os.Stdout)
 	},
 }
 
@@ -282,6 +309,7 @@ func init() {
 	rootCmd.Flags().Lookup("resume").NoOptDefVal = " " // allow bare --resume (interactive picker)
 	rootCmd.Flags().BoolVar(&noSave, "no-save", false, "Do not persist this session to disk (ephemeral)")
 	rootCmd.Flags().StringVar(&contextWindowFlag, "context-window", "", "Context window size for compaction accounting (e.g. 200k, 1m); default 128k")
+	rootCmd.Flags().BoolVar(&agentFlag, "agent", false, "Enable agent mode (AGENTS.md system-prompt overlay)")
 }
 
 // hasAPIKey checks if a provider has a usable API key from env or config.
@@ -432,13 +460,19 @@ func reportMCPStatus(mgr *mcpmgr.Manager) {
 
 // buildDispatcher assembles the tool dispatcher for a provider: its enabled
 // built-in tools (from the provider's `tools:` config) merged with the MCP
-// manager. Built-ins are passed first so they win any tool-name collision. The
-// result is always non-nil (it may advertise no tools).
-func buildDispatcher(pc config.ProviderConfig, mgr *mcpmgr.Manager) tool.Dispatcher {
+// manager. Agent mode additionally auto-enables the read_file built-in — a
+// skill is activated by reading its SKILL.md through it — with a config entry
+// still free to declare it explicitly. Built-ins are passed first so they win
+// any tool-name collision. The result is always non-nil (it may advertise no
+// tools).
+func buildDispatcher(pc config.ProviderConfig, mgr *mcpmgr.Manager, agent bool) tool.Dispatcher {
 	warnf := func(format string, args ...any) {
 		chat.ErrorStyle.Fprintf(os.Stderr, "⚠ "+format+"\n", args...)
 	}
 	reg := tool.Build(pc.Tools, warnf)
+	if agent {
+		reg.Enable("read_file", warnf)
+	}
 
 	var parts []tool.Dispatcher
 	if len(reg.Tools()) > 0 {

@@ -12,9 +12,10 @@ import (
 // It returns the ID to resume, or "" when the user cancels or picks a delete
 // action. Deletions happen here; the caller only handles the resume. The resume
 // tab mirrors PickSession (still used by --resume at launch); the delete tab
-// folds in the former cleanSessions logic.
-func manageSessions(w io.Writer, currentID string) (string, error) {
-	infos, err := ListSessions()
+// folds in the former cleanSessions logic. projectRoot scopes both tabs to the
+// current project's bucket in agent mode ("" = global; see ListSessions).
+func manageSessions(w io.Writer, currentID, projectRoot string) (string, error) {
+	infos, err := ListSessions(projectRoot)
 	if err != nil {
 		return "", err
 	}

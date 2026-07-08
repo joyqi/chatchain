@@ -118,12 +118,26 @@ func FetchModels(ctx context.Context, p provider.Provider) ([]string, error) {
 	return models, fetchErr
 }
 
-func Once(ctx context.Context, p provider.Provider, message string, systemPrompt string, dispatch tool.Dispatcher, w io.Writer) error {
+func Once(ctx context.Context, p provider.Provider, message string, systemPrompt string, dispatch tool.Dispatcher, agent AgentOptions, w io.Writer) error {
 	var messages []provider.Message
 	if systemPrompt != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
 	}
 	messages = append(messages, provider.Message{Role: "user", Content: message})
+
+	// Agent mode composes the AGENTS.md/skills overlay once for the single
+	// send — the same volatile-overlay semantics as the REPL, minus the
+	// per-turn freshness loop.
+	var sendOverlay string
+	if agent.Enabled {
+		cwd, cerr := os.Getwd()
+		if cerr != nil || cwd == "" {
+			cwd = agent.Root
+		}
+		ov := newSystemOverlay(agent.Root, cwd)
+		ov.refresh()
+		sendOverlay = ov.content()
+	}
 
 	tp, isToolProvider := p.(provider.ToolProvider)
 	var tools []provider.ToolDef
@@ -132,7 +146,7 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 	}
 
 	if isToolProvider && len(tools) > 0 {
-		reply, _, err := executeWithTools(ctx, tp, dispatch, &messages, tools, w, true)
+		reply, _, err := executeWithTools(ctx, tp, dispatch, &messages, tools, sendOverlay, w, true)
 		if err != nil {
 			return err
 		}
@@ -140,7 +154,7 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 		return nil
 	}
 
-	reply, err := p.Chat(ctx, messages)
+	reply, err := p.Chat(ctx, composeSendHistory(messages, sendOverlay))
 	if err != nil {
 		return err
 	}
@@ -184,7 +198,7 @@ func (c *chatCompleter) Do(line []rune, pos int) ([][]rune, int) {
 	// Command completion (no space yet)
 	if !strings.Contains(text, " ") {
 		var candidates [][]rune
-		for _, cmd := range slashCommands {
+		for _, cmd := range activeSlashCommands {
 			full := cmd + " " // insert a trailing space, ready for args
 			if strings.HasPrefix(full, text) {
 				candidates = append(candidates, []rune(full[len(text):]))
@@ -329,9 +343,10 @@ const maxRetries = 10
 var http4xxPattern = regexp.MustCompile(`\b4\d{2}\b`)
 
 // isRetryable returns true if the error is likely transient and worth retrying.
-// Non-retryable: io.EOF, user interruption, HTTP 4xx (except 429 rate limit).
+// Non-retryable: io.EOF, user interruption, the tool-loop cap, HTTP 4xx
+// (except 429 rate limit).
 func isRetryable(err error) bool {
-	if err == io.EOF || errors.Is(err, errInterrupted) {
+	if err == io.EOF || errors.Is(err, errInterrupted) || errors.Is(err, errToolRoundsExceeded) {
 		return false
 	}
 	msg := err.Error()
@@ -461,7 +476,7 @@ func echoRows(raw string, tw int) int {
 	return rows
 }
 
-func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, contextWindow int, w io.Writer) error {
+func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, contextWindow int, agent AgentOptions, w io.Writer) error {
 	// Detect the terminal background now, while it is idle, so the OSC query for
 	// the code-block theme never races user keystrokes mid-stream.
 	detectCodeTheme()
@@ -511,6 +526,28 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 	}
 	ctx := context.Background()
 
+	// Agent mode: assemble the volatile AGENTS.md overlay once at startup. A
+	// nil overlay (agent mode off) is inert everywhere below, so the send paths
+	// keep passing the exact history slice they do today.
+	var overlay *systemOverlay
+	if agent.Enabled {
+		cwd, cerr := os.Getwd()
+		if cerr != nil || cwd == "" {
+			cwd = agent.Root
+		}
+		overlay = newSystemOverlay(agent.Root, cwd)
+	}
+	// Agent-only slash commands (/skills) exist — completion, highlighting,
+	// dispatch — only while agent mode is on.
+	setAgentCommands(agent.Enabled)
+
+	// Agent mode scopes /session to the current project's bucket; "" keeps
+	// the flat global view (see ListSessions).
+	sessionScope := ""
+	if agent.Enabled {
+		sessionScope = agent.Root
+	}
+
 	budget := newContextBudget(contextWindow)
 	if len(history) > 0 {
 		budget.update(p, history) // seed from loaded history on resume
@@ -524,9 +561,18 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 	}
 
 	DimStyle.Fprintln(w, "Chat started. Press Ctrl+C to exit.")
-	DimStyle.Fprintln(w, "Commands: /file [path], /session, /model, /compact, /export, /status, /tools")
+	DimStyle.Fprintln(w, "Commands: /file [path], /session, /model, /compact, /export, /status, /tools"+agentCommandHint(overlay))
 	if id := sw.ID(); id != "" {
 		DimStyle.Fprintf(w, "Session: %s\n", id)
+	}
+	if n := overlay.fileCount(); n > 0 {
+		DimStyle.Fprintf(w, "Agent mode: AGENTS.md loaded (%d files, %.1f KB)\n", n, float64(overlay.chainSize())/1024)
+	}
+	if n := overlay.skillCount(); n > 0 {
+		DimStyle.Fprintf(w, "Agent mode: %d skill(s) available\n", n)
+	}
+	for _, warn := range overlay.warnings() {
+		DimStyle.Fprintf(w, "⚠ %s\n", warn)
 	}
 	fmt.Fprintln(w)
 
@@ -710,7 +756,7 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		}
 		if input == "/session" || strings.HasPrefix(input, "/session ") {
 			// Tabbed selector: resume a session, or delete others.
-			id, perr := manageSessions(w, sw.ID())
+			id, perr := manageSessions(w, sw.ID(), sessionScope)
 			if perr != nil {
 				ErrorStyle.Fprintf(w, "Error: %v\n", perr)
 				continue
@@ -769,6 +815,10 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			showCapabilities(dispatch, mgr)
 			continue
 		}
+		if overlay != nil && (input == "/skills" || strings.HasPrefix(input, "/skills ")) {
+			showSkills(overlay, agent.Root)
+			continue
+		}
 		if input == "/status" || strings.HasPrefix(input, "/status ") {
 			showStatus(statusLines(p, budget, history, len(pendingAttachments), dispatch, mgr, sw))
 			continue
@@ -785,6 +835,23 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		if p.Model() == "" && !ensureModel(ctx, p, sw, w) {
 			continue
 		}
+
+		// Agent mode: probe the AGENTS.md chain and the skills roots once per
+		// turn; the composition is reused byte-identically unless something
+		// changed (keeping provider prompt caches warm). The tool loop's rounds
+		// all reuse this turn's snapshot. No-op (empty overlay) when agent mode
+		// is off.
+		agentsChanged, skillsChanged := overlay.refresh()
+		if agentsChanged {
+			DimStyle.Fprintf(w, "AGENTS.md reloaded (%d files)\n", overlay.fileCount())
+		}
+		if skillsChanged {
+			DimStyle.Fprintf(w, "Skills reloaded (%d skill(s))\n", overlay.skillCount())
+			for _, warn := range overlay.warnings() {
+				DimStyle.Fprintf(w, "⚠ %s\n", warn)
+			}
+		}
+		sendOverlay := overlay.content()
 
 		// Auto-compact if this turn's new content would push past the threshold.
 		extra := budget.counter.count(input)
@@ -818,7 +885,7 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			retryErr := retryWithCountdown(w, func() error {
 				history = history[:historyLen]
 				var err error
-				reply, thinking, err = executeWithTools(ctx, tp, dispatch, &history, tools, w, false)
+				reply, thinking, err = executeWithTools(ctx, tp, dispatch, &history, tools, sendOverlay, w, false)
 				return err
 			})
 			if errors.Is(retryErr, errInterrupted) {
@@ -842,11 +909,13 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			continue
 		}
 
-		// Standard streaming path (no tools)
+		// Standard streaming path (no tools). The request sends a send-time
+		// copy carrying the agent-mode overlay; history itself stays clean.
 		var reply, thinking string
+		sendHistory := composeSendHistory(history, sendOverlay)
 		retryErr := retryWithCountdown(w, func() error {
 			var err error
-			reply, thinking, err = streamResponse(ctx, p, history, w)
+			reply, thinking, err = streamResponse(ctx, p, sendHistory, w)
 			return err
 		})
 		if errors.Is(retryErr, errInterrupted) {
@@ -1056,13 +1125,28 @@ func streamResponse(ctx context.Context, p provider.Provider, history []provider
 	return reply, thinking, nil
 }
 
+// maxToolRounds caps the tool-call loop in every mode (agent or not): a model
+// still requesting tools after this many rounds is looping, and the cap sits
+// far above legitimate use.
+const maxToolRounds = 50
+
+// errToolRoundsExceeded is returned when the loop cap is hit. Non-retryable
+// (see isRetryable): retrying a runaway loop would only run it again.
+var errToolRoundsExceeded = fmt.Errorf("tool loop exceeded %d rounds without a final response", maxToolRounds)
+
 // executeWithTools runs the tool-call loop: calls the model, executes any tool
 // calls via MCP, feeds results back, and repeats until the model produces a
-// final text response. When quiet=true, no spinner/prefixes/reasoning/markdown
-// are rendered — only the final text reply is returned via the content value.
+// final text response or the maxToolRounds cap trips. When quiet=true, no
+// spinner/prefixes/reasoning/markdown are rendered — only the final text reply
+// is returned via the content value.
 // On errInterrupted the streamed partials are returned as content/reasoning;
 // any completed tool rounds are already appended to *history.
-func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, w io.Writer, quiet bool) (string, string, error) {
+//
+// overlay is the turn's agent-mode system overlay: each round sends a
+// send-time copy of *history with it applied (see composeSendHistory), while
+// the appended assistant/tool messages land in the clean *history. Empty
+// means none — every round then sends *history itself, exactly as before.
+func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, w io.Writer, quiet bool) (string, string, error) {
 	// Persistent spinner across all tool-call rounds
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
 	s.Writer = os.Stderr
@@ -1088,8 +1172,14 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 	// every exit path (interrupt included) without double-stopping.
 	defer stopSpinner()
 
-	for {
-		content, reasoning, toolCalls, rendered, err := streamToolRound(ctx, tp, *history, tools, w, quiet, startSpinner, stopSpinner)
+	for rounds := 0; ; rounds++ {
+		if rounds == maxToolRounds {
+			// Every executed round left a complete assistant/tool pair in
+			// *history, so the caller's normal error path (rollback in Run, a
+			// returned error in Once) sees nothing half-finished.
+			return "", "", errToolRoundsExceeded
+		}
+		content, reasoning, toolCalls, rendered, err := streamToolRound(ctx, tp, composeSendHistory(*history, overlay), tools, w, quiet, startSpinner, stopSpinner)
 		if err != nil {
 			// errInterrupted carries the streamed partials in content/reasoning.
 			return content, reasoning, err

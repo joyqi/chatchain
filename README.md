@@ -17,6 +17,7 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 - **Context management** — live token accounting against the context window (configurable via `--context-window` or the `/model` Context tab), with `/compact` LLM-summarization of older history; when the window nears full a confirmation is offered before compacting (declining snoozes the prompt until usage grows further)
 - **Model settings mid-chat** — `/model` opens a tabbed panel over the model, context window, reasoning effort, and temperature, all persisted with the session and replayed on resume
 - **Conversation export** — `/export` renders the session to a single self-contained HTML file (inline CSS, dark mode with a toggle, syntax-highlighted code) or a plain Markdown document; saved sessions export the full on-disk log, so compaction never hides older rounds (ephemeral `--no-save` sessions export the current in-memory view)
+- **Agent mode** — opt-in via `--agent` (or `agent: true` per provider): layered `AGENTS.md` instructions and [Agent Skills](https://agentskills.io/specification) are injected as a volatile system-prompt overlay, the `read_file` tool is auto-enabled, and sessions are grouped per project
 - **System prompt** — set via flag or interactive input
 - **Config file** — persistent API keys, default models, custom provider aliases, and MCP server definitions via `~/.chatchain.yaml`
 - **Styled terminal output** — color-coded prompts
@@ -100,6 +101,7 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 | `--system-input` | `-S` | Enter system prompt interactively |
 | `--list` | `-l` | List configured providers, or models for a given provider |
 | `--mcp` | | MCP server (command string or URL, repeatable) |
+| `--agent` | | Enable agent mode (AGENTS.md overlay, skills, `read_file`, project-scoped sessions) |
 | `--config` | `-c` | Path to config file (default: `~/.chatchain.yaml`) |
 | `--verbose` | `-v` | Print HTTP request/response bodies for debugging |
 
@@ -233,6 +235,67 @@ Safety model:
 - Each call is capped at **10 minutes**. While a command runs, the spinner shows
   the elapsed time; press **ESC** (or Ctrl+C) to terminate it.
 
+### Agent Mode
+
+Agent mode is explicitly opt-in — pass `--agent`, or set `agent: true` on a
+provider in the config file. Off means exactly the ordinary chat behavior.
+
+```yaml
+providers:
+  claude:
+    type: anthropic
+    key: sk-ant-xxx
+    agent: true
+```
+
+Everything is anchored at the **project root**: the git root of the working
+directory, or the working directory itself outside a repository.
+
+#### AGENTS.md
+
+Following the [AGENTS.md convention](https://agents.md/), every `AGENTS.md`
+from the project root down to the current directory (at most one per
+directory) is concatenated root-first — nearer files come later and override —
+capped at 32 KiB, and appended to the system prompt as a **volatile overlay**:
+composed at send time, never stored in the conversation history or the session
+file, and re-read automatically when a file changes between turns (a dim
+`AGENTS.md reloaded` notice is printed). Resuming a session elsewhere applies
+that directory's `AGENTS.md`.
+
+#### Skills
+
+Skills follow the [Agent Skills specification](https://agentskills.io/specification):
+a skill is a directory containing a `SKILL.md` with `name` and `description`
+frontmatter. Discovery directories, highest precedence first (same-name skill:
+higher wins):
+
+1. `<project root>/.agents/skills/` — project skills
+2. `~/.chatchain/skills/` — chatchain user skills
+3. `~/.agents/skills/` — cross-client user skills
+
+Discovered skills are advertised to the model as a name + description catalog
+inside the overlay; the model activates one by reading its `SKILL.md` with
+`read_file`, then reads referenced files the same way and runs bundled scripts
+through `run_command` (enable it for the provider if your skills need
+scripts). Invalid skills are skipped with a warning, never fatal.
+
+#### `read_file`
+
+Agent mode auto-enables the `read_file` built-in tool: read-only access to
+regular files — `path` (absolute, cwd-relative, or `~`-expanded) plus an
+optional `offset`/`limit` line window, with size-capped, truncation-marked
+output. It can also be enabled explicitly under `tools:` like any built-in,
+agent mode or not.
+
+#### Project-Scoped Sessions
+
+Sessions started in agent mode are stored per project under
+`~/.chatchain/sessions/projects/<slug>/`, and `/session` and `--resume` list
+only the current project's sessions there (`--resume=<id>` with an id from
+anywhere still works). Normal-mode sessions stay in the flat global store,
+whose list also shows every project's sessions labelled with their project —
+nothing is ever invisible.
+
 ### Chat Commands
 
 In interactive mode, the following commands are available. Typing `/` on an empty
@@ -248,6 +311,7 @@ the command is colorized inline (green once complete, cyan while a valid prefix)
 | `/export [file]` | Export the conversation (saved sessions: the full on-disk log, so compaction never hides older rounds) to a single self-contained HTML file — the default — or Markdown with a `.md`/`.markdown` extension. With no argument, a selector picks the format and the filename is generated from the session title. Never overwrites an existing file. |
 | `/status` | Show provider, model, context usage, and last-turn token counts |
 | `/tools` | Tabbed read-only view of the model's capabilities: a "Tools" tab (every built-in and MCP tool with its source) and an "MCP" tab (server status, endpoints, and tools) |
+| `/skills` | List discovered agent skills — name, source (project/user), description, and any invalid skills that were skipped. Agent mode only. |
 
 Attached files are sent with your next message, then cleared automatically.
 

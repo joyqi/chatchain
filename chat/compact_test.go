@@ -56,7 +56,7 @@ func TestCompactHistory(t *testing.T) {
 func TestCompactionMarkerReload(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p := &stubProvider{model: "m1"}
-	sw, err := NewSessionWriter(p, nil, "")
+	sw, err := NewSessionWriter(p, nil, "", "", false)
 	if err != nil {
 		t.Fatalf("NewSessionWriter: %v", err)
 	}

@@ -39,7 +39,7 @@ func TestSessionRoundTrip(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p := &stubProvider{model: "m1"}
 
-	sw, err := NewSessionWriter(p, nil, "")
+	sw, err := NewSessionWriter(p, nil, "", "", false)
 	if err != nil {
 		t.Fatalf("NewSessionWriter: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestSessionRoundTrip(t *testing.T) {
 	}
 
 	// Listing reports the session with the right message count.
-	infos, err := ListSessions()
+	infos, err := ListSessions("")
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestInterruptedFlagRoundTrip(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p := &stubProvider{model: "m1"}
 
-	sw, err := NewSessionWriter(p, nil, "")
+	sw, err := NewSessionWriter(p, nil, "", "", false)
 	if err != nil {
 		t.Fatalf("NewSessionWriter: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestSessionMetaTuningRoundTrip(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p := &stubProvider{model: "m1"}
 
-	sw, err := NewSessionWriter(p, nil, "")
+	sw, err := NewSessionWriter(p, nil, "", "", false)
 	if err != nil {
 		t.Fatalf("NewSessionWriter: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestRawContentDroppedOnProviderMismatch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p := &stubProvider{model: "m1"}
 
-	sw, _ := NewSessionWriter(p, nil, "")
+	sw, _ := NewSessionWriter(p, nil, "", "", false)
 	id := sw.ID()
 	sw.AppendMessages([]provider.Message{
 		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "c1", Name: "t"}}, RawContent: map[string]any{"sig": "abc"}},
@@ -312,7 +312,7 @@ func TestLazySessionCreation(t *testing.T) {
 	t.Setenv("HOME", home)
 	p := &stubProvider{model: "m1"}
 
-	sw, err := NewSessionWriter(p, nil, "")
+	sw, err := NewSessionWriter(p, nil, "", "", false)
 	if err != nil {
 		t.Fatalf("NewSessionWriter: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestLazySessionCreation(t *testing.T) {
 	// In-memory updates (e.g. /model before any turn) must not create the bundle.
 	sw.SetModel("m2")
 	sw.SetTitle("draft")
-	if infos, _ := ListSessions(); len(infos) != 0 {
+	if infos, _ := ListSessions(""); len(infos) != 0 {
 		t.Fatalf("expected no sessions on disk before any append, got %d", len(infos))
 	}
 	if _, err := os.Stat(filepath.Join(home, ".chatchain", "sessions", id)); !os.IsNotExist(err) {
@@ -334,7 +334,7 @@ func TestLazySessionCreation(t *testing.T) {
 	}
 	sw.Close()
 
-	infos, err := ListSessions()
+	infos, err := ListSessions("")
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestLoadFullHistoryIgnoresCompaction(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p := &stubProvider{model: "m1"}
 
-	sw, err := NewSessionWriter(p, nil, "")
+	sw, err := NewSessionWriter(p, nil, "", "", false)
 	if err != nil {
 		t.Fatalf("NewSessionWriter: %v", err)
 	}

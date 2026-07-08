@@ -42,6 +42,7 @@ type Factory func(node yaml.Node) (Tool, error)
 // file with its Factory and one line here.
 var factories = map[string]Factory{
 	"run_command": newRunCommand,
+	"read_file":   newReadFile,
 }
 
 // Registry holds the enabled built-in tools and satisfies Dispatcher.
@@ -79,6 +80,32 @@ func Build(raw map[string]yaml.Node, warnf func(string, ...any)) *Registry {
 		r.index[def.Name] = t
 	}
 	return r
+}
+
+// Enable registers the named built-in tool with its default (empty) config
+// unless the config already enabled it. Agent mode uses it to auto-register
+// read_file without requiring a `tools:` entry. Failures are reported via
+// warnf (nil to suppress) and skipped, like Build.
+func (r *Registry) Enable(name string, warnf func(string, ...any)) {
+	if _, ok := r.index[name]; ok {
+		return
+	}
+	f, ok := factories[name]
+	if !ok {
+		if warnf != nil {
+			warnf("unknown built-in tool %q (ignored)", name)
+		}
+		return
+	}
+	t, err := f(yaml.Node{})
+	if err != nil {
+		if warnf != nil {
+			warnf("tool %q: %v (ignored)", name, err)
+		}
+		return
+	}
+	r.order = append(r.order, t)
+	r.index[t.Def().Name] = t
 }
 
 // Tools returns the definitions of the enabled built-in tools.

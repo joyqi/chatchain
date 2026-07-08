@@ -9,11 +9,14 @@ import (
 
 // ProviderConfig holds per-provider settings from the config file.
 type ProviderConfig struct {
-	Type          string `yaml:"type"`
-	Key           string `yaml:"key"`
-	URL           string `yaml:"url"`
-	Model         string `yaml:"model"`
-	System        string `yaml:"system"`
+	Type   string `yaml:"type"`
+	Key    string `yaml:"key"`
+	URL    string `yaml:"url"`
+	Model  string `yaml:"model"`
+	System string `yaml:"system"`
+	// Agent enables agent mode for this provider (docs/design/agent-mode.md).
+	// yaml.v3 decodes the YAML 1.1 truthy spellings (true/yes/on) natively.
+	Agent         bool   `yaml:"agent"`
 	ContextWindow string `yaml:"context_window"` // e.g. "200k", "1m", "128000"
 	// Tools enables built-in tools for this provider. The key is the tool name
 	// (its presence enables the tool); the value is that tool's raw config,

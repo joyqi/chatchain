@@ -10,17 +10,37 @@ import (
 	"github.com/fatih/color"
 )
 
-// slashCommands are the interactive commands. The single source of truth shared
-// by the Tab completer (candidate list), the input highlighter (commandPainter),
-// and the auto-popup trigger (slashTriggerReader). Names are bare (no trailing
-// space); the completer appends the space it inserts when a command is chosen.
+// slashCommands are the always-available interactive commands. The single
+// source of truth shared by the Tab completer (candidate list), the input
+// highlighter (commandPainter), and the auto-popup trigger
+// (slashTriggerReader) is activeSlashCommands below. Names are bare (no
+// trailing space); the completer appends the space it inserts when a command
+// is chosen.
 var slashCommands = []string{
 	"/file", "/session", "/model", "/compact", "/export", "/status", "/tools",
 }
 
+// agentSlashCommands exist only while agent mode is on; off, they are fully
+// invisible — no completion, no highlighting, no dispatch (the input falls
+// through as a plain message like any unknown slash text).
+var agentSlashCommands = []string{"/skills"}
+
+// activeSlashCommands is the effective command table; Run rebinds it once at
+// startup via setAgentCommands, before the readline loop starts.
+var activeSlashCommands = slashCommands
+
+// setAgentCommands activates or deactivates the agent-only commands.
+func setAgentCommands(enabled bool) {
+	if enabled {
+		activeSlashCommands = append(append([]string{}, slashCommands...), agentSlashCommands...)
+	} else {
+		activeSlashCommands = slashCommands
+	}
+}
+
 // isSlashCommand reports whether tok is exactly one of the known commands.
 func isSlashCommand(tok string) bool {
-	for _, c := range slashCommands {
+	for _, c := range activeSlashCommands {
 		if c == tok {
 			return true
 		}
@@ -31,7 +51,7 @@ func isSlashCommand(tok string) bool {
 // isSlashPrefix reports whether tok is a non-empty prefix of some known command
 // (i.e. the user is partway through typing a valid command).
 func isSlashPrefix(tok string) bool {
-	for _, c := range slashCommands {
+	for _, c := range activeSlashCommands {
 		if strings.HasPrefix(c, tok) {
 			return true
 		}

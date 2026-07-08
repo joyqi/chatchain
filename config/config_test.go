@@ -58,3 +58,39 @@ providers:
 		t.Fatalf("missing provider should have no tools, got %v", pc.Tools)
 	}
 }
+
+// TestLoadAgent verifies the per-provider `agent:` switch accepts the YAML 1.1
+// truthy spellings (true/yes/on — yaml.v3 resolves them all to bool) and
+// defaults to off when absent.
+func TestLoadAgent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+providers:
+  a:
+    agent: true
+  b:
+    agent: yes
+  c:
+    agent: on
+  d:
+    agent: false
+  e:
+    key: sk-xxx
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Load(path)
+	for _, name := range []string{"a", "b", "c"} {
+		if _, pc := cfg.Get(name); !pc.Agent {
+			t.Errorf("provider %s: agent should be enabled", name)
+		}
+	}
+	for _, name := range []string{"d", "e", "missing"} {
+		if _, pc := cfg.Get(name); pc.Agent {
+			t.Errorf("provider %s: agent should be disabled", name)
+		}
+	}
+}

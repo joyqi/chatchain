@@ -45,8 +45,13 @@ type sessionMeta struct {
 	ContextWindow int      `json:"context_window,omitempty"`
 	Effort        string   `json:"effort,omitempty"`
 	BaseURL       string   `json:"base_url,omitempty"`
-	Title         string   `json:"title,omitempty"`
-	MessageCount  int      `json:"message_count"`
+	// Cwd is where the session was started: the project root in agent mode,
+	// the plain working directory otherwise. Labels and any future
+	// reorganisation read it from here — meta is the source of truth, the
+	// bucket path is just an index. Old sessions simply lack it.
+	Cwd          string `json:"cwd,omitempty"`
+	Title        string `json:"title,omitempty"`
+	MessageCount int    `json:"message_count"`
 }
 
 type sessionMessage struct {
@@ -91,6 +96,9 @@ type SessionInfo struct {
 	Provider     string
 	UpdatedAt    time.Time
 	MessageCount int
+	// Project is the short project hint shown for bucketed (agent-mode)
+	// sessions in the global list; "" for flat sessions and scoped views.
+	Project string
 }
 
 // Session is a fully loaded session (metadata + reconstructed messages).
@@ -109,6 +117,53 @@ func sessionsDir() (string, error) {
 	return filepath.Join(home, ".chatchain", "sessions"), nil
 }
 
+// projectsDirName is the sessionsDir subdirectory holding project-scoped
+// buckets: agent-mode sessions live under projects/<slug>/<id>/ where <slug>
+// encodes the project root. Normal-mode sessions stay flat in sessionsDir.
+const projectsDirName = "projects"
+
+// projectSlug encodes an absolute project root as a bucket directory name,
+// Claude Code style: every path separator becomes '-'
+// (e.g. /Users/x/proj → -Users-x-proj).
+func projectSlug(root string) string {
+	return strings.ReplaceAll(filepath.Clean(root), string(filepath.Separator), "-")
+}
+
+// findSessionDir locates a session bundle by exact id across both layouts:
+// the flat sessionsDir first, then every projects/<slug>/ bucket. A bundle is
+// recognized by its meta.json — which also keeps the projects/ container (or
+// any stray directory) from masquerading as a session. Returns "" when the id
+// is not on disk.
+func findSessionDir(base, id string) string {
+	candidates := []string{filepath.Join(base, id)}
+	if buckets, err := os.ReadDir(filepath.Join(base, projectsDirName)); err == nil {
+		for _, b := range buckets {
+			if b.IsDir() {
+				candidates = append(candidates, filepath.Join(base, projectsDirName, b.Name(), id))
+			}
+		}
+	}
+	for _, dir := range candidates {
+		if _, err := os.Stat(filepath.Join(dir, "meta.json")); err == nil {
+			return dir
+		}
+	}
+	return ""
+}
+
+// sessionDir resolves a full session id to its bundle directory via
+// findSessionDir, erroring when no bundle exists in either layout.
+func sessionDir(id string) (string, error) {
+	base, err := sessionsDir()
+	if err != nil {
+		return "", err
+	}
+	if dir := findSessionDir(base, id); dir != "" {
+		return dir, nil
+	}
+	return "", fmt.Errorf("session %s not found", id)
+}
+
 // sessionIDAlphabet is Crockford base32, lowercased: no i/l/o/u, so ids stay
 // unambiguous to read and retype.
 const sessionIDAlphabet = "0123456789abcdefghjkmnpqrstvwxyz"
@@ -125,11 +180,38 @@ const sessionIDLength = 12
 func newSessionID(base string) string {
 	for {
 		id := gonanoid.MustGenerate(sessionIDAlphabet, sessionIDLength)
-		if _, err := os.Stat(filepath.Join(base, id)); os.IsNotExist(err) {
+		if !sessionIDTaken(base, id) {
 			return id
 		}
 	}
 }
+
+// sessionIDTaken reports whether any directory with this id exists in either
+// layout — flat or any projects/<slug>/ bucket — so ids stay unique across the
+// whole store and prefix resolution never has to disambiguate by location.
+func sessionIDTaken(base, id string) bool {
+	if _, err := os.Stat(filepath.Join(base, id)); err == nil {
+		return true
+	}
+	buckets, err := os.ReadDir(filepath.Join(base, projectsDirName))
+	if err != nil {
+		return false
+	}
+	for _, b := range buckets {
+		if !b.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(base, projectsDirName, b.Name(), id)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// errNoSessionMatch marks a fragment that matched nothing — scoped resolution
+// widens to the global view on it (an ambiguous fragment, by contrast, can
+// only get more ambiguous in the superset, so it is final).
+var errNoSessionMatch = errors.New("no session matches")
 
 // resolveSessionID matches a user-supplied id fragment against the known
 // sessions: an exact match wins, otherwise a unique (case-insensitive) prefix;
@@ -146,7 +228,7 @@ func resolveSessionID(infos []SessionInfo, fragment string) (string, error) {
 	}
 	switch len(matches) {
 	case 0:
-		return "", fmt.Errorf("no session matches %q", fragment)
+		return "", fmt.Errorf("%w %q", errNoSessionMatch, fragment)
 	case 1:
 		return matches[0], nil
 	default:
@@ -155,9 +237,25 @@ func resolveSessionID(infos []SessionInfo, fragment string) (string, error) {
 }
 
 // ResolveSessionID resolves a --resume id fragment to a full session id (exact
-// match or unique prefix; see resolveSessionID).
-func ResolveSessionID(fragment string) (string, error) {
-	infos, err := ListSessions()
+// match or unique prefix; see resolveSessionID). A non-empty projectRoot tries
+// that project's bucket first and only widens to the global view when nothing
+// there matched — a short prefix means "this project", while an explicit id
+// from anywhere still works.
+func ResolveSessionID(fragment, projectRoot string) (string, error) {
+	if projectRoot != "" {
+		infos, err := ListSessions(projectRoot)
+		if err != nil {
+			return "", err
+		}
+		id, rerr := resolveSessionID(infos, fragment)
+		if rerr == nil {
+			return id, nil
+		}
+		if !errors.Is(rerr, errNoSessionMatch) {
+			return "", rerr // ambiguous within the project — final
+		}
+	}
+	infos, err := ListSessions("")
 	if err != nil {
 		return "", err
 	}
@@ -185,16 +283,23 @@ type SessionWriter struct {
 // NewSessionWriter prepares a fresh session in memory but does NOT touch disk.
 // The bundle (dir + meta.json + messages.jsonl) is created lazily on the first
 // AppendMessages — so a session that only runs commands and never reaches a real
-// turn leaves nothing behind.
-func NewSessionWriter(p provider.Provider, temperature *float64, baseURL string) (*SessionWriter, error) {
+// turn leaves nothing behind. cwd is recorded in meta in both modes (the
+// project root in agent mode, the plain working directory otherwise; "" omits
+// it); project additionally places the bundle in the cwd's projects/<slug>/
+// bucket instead of the flat sessionsDir.
+func NewSessionWriter(p provider.Provider, temperature *float64, baseURL, cwd string, project bool) (*SessionWriter, error) {
 	base, err := sessionsDir()
 	if err != nil {
 		return nil, err
 	}
 	id := newSessionID(base)
+	bucket := base
+	if project && cwd != "" {
+		bucket = filepath.Join(base, projectsDirName, projectSlug(cwd))
+	}
 	now := time.Now().Format(time.RFC3339)
 	return &SessionWriter{
-		dir: filepath.Join(base, id),
+		dir: filepath.Join(bucket, id),
 		p:   p,
 		meta: sessionMeta{
 			Version:     sessionSchemaVersion,
@@ -205,6 +310,7 @@ func NewSessionWriter(p provider.Provider, temperature *float64, baseURL string)
 			Model:       p.Model(),
 			Temperature: temperature,
 			BaseURL:     baseURL,
+			Cwd:         cwd,
 		},
 	}, nil
 }
@@ -230,11 +336,10 @@ func (w *SessionWriter) ensureCreated() error {
 // Returns the writer (positioned to append, convCount seeded from the full log)
 // plus the loaded session view.
 func ResumeSession(id string, p provider.Provider) (*SessionWriter, *Session, error) {
-	base, err := sessionsDir()
+	dir, err := sessionDir(id)
 	if err != nil {
 		return nil, nil, err
 	}
-	dir := filepath.Join(base, id)
 	meta, err := loadMeta(dir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot read session %s: %w", id, err)
@@ -636,11 +741,10 @@ func loadLog(dir string, p provider.Provider) (view []provider.Message, convCoun
 
 // LoadSession reads a session bundle into its in-memory view (see loadLog).
 func LoadSession(id string, p provider.Provider) (*Session, error) {
-	base, err := sessionsDir()
+	dir, err := sessionDir(id)
 	if err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(base, id)
 	meta, err := loadMeta(dir)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read session %s: %w", id, err)
@@ -658,11 +762,10 @@ func LoadSession(id string, p provider.Provider) (*Session, error) {
 // hides older rounds. Used by /export, where the archive must be lossless.
 // Attachments and raw content are restored exactly as in loadLog.
 func LoadFullHistory(id string, p provider.Provider) ([]provider.Message, error) {
-	base, err := sessionsDir()
+	dir, err := sessionDir(id)
 	if err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(base, id)
 	var msgs []provider.Message
 	err = scanRecords(dir, func(sm sessionMessage) {
 		if sm.Role == "compaction" {
@@ -676,13 +779,46 @@ func LoadFullHistory(id string, p provider.Provider) ([]provider.Message, error)
 	return msgs, nil
 }
 
-// ListSessions returns all sessions sorted by most-recently-updated first.
-func ListSessions() ([]SessionInfo, error) {
+// ListSessions returns sessions sorted by most-recently-updated first.
+// projectRoot scopes the view: non-empty lists only that project's bucket
+// (one readdir — O(own sessions)); "" is the global view — flat sessions plus
+// every projects/<slug>/ bucket, with bucketed entries carrying a project
+// hint so nothing is ever invisible.
+func ListSessions(projectRoot string) ([]SessionInfo, error) {
 	base, err := sessionsDir()
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(base)
+	var infos []SessionInfo
+	if projectRoot != "" {
+		infos, err = listBucket(filepath.Join(base, projectsDirName, projectSlug(projectRoot)), true)
+	} else {
+		infos, err = listBucket(base, false)
+		if err == nil {
+			pdir := filepath.Join(base, projectsDirName)
+			if buckets, berr := os.ReadDir(pdir); berr == nil {
+				for _, b := range buckets {
+					if !b.IsDir() {
+						continue
+					}
+					more, _ := listBucket(filepath.Join(pdir, b.Name()), true)
+					infos = append(infos, more...)
+				}
+			}
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].UpdatedAt.After(infos[j].UpdatedAt) })
+	return infos, nil
+}
+
+// listBucket reads one directory of session bundles into SessionInfos.
+// project marks the entries as project-scoped, deriving their label hint. A
+// missing directory is an empty bucket, not an error.
+func listBucket(dir string, project bool) ([]SessionInfo, error) {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -691,53 +827,78 @@ func ListSessions() ([]SessionInfo, error) {
 	}
 	var infos []SessionInfo
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || e.Name() == projectsDirName {
 			continue
 		}
-		meta, err := loadMeta(filepath.Join(base, e.Name()))
+		meta, err := loadMeta(filepath.Join(dir, e.Name()))
 		if err != nil {
 			continue
 		}
 		t, _ := time.Parse(time.RFC3339, meta.UpdatedAt)
-		infos = append(infos, SessionInfo{
+		info := SessionInfo{
 			ID:           meta.ID,
 			Title:        meta.Title,
 			Model:        meta.Model,
 			Provider:     meta.Provider,
 			UpdatedAt:    t,
 			MessageCount: meta.MessageCount,
-		})
+		}
+		if project {
+			info.Project = projectHint(meta, filepath.Base(dir))
+		}
+		infos = append(infos, info)
 	}
-	sort.Slice(infos, func(i, j int) bool { return infos[i].UpdatedAt.After(infos[j].UpdatedAt) })
 	return infos, nil
 }
 
-// sessionLabel is the one-line description shown in session pickers.
+// projectHint is the short project name shown next to a bucketed session in
+// the global list: the base name of the recorded cwd (meta is the source of
+// truth), falling back to the slug's last segment for bundles without one.
+func projectHint(meta sessionMeta, slug string) string {
+	if meta.Cwd != "" {
+		return filepath.Base(meta.Cwd)
+	}
+	if i := strings.LastIndex(slug, "-"); i >= 0 && i+1 < len(slug) {
+		return slug[i+1:]
+	}
+	return slug
+}
+
+// sessionLabel is the one-line description shown in session pickers. The
+// project hint stays plain text: picker rows go through width-based truncation
+// that does not skip ANSI escapes, so no color here.
 func sessionLabel(s SessionInfo) string {
 	title := s.Title
 	if title == "" {
 		title = "(untitled)"
 	}
-	return fmt.Sprintf("%s · %s · %s · %d msgs", title, s.Model, humanizeTime(s.UpdatedAt), s.MessageCount)
+	label := fmt.Sprintf("%s · %s · %s · %d msgs", title, s.Model, humanizeTime(s.UpdatedAt), s.MessageCount)
+	if s.Project != "" {
+		label += fmt.Sprintf(" [%s]", s.Project)
+	}
+	return label
 }
 
-// DeleteSession removes a session bundle from disk. The id must be a bare
-// directory name (no path separators) so it can't escape the sessions dir.
+// DeleteSession removes a session bundle from disk, wherever it lives. The id
+// must be a bare directory name (no path separators) so it can't escape the
+// sessions dir; the locator only matches real bundles, so the projects/
+// container itself can never be deleted by id.
 func DeleteSession(id string) error {
 	if id == "" || strings.ContainsAny(id, `/\`) || strings.Contains(id, "..") {
 		return fmt.Errorf("invalid session id %q", id)
 	}
-	base, err := sessionsDir()
+	dir, err := sessionDir(id)
 	if err != nil {
 		return err
 	}
-	return os.RemoveAll(filepath.Join(base, id))
+	return os.RemoveAll(dir)
 }
 
-// PickSession lists sessions and lets the user choose one to resume. Returns
-// the chosen session ID, or "" when there are none or the user cancels.
-func PickSession() (string, error) {
-	infos, err := ListSessions()
+// PickSession lists sessions (scoped to projectRoot's bucket when non-empty;
+// see ListSessions) and lets the user choose one to resume. Returns the chosen
+// session ID, or "" when there are none or the user cancels.
+func PickSession(projectRoot string) (string, error) {
+	infos, err := ListSessions(projectRoot)
 	if err != nil {
 		return "", err
 	}

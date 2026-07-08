@@ -136,3 +136,27 @@ func TestSlashTriggerListener(t *testing.T) {
 		t.Errorf("base rewrite should win: got (%q,%d,%v), want (\"X\",1,true)", string(nl), np, ok)
 	}
 }
+
+// Agent-only commands are invisible outside agent mode: not commands, not
+// prefixes, absent from the active table — and appear once agent mode is on.
+func TestAgentCommandVisibility(t *testing.T) {
+	t.Cleanup(func() { setAgentCommands(false) })
+
+	setAgentCommands(false)
+	if isSlashCommand("/skills") || isSlashPrefix("/skills") {
+		t.Fatal("/skills visible with agent mode off")
+	}
+	setAgentCommands(true)
+	if !isSlashCommand("/skills") {
+		t.Fatal("/skills not a command with agent mode on")
+	}
+	if !isSlashPrefix("/ski") {
+		t.Fatal("/ski not a prefix with agent mode on")
+	}
+	// The base table itself is never mutated.
+	for _, c := range slashCommands {
+		if c == "/skills" {
+			t.Fatal("base slashCommands polluted with /skills")
+		}
+	}
+}
