@@ -510,6 +510,17 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 	os.Stdout.WriteString("\033[?2004h")
 	defer os.Stdout.WriteString("\033[?2004l")
 
+	// Mirror the session title in the terminal window/tab title. Push the
+	// current title onto the terminal's title stack first (XTPUSHTITLE) and pop
+	// it on exit (XTPOPTITLE) so the original title is restored — terminals
+	// without a title stack ignore the push/pop, and the shell prompt reclaims
+	// the title on the next command (graceful set-and-leave fallback).
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		os.Stdout.WriteString("\033[22;0t")
+		defer os.Stdout.WriteString("\033[23;0t")
+	}
+	setTerminalTitle(sw.Title())
+
 	var history []provider.Message
 	// persisted = number of leading history messages already written to the
 	// session. We persist only committed turns (after a successful response),
@@ -627,7 +638,9 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		}
 		titled = true
 		// Immediate placeholder so the session is identifiable right away.
-		sw.SetTitle(truncateRunes(strings.TrimSpace(firstUser), 40))
+		placeholder := truncateRunes(strings.TrimSpace(firstUser), 40)
+		sw.SetTitle(placeholder)
+		setTerminalTitle(placeholder)
 		titleWG.Add(1)
 		go func(u, a string, target *SessionWriter) {
 			defer titleWG.Done()
@@ -775,6 +788,7 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			}
 			sw.Close()
 			sw = newSW
+			setTerminalTitle(sw.Title()) // reflect the resumed session in the tab title
 			history = sess.Messages
 			persisted = len(history)
 			// Re-seed the budget from the resumed history and drop the previous
@@ -977,6 +991,7 @@ func generateTitle(ctx context.Context, p provider.Provider, firstUser, firstAss
 	title = sanitizeTitle(title)
 	if title != "" {
 		sw.SetTitle(title)
+		setTerminalTitle(title)
 	}
 }
 
@@ -996,6 +1011,48 @@ func truncateRunes(s string, max int) string {
 		return s
 	}
 	return string(r[:max]) + "…"
+}
+
+// appTitle is the terminal-title fallback before a session has a real title.
+const appTitle = "chatchain"
+
+// setTerminalTitle sets the terminal window/tab title to the session title via
+// OSC 0 (ESC ] 0 ; title BEL), which every mainstream terminal (Terminal.app,
+// iTerm2, tmux, …) honors for both the window and the tab label. Guarded to a
+// real TTY, so a piped/redirected stdout gets no escape noise. An empty title
+// falls back to the app name. Control bytes are stripped so a title can never
+// break out of the OSC sequence. Safe to call from the async first-reply title
+// goroutine: the OSC is a single, invisible, atomic write that leaves the
+// prompt line untouched.
+func setTerminalTitle(title string) {
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		return
+	}
+	io.WriteString(os.Stdout, terminalTitleSeq(title))
+}
+
+// terminalTitleSeq builds the OSC 0 escape sequence (ESC ] 0 ; title BEL) that
+// sets the terminal title, sanitizing control bytes and falling back to the app
+// name for an empty title. Split out from setTerminalTitle so it is testable
+// without a TTY.
+func terminalTitleSeq(title string) string {
+	title = sanitizeTerminalTitle(title)
+	if title == "" {
+		title = appTitle
+	}
+	return "\033]0;" + title + "\a"
+}
+
+// sanitizeTerminalTitle strips control characters (which could terminate or
+// escape the OSC sequence) and bounds the length for a tab label.
+func sanitizeTerminalTitle(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+	return truncateRunes(strings.TrimSpace(s), 60)
 }
 
 // streamResponse handles the standard streaming display (reasoning + content pipes).
