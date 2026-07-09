@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode"
 
+	"chatchain/internal/mathtext"
 	"chatchain/internal/promptui"
 
 	"github.com/alecthomas/chroma/v2/quick"
@@ -439,12 +440,54 @@ func highlightInline(line string) string {
 		}
 
 		// Inline code: `code` → styled, backticks hidden.
+		//
+		// This branch runs BEFORE the inline-math branch below so a code span
+		// wins: "`$x$`" stays literal code, never approximated math.
 		if runes[i] == '`' {
 			if end := findClose(runes, i+1, '`'); end > 0 {
 				out.WriteString(mdCode.Render(string(runes[i+1 : end])))
 				i = end + 1
 				continue
 			}
+		}
+
+		// Escaped dollar: "\$" is a literal "$", never a math opener. Consume the
+		// backslash and emit the bare "$" so it can neither open a span here nor
+		// close one that a later "$" might try to form. Only "\$" is unescaped —
+		// every other backslash passes through untouched (prose is not LaTeX).
+		if runes[i] == '\\' && i+1 < len(runes) && runes[i+1] == '$' {
+			out.WriteByte('$')
+			i += 2
+			continue
+		}
+
+		// Inline math: $...$ or \(...\) → a single-line Unicode approximation,
+		// delimiters hidden. Detection rule (see findInlineMath):
+		//   - "\$" is a literal dollar (backslash-escaped), never an opener.
+		//   - A "$" is math only when a matching UNESCAPED "$" closes it later on
+		//     the same line AND the enclosed body is non-empty; otherwise the "$"
+		//     is emitted literally. This makes a lone "$" (unclosed) and currency
+		//     like "$5"/"$5.00" stay literal — the closing "$" simply never
+		//     appears, so the span never forms.
+		//   - "\(" ... "\)" is always math (an explicit LaTeX delimiter).
+		// ApproxInline guarantees a single physical line, so inline math is safe
+		// inside table cells (styledCell → highlightInline) — no row-height
+		// surprise. Styling reuses mdCode (cyan), the same treatment as inline
+		// code: math is a verbatim technical token, so it reads as a peer of code
+		// in the palette and honors color.NoColor via the md* lipgloss styles.
+		// A "$$" run is a display fence (P2), never inline math: emit both
+		// dollars atomically and skip past them. Advancing by only one would
+		// leave the second "$" to be re-scanned as a valid inline opener on the
+		// next iteration, which would eat a single-line "$$x$$" into "$x$".
+		if runes[i] == '$' && i+1 < len(runes) && runes[i+1] == '$' {
+			out.WriteString("$$")
+			i += 2
+			continue
+		}
+		if body, end, ok := findInlineMath(runes, i); ok {
+			out.WriteString(mdCode.Render(mathtext.ApproxInline(body)))
+			i = end
+			continue
 		}
 
 		// Bold: **text** / __text__ → bold, markers hidden.
@@ -564,6 +607,72 @@ func findDoubleClose(runes []rune, start int, delim rune) int {
 		}
 	}
 	return -1
+}
+
+// findInlineMath reports whether an inline math span opens at runes[start] and,
+// if so, returns its inner body and the rune index just past the closing
+// delimiter. It is the rune-index twin of internal/mathtext.FindInline (the
+// markdown inline loop indexes runes, not bytes), applying the same rules:
+//
+//   - "$ … $": a math span only when the "$" is not immediately followed by a
+//     digit or space (the currency guard: "$5"/"$ 5" stay literal), an UNESCAPED
+//     "$" closes it later on this line, and the body between the two dollars is
+//     non-empty. A lone "$" with no close stays literal too. The guard is what
+//     keeps "it costs $5 or $10" from pairing its two dollars into a span.
+//   - "\$" is a backslash-escaped literal dollar and never opens a span; the
+//     opener check skips it because runes[start] is the '\', not the '$'.
+//   - "\( … \)": always math (an explicit LaTeX inline delimiter).
+//
+// A "$$" at start is a display fence (P2), not inline, and is rejected here.
+func findInlineMath(runes []rune, start int) (body string, end int, ok bool) {
+	switch runes[start] {
+	case '$':
+		if start+1 < len(runes) && runes[start+1] == '$' {
+			return "", 0, false // "$$" display fence, handled in P2
+		}
+		// Currency guard: a "$" immediately followed by a digit or a space is
+		// currency ("$5", "$ 5"), not a math opener. Without this, a run like
+		// "it costs $5 or $10" would pair the two dollars into a spurious span
+		// with body "5 or ". This mirrors internal/mathtext.isCurrencyDollar so
+		// the markdown path and the package agree on what a "$" opener is.
+		if start+1 >= len(runes) {
+			return "", 0, false // trailing lone "$"
+		}
+		if c := runes[start+1]; c == ' ' || (c >= '0' && c <= '9') {
+			return "", 0, false
+		}
+		// Scan for the matching unescaped "$" on this line (highlightInline is
+		// already called per line, so runes never span a newline).
+		for i := start + 1; i < len(runes); i++ {
+			if runes[i] == '\\' {
+				i++ // skip the escaped rune so "\$" cannot close the span
+				continue
+			}
+			if runes[i] == '$' {
+				inner := string(runes[start+1 : i])
+				if strings.TrimSpace(inner) == "" {
+					return "", 0, false // empty body ("$ $"): not math
+				}
+				return inner, i + 1, true
+			}
+		}
+		return "", 0, false // no closing "$": the "$" is literal (lone/currency)
+	case '\\':
+		// Explicit "\( … \)" inline math.
+		if start+1 < len(runes) && runes[start+1] == '(' {
+			for i := start + 2; i < len(runes); i++ {
+				if runes[i] == '\\' {
+					if i+1 < len(runes) && runes[i+1] == ')' {
+						return string(runes[start+2 : i]), i + 2, true
+					}
+					i++ // skip any other escape
+					continue
+				}
+			}
+		}
+		return "", 0, false
+	}
+	return "", 0, false
 }
 
 var listMarkerRe = regexp.MustCompile(`^(\s*(?:[-*+]|\d+[.)]) )`)
@@ -845,7 +954,19 @@ func (m *markdownWriter) renderQuote(body []string) string {
 	child.Flush()
 
 	content := strings.TrimRight(buf.String(), "\n")
-	return mdQuote.Render(content)
+	// Pin the style width so lipgloss draws the bar on EVERY visual row: a long
+	// plain paragraph line (the child leaves paragraphs unwrapped, relying on
+	// the terminal) is soft-wrapped here to the content width, and each wrapped
+	// row gets the bar. Width is the content area (padding included, border
+	// excluded) = termWidth-1; text then wraps at termWidth-quoteBorderCols =
+	// inner. The child already laid out tables/code to <= inner, so those lines
+	// never exceed Width and lipgloss leaves them intact — only overlong
+	// paragraphs wrap.
+	width := m.termWidth() - 1
+	if width < quoteBorderCols+1 {
+		width = quoteBorderCols + 1
+	}
+	return mdQuote.Width(width).Render(content)
 }
 
 // emitBlank writes a blank separator line, collapsing runs of blanks and

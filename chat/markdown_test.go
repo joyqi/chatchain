@@ -868,3 +868,105 @@ func TestBlockquoteRecursiveBlocks(t *testing.T) {
 		}
 	}
 }
+
+// A long blockquote paragraph that soft-wraps must carry the │ bar on EVERY
+// wrapped row, while a table in the same quote stays intact (lipgloss wraps the
+// overlong paragraph but leaves the already-fitted table lines alone).
+func TestBlockquoteLongLineWraps(t *testing.T) {
+	long := strings.Repeat("word ", 60) // ~300 cols, exceeds the 80-col default
+	out := renderMD(t, "> "+long+"\n>\n> | a | b |\n> |---|---|\n> | 1 | 2 |\n\n")
+	rows := strings.Split(strings.TrimRight(stripANSI(out), "\n"), "\n")
+	if len(rows) < 4 {
+		t.Fatalf("expected the long line to wrap into multiple rows:\n%s", stripANSI(out))
+	}
+	for i, ln := range rows {
+		if !strings.HasPrefix(ln, "│") {
+			t.Fatalf("row %d lost the bar: %q\nfull:\n%s", i, ln, stripANSI(out))
+		}
+	}
+	// Table survived intact inside the quote.
+	joined := stripANSI(out)
+	if !strings.Contains(joined, "┌") || !strings.Contains(joined, "┼") || !strings.Contains(joined, "┘") {
+		t.Fatalf("table mangled inside wrapped quote:\n%s", joined)
+	}
+}
+
+// TestInlineMathApproximation checks the inline-math wiring: $...$ and \(...\)
+// spans are replaced by their single-line Unicode approximation with the
+// delimiters hidden, while the guarded non-math cases ($ escaped, unpaired,
+// currency, inside a code span) stay literal.
+func TestInlineMathApproximation(t *testing.T) {
+	color.NoColor = false
+	tests := []struct {
+		name, in, want string
+	}{
+		{"greek", "$\\alpha$", "α"},
+		{"superscript", "$x^2$", "x²"},
+		{"paren-form", "\\(a+b\\)", "a+b"},
+		{"in-sentence", "value is $\\beta$ here", "value is β here"},
+		{"code-wins", "`$x$`", "$x$"},                        // code span beats math
+		{"escaped-dollar", "\\$5", "$5"},                     // literal dollar
+		{"unpaired", "cost is $5 today", "cost is $5 today"}, // no close → literal
+		{"empty", "a $ $ b", "a $ $ b"},                      // empty body → not math
+	}
+	for _, tt := range tests {
+		got := visible(highlightInline(tt.in))
+		if got != tt.want {
+			t.Errorf("%s: highlightInline(%q) visible = %q, want %q", tt.name, tt.in, got, tt.want)
+		}
+	}
+	// A math span must actually be styled (mdCode cyan), not merely stripped.
+	if !strings.Contains(highlightInline("$x^2$"), "\x1b[") {
+		t.Errorf("inline math span lost its styling")
+	}
+}
+
+// TestInlineMathInTableCell checks that inline math inside a table cell renders
+// on a single line (ApproxInline guarantees it) so the table stays aligned: no
+// "$" leaks, the approximated glyph is present, and every rendered line spans
+// the same terminal width.
+func TestInlineMathInTableCell(t *testing.T) {
+	color.NoColor = false
+	out := renderMD(t, "| Sym | Val |\n|-----|-----|\n| $\\alpha$ | $x^2$ |\n| a | b |\n")
+	plain := stripANSI(out)
+	if strings.Contains(plain, "$") {
+		t.Fatalf("dollar delimiter leaked into table cell:\n%s", plain)
+	}
+	if !strings.Contains(plain, "α") || !strings.Contains(plain, "x²") {
+		t.Fatalf("inline math not approximated in table cell:\n%s", plain)
+	}
+	lines := strings.Split(strings.TrimRight(plain, "\n"), "\n")
+	want := uniseg.StringWidth(lines[0])
+	for _, ln := range lines {
+		if w := uniseg.StringWidth(ln); w != want {
+			t.Errorf("table row width %d, want %d (math broke alignment): %q\n%s", w, want, ln, plain)
+		}
+	}
+}
+
+// TestInlineMathNoColor checks the color.NoColor coupling: a line containing
+// inline math emits zero escape bytes while still approximating the formula and
+// hiding the "$" delimiters.
+func TestInlineMathNoColor(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+	got := highlightInline("the value $x^2$ matters")
+	if strings.Contains(got, "\x1b") {
+		t.Errorf("NoColor inline math emitted escape codes:\n%q", got)
+	}
+	if got != "the value x² matters" {
+		t.Errorf("NoColor inline math = %q, want %q", got, "the value x² matters")
+	}
+}
+
+// A single-line display formula "$$x$$" must pass through verbatim: the inline
+// $ path must not eat its inner "$x$" (P2 will render display math; until then
+// the raw source is left intact).
+func TestInlineMathLeavesDisplayFence(t *testing.T) {
+	for _, in := range []string{"$$x$$", "$$x^2$$", "$$a + b$$", "$$"} {
+		out := stripANSI(renderMD(t, in+"\n\n"))
+		if !strings.Contains(out, in) {
+			t.Fatalf("display fence mangled: %q → %q", in, strings.TrimSpace(out))
+		}
+	}
+}
