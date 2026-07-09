@@ -14,8 +14,13 @@ import "strings"
 //	x^2, e^{-x}, a_i, x_{ij}  -> super/subscript runes when every char in the
 //	                             script has a glyph, else linear "^2" / "_ij"
 //	\frac{a}{b}               -> "a/b" (multi-token parts parenthesized)
+//	\binom{n}{k}              -> "C(n, k)" (2D binomial punts to this linear form)
 //	\sqrt{x+1}                -> "√(x+1)"  (single atom: "√x")
 //	\text{if }                -> the inner text verbatim
+//	\mathbf{E} \mathrm{d}     -> the inner letters (plain fonts have no glyph)
+//	\mathcal{P} \mathbb{R}    -> "𝒫" / "ℝ" (Unicode math-alphanumeric variant)
+//	\overbrace{x} \phantom{x} -> the inner content (decoration dropped; phantom
+//	                             emits nothing)
 //	\left( \right) \, \; \quad \displaystyle \limits … -> stripped (layout only)
 //	unknown \macro            -> the macro name without the backslash
 func ApproxInline(latex string) string {
@@ -54,19 +59,22 @@ func collapseSpaceRuns(s string) string {
 	return b.String()
 }
 
-// layoutMacros are spacing/style macros that carry no glyph — they are dropped
-// entirely (their argument, if any, is handled by the caller since these take
-// none in the inline subset).
+// layoutMacros are spacing/style macros that carry no glyph and no structural
+// argument — they are dropped entirely so a linear approximation reads as clean
+// math-ish text rather than raw TeX noise. Size prefixes (\big \Big \bigg …),
+// alignment/style directives (\displaystyle \limits \nonumber), and the manual
+// spacings (\quad \qquad, plus the \, \! \: \; control symbols handled in
+// emitMacro) all fall here.
 var layoutMacros = map[string]bool{
 	"left": true, "right": true,
-	"quad": true, "qquad": true,
+	"quad": true, "qquad": true, "enspace": true, "thinspace": true,
 	"displaystyle": true, "textstyle": true, "scriptstyle": true,
-	"limits": true, "nolimits": true,
+	"scriptscriptstyle": true,
+	"limits":            true, "nolimits": true, "nonumber": true, "notag": true,
 	"bigl": true, "bigr": true, "Bigl": true, "Bigr": true,
 	"biggl": true, "biggr": true, "Biggl": true, "Biggr": true,
 	"big": true, "Big": true, "bigg": true, "Bigg": true,
-	"mathrm": true, "mathbf": true, "mathit": true, "mathsf": true,
-	"boldsymbol": true, "operatorname": false, // operatorname handled specially
+	"bigm": true, "Bigm": true, "biggm": true, "Biggm": true,
 }
 
 // approx is the recursive single-line approximator over a math fragment.
@@ -125,17 +133,43 @@ func emitMacro(b *strings.Builder, r []rune, i int) int {
 	switch name {
 	case "frac", "tfrac", "dfrac", "cfrac":
 		return emitFrac(b, r, next)
+	case "binom", "dbinom", "tbinom":
+		return emitBinom(b, r, next)
 	case "sqrt":
 		return emitSqrt(b, r, next)
-	case "text", "textrm", "textbf", "textit", "mathrm", "mathbf", "mathit",
-		"mathsf", "mathtt", "boldsymbol", "operatorname":
+	case "text", "textrm", "textbf", "textit", "textnormal", "textsf", "texttt",
+		"mathrm", "mathbf", "mathit", "mathsf", "mathtt", "mathnormal",
+		"boldsymbol", "bm", "operatorname":
+		// \text{…} and the plain math fonts unwrap to their inner content: the
+		// glyph layout carries no SGR, so bold/italic/upright all read the same.
 		return emitTextArg(b, r, next)
 	case "hat", "bar", "vec", "tilde", "dot", "ddot", "widehat", "widetilde",
-		"overline", "underline":
+		"overline", "underline", "acute", "grave", "check", "breve",
+		"mathring", "overrightarrow", "overleftarrow":
 		// Accents cannot be drawn inline without a combining mark (which is
 		// forbidden), so P1 renders just the base argument, e.g. \vec{v} -> "v".
 		// Faithful accent stacking is deferred to the 2D engine (P2/P3).
 		return emitTextArg(b, r, next)
+	case "overbrace", "underbrace", "overbracket", "underbracket",
+		"overset", "underset", "boxed", "mbox", "hbox":
+		// Annotation/box wrappers the 2D engine punts to fallback: for the linear
+		// approximation, unwrap to the (approximated) inner content and drop the
+		// decoration rather than leak the macro name. \overset/\underset take two
+		// groups (annotation + base); readArg in emitTextArg consumes the first,
+		// the second is then scanned by the main loop, so both survive.
+		return emitTextArg(b, r, next)
+	case "phantom", "hphantom", "vphantom":
+		// Invisible spacing: consume the argument and emit nothing.
+		_, next := readArg(r, next)
+		return next
+	}
+
+	if _, ok := mathFontStyle(name); ok {
+		// A styled math font (\mathcal \mathbb \mathfrak) with a real Unicode
+		// alphanumeric variant: transform the inner group so \mathcal{P} -> "𝒫",
+		// matching the 2D layout instead of leaking the raw name. StylePlain fonts
+		// were already handled by the text-arg case above.
+		return emitFontArg(b, name, r, next)
 	}
 
 	if layoutMacros[name] {
@@ -282,6 +316,21 @@ func fracPart(arg string) string {
 	return "(" + s + ")"
 }
 
+// emitBinom handles \binom{n}{k} (and \dbinom/\tbinom) at r[i] (just past the
+// macro name). The 2D engine punts binomial coefficients to this linear
+// fallback; rather than the unreadable "binomnk" the unknown-macro path would
+// produce, it renders the widely-recognized "C(n, k)" form.
+func emitBinom(b *strings.Builder, r []rune, i int) int {
+	top, i := readArg(r, i)
+	bot, i := readArg(r, i)
+	b.WriteString("C(")
+	b.WriteString(approx(top))
+	b.WriteString(", ")
+	b.WriteString(approx(bot))
+	b.WriteByte(')')
+	return i
+}
+
 // emitSqrt handles \sqrt{x} (and \sqrt[n]{x}) at r[i]. It renders "√(x)" for a
 // compound radicand and "√x" for a single atom. An optional index [n] is
 // rendered inline as a leading superscript-ish note is avoided; instead it is
@@ -302,12 +351,24 @@ func emitSqrt(b *strings.Builder, r []rune, i int) int {
 	return i
 }
 
-// emitTextArg handles \text{…} and font macros: it emits the inner content
-// approximated (for \text this is verbatim prose; for math-font macros the
-// inner is still math, so approx keeps symbols working).
+// emitTextArg handles \text{…}, plain font, accent, and annotation macros: it
+// emits the inner content approximated (for \text this is verbatim prose; for
+// math-font macros the inner is still math, so approx keeps symbols working).
 func emitTextArg(b *strings.Builder, r []rune, i int) int {
 	arg, i := readArg(r, i)
 	b.WriteString(approx(arg))
+	return i
+}
+
+// emitFontArg handles a styled math-font macro (\mathcal \mathbb \mathfrak): it
+// approximates the inner group, then maps every ASCII letter/digit to its
+// Unicode math-alphanumeric variant so \mathcal{P} reads as "𝒫" — the same glyph
+// the 2D layout draws. An unmapped rune degrades to itself, so the call never
+// fails. name is known to be a font macro (mathFontStyle reported ok).
+func emitFontArg(b *strings.Builder, name string, r []rune, i int) int {
+	style, _ := mathFontStyle(name)
+	arg, i := readArg(r, i)
+	b.WriteString(applyMathFont(style, approx(arg)))
 	return i
 }
 

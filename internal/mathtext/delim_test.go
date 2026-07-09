@@ -1,6 +1,9 @@
 package mathtext
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestFindInlineDollar(t *testing.T) {
 	src := "the value $x^2$ is nice"
@@ -99,16 +102,45 @@ func TestStripDelimiters(t *testing.T) {
 	}
 }
 
+// TestCleanSource pins the Phase 3 fallback contract: CleanSource no longer dumps
+// raw TeX but runs the single-line approximation, so greek/operators map to their
+// glyph, \frac becomes a/b, \sqrt becomes √(…), and layout/spacing macros drop.
 func TestCleanSource(t *testing.T) {
 	cases := map[string]string{
-		`$\frac{a}{b}$`:       `\frac{a}{b}`,
-		"$$  a  +   b  $$":    "a + b",
-		`\( x \quad y \)`:     `x \quad y`,
-		"plain   text   here": "plain text here",
+		`$\frac{a}{b}$`:        "a/b",
+		"$$  a  +   b  $$":     "a + b",
+		`\( x \quad y \)`:      "x y",
+		"plain   text   here":  "plain text here",
+		`$\alpha + \beta$`:     "α + β",
+		`\[ \sqrt{b^2-4ac} \]`: "√(b²-4ac)",
 	}
 	for in, want := range cases {
 		if got := CleanSource(in); got != want {
 			t.Errorf("CleanSource(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestCleanSourceOutOfScopeReadable covers the display-math constructs the 2D
+// engine punts to the fallback (\overbrace/\underbrace/\phantom + unknown
+// macros). The fallback must read as math-ish text: NO leftover backslash-macro
+// noise, and greek/frac/sqrt/scripts approximated. These are the formulas that
+// still surface CleanSource in the terminal, so their output is load-bearing.
+func TestCleanSourceOutOfScopeReadable(t *testing.T) {
+	cases := map[string]string{
+		`$$\overbrace{x + y + z}^{n}$$`:                   "x + y + zⁿ",
+		`$$\phantom{x} + \alpha$$`:                        "+ α",
+		`$$\underbrace{a + b}_{\text{sum}}$$`:             "a + bₛᵤₘ",
+		`\[ \frac{-b \pm \sqrt{b^2-4ac}}{2a} \]`:          "(-b ± √(b²-4ac))/2a",
+		`$$\mathcal{P}(S) = \{ T \mid T \subseteq S \}$$`: "𝒫(S) = { T ∣ T ⊆ S }",
+	}
+	for in, want := range cases {
+		got := CleanSource(in)
+		if got != want {
+			t.Errorf("CleanSource(%q) = %q, want %q", in, got, want)
+		}
+		if strings.ContainsRune(got, '\\') {
+			t.Errorf("CleanSource(%q) = %q still contains a backslash (raw TeX leaked)", in, got)
 		}
 	}
 }

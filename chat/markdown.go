@@ -122,6 +122,8 @@ type markdownWriter struct {
 	listBlank bool       // one blank line is held, pending the next line's verdict
 	inQuote   bool       // a blockquote block is buffering
 	quoteBody []string   // buffered inner quote lines (one leading "> "/">" stripped)
+	inMath    bool       // a display-math ($$…$$ / \[…\]) block is buffering
+	mathLines []string   // buffered inner display-math lines (fence lines excluded)
 	lastUnit  mdUnit     // classification of the last emitted unit (spacing state machine)
 	width     int        // width override for block layout; 0 = the terminal width
 	// (a blockquote renders its inner content through a child writer whose width
@@ -133,6 +135,7 @@ type markdownWriter struct {
 	codeView  *promptui.StreamView
 	listView  *promptui.StreamView
 	quoteView *promptui.StreamView
+	mathView  *promptui.StreamView
 }
 
 func newMarkdownWriter(w io.Writer) *markdownWriter {
@@ -217,6 +220,46 @@ func (m *markdownWriter) Write(p []byte) (int, error) {
 			}
 		}
 
+		// A buffering display-math block consumes lines until its closing fence
+		// ("$$" or "\]"), then renders the 2D layout. Placed after the quote
+		// check and before the table check, mirroring the fenced-code block.
+		if m.inMath {
+			if mathtext.IsDisplayClose(line) {
+				if err := m.flushMath(); err != nil {
+					return len(p), err
+				}
+			} else {
+				m.mathAppend(line)
+			}
+			continue
+		}
+
+		// Open a display-math block: a bare "$$"/"\[" fence starts a buffered
+		// multi-line block, while a complete one-line "$$…$$"/"\[…\]" renders at
+		// once. Either form first flushes a pending table/list (a display formula
+		// is its own block unit); the quote path already flushed above.
+		if body, oneLine, ok := mathtext.DisplayOpen(line); ok {
+			if len(m.tableRows) > 0 {
+				if err := m.flushTable(); err != nil {
+					return len(p), err
+				}
+			}
+			if m.inList {
+				if err := m.finishList(); err != nil {
+					return len(p), err
+				}
+			}
+			if oneLine {
+				m.mathLines = []string{body}
+				if err := m.flushMath(); err != nil {
+					return len(p), err
+				}
+			} else {
+				m.startMath()
+			}
+			continue
+		}
+
 		if isTableLine(line) {
 			if len(m.tableRows) == 0 {
 				m.tableView = newBlockPreview(m.w, "rendering table…")
@@ -283,6 +326,19 @@ func (m *markdownWriter) Flush() {
 		}
 		m.inFence = false
 		m.flushCode()
+		return
+	}
+	if m.inMath {
+		// Unterminated display-math block: render what we buffered (a partial
+		// trailing line still inside the block continues it).
+		if len(m.buf) > 0 {
+			line := string(m.buf)
+			m.buf = nil
+			if !mathtext.IsDisplayClose(line) {
+				m.mathAppend(line)
+			}
+		}
+		m.flushMath()
 		return
 	}
 	if m.inList {
@@ -1262,6 +1318,76 @@ func (m *markdownWriter) flushCode() error {
 	_, err := io.WriteString(m.w, highlightCode(code, lang))
 	m.endBlock() // the rendered code block is a block unit
 	return err
+}
+
+// startMath opens a buffered display-math block. Its inner lines are collected
+// until the closing fence, then laid out in 2D by flushMath.
+func (m *markdownWriter) startMath() {
+	m.inMath = true
+	m.mathLines = nil
+	m.mathView = newBlockPreview(m.w, "rendering math…")
+}
+
+// mathAppend buffers one inner display-math line and mirrors the raw line into
+// the live preview.
+func (m *markdownWriter) mathAppend(line string) {
+	m.mathLines = append(m.mathLines, line)
+	if m.mathView != nil {
+		io.WriteString(m.mathView, line+"\n")
+	}
+}
+
+// mathIndent is the uniform left margin added to every rendered display-math
+// row, matching the code block's indent so formulas and code sit on the same
+// left rule.
+const mathIndent = "  "
+
+// flushMath clears the live preview and emits the buffered display-math block as
+// a 2D layout (mathtext.Render2D). It mirrors flushCode: beginBlock/endBlock make
+// the formula a block unit with one blank line above and below, and it rides the
+// quote child writer's width override so math inside a blockquote fits inside the
+// bar. When the formula cannot be parsed/laid out, Render2D returns the cleaned
+// single-line Unicode approximation (the same ApproxInline the inline `$…$` path
+// uses); either way the result is plain math text.
+//
+// The fallback is rendered in NORMAL color, exactly like the 2D layout — it is
+// still the reader's formula, and dimming legible content only hurts readability
+// (dim is reserved for decoration: quote bars, bullets, rules, URLs). Both
+// outcomes are glyph-based and carry no ANSI of their own, so under
+// color.NoColor the whole block stays escape-free.
+func (m *markdownWriter) flushMath() error {
+	if m.mathView != nil {
+		m.mathView.Done("") // clear the live preview before emitting the block
+		m.mathView = nil
+	}
+	lines := m.mathLines
+	m.mathLines = nil
+	m.inMath = false
+
+	src := strings.Join(lines, "\n")
+	if strings.TrimSpace(src) == "" {
+		return nil // an empty $$ block renders nothing (mirrors flushQuote)
+	}
+	if err := m.beginBlock(); err != nil {
+		return err
+	}
+	// A full 2D layout (ok=true) or the single-line fallback (ok=false) both
+	// render the same way: plain, per-row indented, undimmed.
+	block, _ := mathtext.Render2D(src, m.termWidth()-len(mathIndent))
+	_, err := io.WriteString(m.w, indentMath(block))
+	m.endBlock() // the rendered math block is a block unit
+	return err
+}
+
+// indentMath prefixes every row of a 2D layout with mathIndent. The layout is
+// plain (no ANSI), so the indent never inherits a style.
+func indentMath(s string) string {
+	s = strings.TrimSuffix(s, "\n")
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		lines[i] = mathIndent + lines[i]
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 // codeIndent is the uniform left margin added to every rendered code-block line,

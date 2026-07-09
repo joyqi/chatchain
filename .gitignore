@@ -34,3 +34,5 @@ go.work.sum
 .chatchain.*
 .claude/
 CLAUDE.md
+BRAIN.md
+.mindmux/

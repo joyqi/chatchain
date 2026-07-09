@@ -151,6 +151,46 @@ func IsDisplayFence(line string) bool {
 	return t == "$$" || t == `\[` || t == `\]`
 }
 
+// DisplayOpen reports whether the trimmed line opens a display-math block:
+// either the bare fence "$$" or "\[" on its own line (the multi-line form), or a
+// complete one-line formula "$$…$$" / "\[…\]". It returns the inner body (empty
+// for the bare-fence multi-line form) and whether the formula is complete on
+// this single line (oneLine). The markdown Write loop uses it to decide between
+// buffering until a closing fence and rendering a one-liner immediately.
+//
+// A bare "\]" or a lone "$$" closing an already-open block is NOT an opener; the
+// caller tracks open state separately (a "$$" is ambiguous open/close, resolved
+// by that state). DisplayOpen only classifies a line as a potential OPENER.
+func DisplayOpen(line string) (body string, oneLine, ok bool) {
+	t := strings.TrimSpace(line)
+	// One-line dollar form: "$$ … $$" with a non-empty middle.
+	if strings.HasPrefix(t, "$$") && strings.HasSuffix(t, "$$") && len(t) > 4 {
+		inner := strings.TrimSpace(t[2 : len(t)-2])
+		if inner != "" {
+			return inner, true, true
+		}
+	}
+	// One-line bracket form: "\[ … \]".
+	if strings.HasPrefix(t, `\[`) && strings.HasSuffix(t, `\]`) && len(t) > 4 {
+		inner := strings.TrimSpace(t[2 : len(t)-2])
+		if inner != "" {
+			return inner, true, true
+		}
+	}
+	// Multi-line openers: a bare "$$" or "\[" on its own line.
+	if t == "$$" || t == `\[` {
+		return "", false, true
+	}
+	return "", false, false
+}
+
+// IsDisplayClose reports whether the trimmed line closes an open display-math
+// block: a bare "$$" or "\]" on its own line.
+func IsDisplayClose(line string) bool {
+	t := strings.TrimSpace(line)
+	return t == "$$" || t == `\]`
+}
+
 // StripDelimiters removes a surrounding math delimiter pair from body when
 // present, returning the inner text. It handles $$...$$, $...$, \[...\], and
 // \(...\); text without a recognized pair is returned unchanged (trimmed).
@@ -171,32 +211,20 @@ func StripDelimiters(body string) string {
 	return s
 }
 
-// CleanSource returns a readable linear fallback for a LaTeX fragment that the
-// approximation cannot improve: it strips any surrounding delimiter pair and
-// collapses runs of whitespace to single spaces, leaving the LaTeX otherwise
-// intact. It is pure and deterministic — the graceful degradation path.
+// CleanSource returns a readable linear fallback for a display formula that the
+// 2D engine could not lay out (an unsupported Tier-3 construct, a malformed
+// group). Rather than dump raw TeX, it runs the same single-line approximation
+// the inline path uses (ApproxInline): greek/operators map to their Unicode
+// glyph, \frac{a}{b} becomes "a/b", \sqrt{x} becomes "√(x)", scripts use
+// super/subscript runes where they exist, \text{…}/\mathbf{…}/\mathcal{…} unwrap
+// to their inner text, layout/size/spacing macros drop, and an unknown macro
+// keeps its name without the backslash. The goal is that even an unrenderable
+// formula shows readable "√(b²-4ac)"-style text, never "\sqrt{b^2-4ac}".
+//
+// It delegates to ApproxInline so the display fallback and inline math share one
+// linear renderer; ApproxInline already strips a surrounding delimiter pair,
+// guarantees a single physical line, and never emits a combining mark. Pure and
+// deterministic — the graceful degradation path.
 func CleanSource(latex string) string {
-	return collapseSpaces(StripDelimiters(latex))
-}
-
-// collapseSpaces trims s and replaces every run of ASCII/Unicode whitespace
-// with a single space, producing a single-line string.
-func collapseSpaces(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	space := false
-	started := false
-	for _, r := range s {
-		if r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\f' || r == '\v' {
-			space = true
-			continue
-		}
-		if space && started {
-			b.WriteByte(' ')
-		}
-		b.WriteRune(r)
-		space = false
-		started = true
-	}
-	return b.String()
+	return ApproxInline(latex)
 }

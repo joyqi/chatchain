@@ -95,6 +95,10 @@ var opSymbols = map[string]rune{
 	"gg":     '≫', // U+226B
 	"perp":   '⊥', // U+22A5
 	"angle":  '∠', // U+2220
+	"mid":    '∣', // U+2223 (divides / "such that" bar)
+	"nmid":   '∤', // U+2224
+	"asymp":  '≍', // U+224D
+	"doteq":  '≐', // U+2250
 
 	// set theory / logic
 	"in":       '∈', // U+2208
@@ -145,6 +149,17 @@ var opSymbols = map[string]rune{
 	"cdots": '⋯', // U+22EF
 	"vdots": '⋮', // U+22EE
 	"ddots": '⋱', // U+22F1
+
+	// bare delimiter macros: outside \left…\right these are ordinary glyphs.
+	// Without them a lone \langle would leak its raw macro name into the linear
+	// fallback (the auto-sizing pair is handled separately in the parser).
+	"langle":    '⟨',  // U+27E8
+	"rangle":    '⟩',  // U+27E9
+	"lfloor":    '⌊',  // U+230A
+	"rfloor":    '⌋',  // U+230B
+	"lceil":     '⌈',  // U+2308
+	"rceil":     '⌉',  // U+2309
+	"backslash": '\\', // U+005C
 
 	// misc named symbols
 	"prime": '′', // U+2032
@@ -274,4 +289,156 @@ func superscriptRune(r rune) (rune, bool) {
 func subscriptRune(r rune) (rune, bool) {
 	g, ok := subscriptTable[r]
 	return g, ok
+}
+
+// AccentKind selects the glyph an Accent node draws in a row ABOVE its base.
+// Every kind is a normal spacing glyph (uniseg width 1) — NEVER a combining
+// mark (U+0300–U+036F): the accent is a drawn row, like the sqrt vinculum.
+type AccentKind int
+
+const (
+	AccentHat   AccentKind = iota // \hat   -> '^'  (U+005E, ASCII circumflex)
+	AccentBar                     // \bar/\overline -> drawn '─' (U+2500) full width
+	AccentVec                     // \vec   -> '→'  (U+2192 rightwards arrow)
+	AccentTilde                   // \tilde -> '~'  (U+007E ASCII tilde)
+	AccentDot                     // \dot   -> '·'  (U+00B7 middle dot)
+	AccentDdot                    // \ddot  -> '··' (two U+00B7 middle dots)
+)
+
+// accentGlyph returns the drawn accent glyph for a kind and whether it spans the
+// FULL width of the base (a bar) or is a single centered mark. Every glyph is a
+// spacing character verified against Unicode; none is in U+0300–U+036F. The
+// AccentBar case returns "" because its glyph is the full-width drawn rule (the
+// layout uses AccentBar's row-fill, not a single glyph).
+func accentGlyph(k AccentKind) (glyph string, fullWidth bool) {
+	switch k {
+	case AccentHat:
+		return "^", false // U+005E
+	case AccentBar:
+		return "", true // full-width drawn ─ (U+2500)
+	case AccentVec:
+		return "→", false // →
+	case AccentTilde:
+		return "~", false // U+007E
+	case AccentDot:
+		return "·", false // ·
+	case AccentDdot:
+		return "··", false // ··
+	default:
+		return "^", false
+	}
+}
+
+// MathStyle selects a Unicode math-alphanumeric variant for a math-font macro
+// (\mathbb, \mathcal, \mathfrak) or the plain style (letters degrade to
+// themselves) for the upright/bold/sans/italic fonts, which the glyph-plain box
+// layout renders without SGR.
+type MathStyle int
+
+const (
+	StylePlain MathStyle = iota // letters unchanged (mathrm/mathbf/mathsf/mathit)
+	StyleBB                     // blackboard bold  (mathbb)  ℝ ℂ ℕ …
+	StyleCal                    // calligraphic     (mathcal) 𝒜 …
+	StyleFrak                   // fraktur          (mathfrak) 𝔄 …
+)
+
+// blackboardBold maps an ASCII letter to its blackboard-bold code point. Most
+// letters live in the contiguous Mathematical Alphanumeric Symbols block
+// (U+1D538 A … / U+1D552 a …), but a handful of uppercase letters were unified
+// into the Letterlike Symbols block long before that block existed and have
+// "holes" at the systematic position — those (C H N P Q R Z) use the legacy
+// code point. Verified against the Unicode Character Database.
+var blackboardBold = map[rune]rune{
+	'C': 'ℂ', // ℂ
+	'H': 'ℍ', // ℍ
+	'N': 'ℕ', // ℕ
+	'P': 'ℙ', // ℙ
+	'Q': 'ℚ', // ℚ
+	'R': 'ℝ', // ℝ
+	'Z': 'ℤ', // ℤ
+}
+
+// calligraphicHoles / frakturHoles hold the Letterlike-Symbols exceptions where
+// the systematic Mathematical Alphanumeric Symbols position is unassigned and a
+// legacy code point must be used instead. Verified against the UCD.
+var calligraphicHoles = map[rune]rune{
+	'B': 'ℬ', // ℬ
+	'E': 'ℰ', // ℰ
+	'F': 'ℱ', // ℱ
+	'H': 'ℋ', // ℋ
+	'I': 'ℐ', // ℐ
+	'L': 'ℒ', // ℒ
+	'M': 'ℳ', // ℳ
+	'R': 'ℛ', // ℛ
+	'e': 'ℯ', // ℯ
+	'g': 'ℊ', // ℊ
+	'o': 'ℴ', // ℴ
+}
+
+var frakturHoles = map[rune]rune{
+	'C': 'ℭ', // ℭ
+	'H': 'ℌ', // ℌ
+	'I': 'ℑ', // ℑ
+	'R': 'ℜ', // ℜ
+	'Z': 'ℨ', // ℨ
+}
+
+// mathFontRune maps an ASCII letter to its Unicode math-alphanumeric variant for
+// the given style. For a style with no dedicated glyph (StylePlain) or an input
+// that is not an ASCII letter, it returns r unchanged: an unmapped letter always
+// degrades to itself, so a math-font macro never triggers a fallback. The
+// systematic ranges are the Mathematical Alphanumeric Symbols block; the
+// exception maps above cover the Letterlike-Symbols holes.
+func mathFontRune(style MathStyle, r rune) rune {
+	switch style {
+	case StyleBB:
+		if g, ok := blackboardBold[r]; ok {
+			return g
+		}
+		if r >= 'A' && r <= 'Z' {
+			return 0x1D538 + (r - 'A') // 𝔸 …
+		}
+		if r >= 'a' && r <= 'z' {
+			return 0x1D552 + (r - 'a') // 𝕒 …
+		}
+		if r >= '0' && r <= '9' {
+			return 0x1D7D8 + (r - '0') // 𝟘 …
+		}
+	case StyleCal:
+		if g, ok := calligraphicHoles[r]; ok {
+			return g
+		}
+		if r >= 'A' && r <= 'Z' {
+			return 0x1D49C + (r - 'A') // 𝒜 …
+		}
+		if r >= 'a' && r <= 'z' {
+			return 0x1D4B6 + (r - 'a') // 𝒶 …
+		}
+	case StyleFrak:
+		if g, ok := frakturHoles[r]; ok {
+			return g
+		}
+		if r >= 'A' && r <= 'Z' {
+			return 0x1D504 + (r - 'A') // 𝔄 …
+		}
+		if r >= 'a' && r <= 'z' {
+			return 0x1D51E + (r - 'a') // 𝔞 …
+		}
+	}
+	return r
+}
+
+// applyMathFont maps every ASCII letter (and, for blackboard, digit) of s to its
+// math-alphanumeric variant for the style, leaving any other rune untouched. The
+// result stays a plain glyph string (no SGR), so the box layout draws it
+// verbatim; an unmapped rune passes through so the call never fails.
+func applyMathFont(style MathStyle, s string) string {
+	if style == StylePlain {
+		return s
+	}
+	var b []rune
+	for _, r := range s {
+		b = append(b, mathFontRune(style, r))
+	}
+	return string(b)
 }

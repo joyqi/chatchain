@@ -959,14 +959,196 @@ func TestInlineMathNoColor(t *testing.T) {
 	}
 }
 
-// A single-line display formula "$$x$$" must pass through verbatim: the inline
-// $ path must not eat its inner "$x$" (P2 will render display math; until then
-// the raw source is left intact).
+// The inline "$" path must never eat a "$$" display fence: on a line that is a
+// display fence, highlightInline (the INLINE renderer, exercised directly here)
+// leaves the "$$" untouched — the block writer, not the inline path, owns
+// display math. This guards the P1 atomic-skip that keeps a one-line "$$x$$"
+// from being mis-scanned into inline "$x$".
 func TestInlineMathLeavesDisplayFence(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
 	for _, in := range []string{"$$x$$", "$$x^2$$", "$$a + b$$", "$$"} {
-		out := stripANSI(renderMD(t, in+"\n\n"))
-		if !strings.Contains(out, in) {
-			t.Fatalf("display fence mangled: %q → %q", in, strings.TrimSpace(out))
+		got := highlightInline(in)
+		if !strings.Contains(got, "$$") {
+			t.Fatalf("inline path ate the display fence: %q → %q", in, got)
+		}
+	}
+}
+
+// renderMDChunked feeds src to a markdownWriter in fixed-size byte chunks (to
+// exercise the streaming path where a fence or formula line arrives split
+// across Write calls) and returns the visible output.
+func renderMDChunked(t *testing.T, src string, chunk int) string {
+	t.Helper()
+	var out strings.Builder
+	m := newMarkdownWriter(&out)
+	b := []byte(src)
+	for i := 0; i < len(b); i += chunk {
+		end := i + chunk
+		if end > len(b) {
+			end = len(b)
+		}
+		if _, err := m.Write(b[i:end]); err != nil {
+			t.Fatalf("Write chunk: %v", err)
+		}
+	}
+	m.Flush()
+	return visible(out.String())
+}
+
+// TestDisplayMathBlockMultiline checks a multi-line $$…$$ block renders as a 2D
+// layout bounded by one blank line above and below (a block unit), with the
+// fraction stacked over a drawn bar.
+func TestDisplayMathBlockMultiline(t *testing.T) {
+	color.NoColor = false
+	assertLines(t, renderMD(t, "before\n$$\n\\frac{a}{b}\n$$\nafter\n"), []string{
+		"before",
+		"",
+		"  a",
+		"  ─",
+		"  b",
+		"",
+		"after",
+	})
+}
+
+// TestDisplayMathOneLine checks the one-line "$$…$$" form renders the same 2D
+// block as the multi-line fence form.
+func TestDisplayMathOneLine(t *testing.T) {
+	color.NoColor = false
+	assertLines(t, renderMD(t, "$$\\frac{a}{b}$$\n"), []string{
+		"  a",
+		"  ─",
+		"  b",
+	})
+}
+
+// TestDisplayMathBracketFence checks the "\[ … \]" fence form is recognized.
+func TestDisplayMathBracketFence(t *testing.T) {
+	color.NoColor = false
+	assertLines(t, renderMD(t, "\\[\nx^2\n\\]\n"), []string{
+		"   2",
+		"  x",
+	})
+}
+
+// TestDisplayMathInBlockquote checks a $$ block inside a blockquote fits inside
+// the bar at the reduced inner width, and every rendered row keeps the │ bar.
+func TestDisplayMathInBlockquote(t *testing.T) {
+	color.NoColor = false
+	out := renderMD(t, "> text\n> $$\n> \\frac{a}{b}\n> $$\n")
+	lines := trimmedLines(out)
+	for _, l := range lines {
+		if l == "" {
+			continue
+		}
+		if !strings.HasPrefix(l, "│") {
+			t.Errorf("quoted math row lost its bar: %q\nfull:\n%s", l, out)
+		}
+	}
+	// The fraction rows are inside the quote: the bar, then the indented layout.
+	joined := strings.Join(lines, "\n")
+	for _, frag := range []string{"a", "─", "b"} {
+		if !strings.Contains(joined, frag) {
+			t.Errorf("quoted math lost %q:\n%s", frag, out)
+		}
+	}
+}
+
+// TestDisplayMathUnparseableFallback checks a Tier-3 construct in a $$ block
+// falls back to the cleaned linear source rather than a 2D layout — and that the
+// cleaned source reads as math-ish text (the \overbrace decoration is unwrapped
+// to its inner content) with NO raw backslash-macro noise leaking to the
+// terminal.
+func TestDisplayMathUnparseableFallback(t *testing.T) {
+	color.NoColor = false
+	out := stripANSI(renderMD(t, "$$\n\\overbrace{x+y}\n$$\n"))
+	if !strings.Contains(out, "x+y") {
+		t.Errorf("unparseable math did not fall back to cleaned source:\n%s", out)
+	}
+	if strings.Contains(out, `\overbrace`) || strings.Contains(out, "\\") {
+		t.Errorf("fallback leaked raw TeX to the terminal:\n%s", out)
+	}
+}
+
+// TestDisplayMathUnparseableFallbackReadable checks the improved P3 fallback on a
+// richer out-of-scope formula: an unsupported wrapper around a \frac and greek
+// must surface the approximated "a/b" and glyphs, never the raw "\frac"/"\alpha".
+func TestDisplayMathUnparseableFallbackReadable(t *testing.T) {
+	color.NoColor = false
+	out := stripANSI(renderMD(t, "$$\n\\overbrace{\\frac{a}{b} + \\alpha}\n$$\n"))
+	if !strings.Contains(out, "a/b") {
+		t.Errorf("fallback did not approximate \\frac to a/b:\n%s", out)
+	}
+	if !strings.Contains(out, "α") {
+		t.Errorf("fallback did not map \\alpha to its glyph:\n%s", out)
+	}
+	if strings.Contains(out, `\frac`) || strings.Contains(out, `\alpha`) || strings.Contains(out, `\overbrace`) {
+		t.Errorf("fallback leaked raw TeX macros:\n%s", out)
+	}
+}
+
+// TestDisplayMathFallbackNotFaint checks the linear fallback for a formula the
+// 2D engine can't lay out (\binom has no vertical form) renders in NORMAL color,
+// not dimmed: the approximation is still the reader's formula, and dim is
+// reserved for decoration. The C(n,k) fallback text must carry no faint SGR.
+func TestDisplayMathFallbackNotFaint(t *testing.T) {
+	color.NoColor = false
+	raw := renderMDRaw(t, "$$\n(a+b)^n = \\sum_{k=0}^{n} \\binom{n}{k} a^{n-k} b^k\n$$\n")
+	if sgrParams(raw)["2"] {
+		t.Errorf("display-math fallback is faint (SGR 2 present), want normal foreground:\n%q", raw)
+	}
+	plain := stripANSI(raw)
+	if !strings.Contains(plain, "C(n, k)") {
+		t.Errorf("fallback did not approximate \\binom to C(n, k):\n%s", plain)
+	}
+	if strings.Contains(plain, "binom") || strings.Contains(plain, "\\") {
+		t.Errorf("fallback leaked raw TeX:\n%s", plain)
+	}
+}
+
+// TestDisplayMathStreamingMatchesOneShot checks byte-for-byte that feeding the
+// source in 5-byte chunks produces the same output as one Write.
+func TestDisplayMathStreamingMatchesOneShot(t *testing.T) {
+	color.NoColor = false
+	src := "intro\n$$\n\\frac{x+1}{y}\n$$\ndone\n"
+	oneShot := renderMD(t, src)
+	chunked := renderMDChunked(t, src, 5)
+	if oneShot != chunked {
+		t.Errorf("streaming != one-shot\none-shot:\n%q\nchunked:\n%q", oneShot, chunked)
+	}
+}
+
+// TestDisplayMathNoColorZeroEsc checks that with color.NoColor a display-math
+// block emits zero ANSI escape bytes (the 2D layout is glyph-based).
+func TestDisplayMathNoColorZeroEsc(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+	raw := renderMDRaw(t, "$$\n\\frac{a}{b}\n$$\n")
+	if strings.Contains(raw, "\x1b") {
+		t.Errorf("NoColor display math emitted escape codes:\n%q", raw)
+	}
+	if !strings.Contains(raw, "─") {
+		t.Errorf("NoColor display math lost its bar:\n%q", raw)
+	}
+}
+
+// TestDisplayMathNoCombiningMarks checks that no rendered display block ever
+// contains a Unicode combining mark (U+0300–U+036F) — the hard rule.
+func TestDisplayMathNoCombiningMarks(t *testing.T) {
+	color.NoColor = false
+	srcs := []string{
+		"$$\\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$\n",
+		"$$\n\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}\n$$\n",
+		"$$\\sum_{i=1}^{n} \\frac{1}{i}$$\n",
+	}
+	for _, src := range srcs {
+		out := renderMD(t, src)
+		for _, r := range out {
+			if r >= 0x0300 && r <= 0x036F {
+				t.Errorf("display math emitted a combining mark U+%04X for %q:\n%s", r, src, out)
+				break
+			}
 		}
 	}
 }

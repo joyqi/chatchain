@@ -80,11 +80,16 @@ atoms, binary/relational ops, `\frac`, `^`, `_`, `\sqrt`/`\root`, auto-scaled
 `cases`, `\lim`.
 
 **Drawn shapes, never combining marks** (a load-bearing decision that echoes the
-emoji/CJK-width work): the fraction bar (`─`), vinculum/overline, tall
-delimiters (`⎛⎜⎝`/`⎡⎢⎣`/`⎧⎨⎩`), and tall `∫`/`∑`/`∏` are **drawn across rows**
-from corner+extension pieces — U+0305-style combining marks render unreliably in
-terminals and wreck monospace width. Single-glyph forms (`√`, greek, digit
-super/subscripts) are used only where a real code point exists.
+emoji/CJK-width work): the fraction bar (`─`), overline, tall delimiters
+(`⎛⎜⎝`/`⎡⎢⎣`/`⎧⎨⎩`), tall `∫`/`∑`/`∏`, and the **scalable radical** are **drawn
+across rows** from corner+extension pieces — U+0305-style combining marks render
+unreliably in terminals and wreck monospace width. The display radical is a
+rising `╱` stroke (one per radicand row) climbing from a `╲` base to an
+underscore (`_`) vinculum, so it stays connected however tall the radicand — the
+single-glyph `√` (which cannot grow, leaving a detached "half radical" over a
+multi-row body) is used only in the single-line inline approximation. Greek and
+digit super/subscripts are likewise single-glyph forms, used where a real code
+point exists.
 
 ## Inline approximation (single line)
 
@@ -130,24 +135,59 @@ only, gated by the existing renderer profile.
   into `highlightInline` with all the escaping/currency/code-span edge cases.
   Ships: inline math reads well; complex inline degrades to clean source. Small,
   de-risks the delimiter/edge-case surface before the big engine.
-- **P2 — parser + 2D engine + display blocks.** Port the go-latex parser for the
-  Tier-1 subset; port the stringPict `Box` model + 3 primitives; node renderers
-  for the ~11 types; `Render2D`; buffer `$$`/`\[` display blocks in the Write
-  loop with a preview and the beginBlock/endBlock boundary; unparseable/too-wide
-  → cleaned-source fallback. Ships: the headline stacked fractions / matrices /
-  sums-with-limits.
-- **P3 — coverage + polish (optional).** Tier-2/3 constructs (`\left\right`
-  auto-size edge cases, `cases`, drawn accents `\hat`/`\bar`/`\vec`, `\text{}`,
-  `\binom`, blackboard/cal font substitution), display-block shrink for very wide
-  formulas, and optionally real KaTeX in the `/export` HTML path.
+- **P2 — parser + 2D engine + display blocks.** *(Shipped.)* The recursive-descent
+  parser over the Tier-1 subset (`parse.go`/`macros.go`), the stringPict `Box`
+  model + primitives (`box.go`), the per-node 2D renderers (`layout.go`), and
+  `Render2D` (`render.go`). Display math (`$$…$$` and `\[…\]`, both the multi-line
+  fence form and the one-line form) is buffered in the `markdownWriter.Write`
+  loop with a live "rendering math…" preview and a beginBlock/endBlock boundary
+  (a block unit with one blank line above and below), riding the blockquote child
+  writer's width override; an unparseable formula falls back to the cleaned linear
+  source (a dim line), and a too-wide formula still renders (best-effort overflow,
+  shrink deferred to P3). Every drawn shape (fraction bar, vinculum, tall
+  delimiters, tall integrals) is a box-drawing glyph — never a combining mark.
+  Ships: the headline stacked fractions / roots with a drawn vinculum / matrices /
+  sums-and-integrals with limits.
+- **P3 — coverage + polish.** *(Shipped.)* Broadened the display-math subset so
+  real-world formulas render 2D instead of falling back, and made the remaining
+  fallback readable:
+  - **Drawn accents** — `\hat`/`\bar`/`\vec`/`\tilde`/`\dot`/`\ddot` render as a
+    glyph ROW above the base (an `Accent` node, drawn like the sqrt vinculum),
+    never a combining mark (U+0300–U+036F is absolute-forbidden).
+  - **Named functions & delimiters** — `\exp`/`\log`/`\sin`… as operator names,
+    `\left(…\right)` auto-sizing, literal `\{`/`\}`, `\mid`/`\|` relations,
+    manual spacing (`\,` `\!` `\:` `\;` `\quad` `\qquad`) dropped.
+  - **Math fonts** — `\mathbf`/`\mathrm` degrade to plain letters (the box layout
+    carries no SGR); `\mathbb`/`\mathcal`/`\mathfrak` map to their Unicode
+    math-alphanumeric variant (`\mathcal{P}` → `𝒫`, `\mathbb{R}` → `ℝ`), with the
+    Letterlike-Symbols holes handled.
+  - **Aligned environments** — `aligned`/`align`/`split`/`gathered`/`eqnarray`
+    reuse the `Matrix` node (rows lined up on `&`, no brackets); `\\[4pt]`/`\\*`
+    row-break options are dropped.
+  - **Improved fallback** — `CleanSource` now delegates to the inline
+    approximator (`ApproxInline`) instead of dumping raw TeX. An unrenderable
+    formula surfaces as readable math-ish text: `\frac{a}{b}` → `a/b`, `\sqrt{x}`
+    → `√(x)`, greek/operators → their glyph, scripts → super/subscript runes,
+    `\text{}`/`\mathbf{}`/`\mathcal{}` unwrapped, layout/size/spacing macros
+    stripped, `\overbrace`/`\underbrace`/`\phantom` unwrapped/dropped, and any
+    unknown macro keeps its name without the backslash — never `\sqrt{b^2-4ac}`.
+  - **Cases** — `\begin{cases}…\end{cases}` lays out 2D: rows aligned on `&`
+    (condition column after the value), wrapped in an auto-sized left brace
+    (`⎧⎨⎩`), reusing the `Matrix`/`Delim` machinery. `\binom{n}{k}` is still a
+    linear fallback (`C(n, k)`), not a 2D vertical binomial.
+  - **Still out of scope** (→ clean fallback, not raw): `\overbrace`/`\underbrace`
+    2D braces, `\binom` 2D vertical form, `\phantom` spacing, tensor multi-index,
+    commutative diagrams, continued fractions. Display-block shrink for very wide
+    formulas and real KaTeX in the HTML export path remain deferred.
 
 ## Non-goals
 
 - No graphics-protocol image rendering (Terminal.app can't; heavy deps).
 - No combining-mark stacking (unreliable + width-breaking).
 - Long tail punted to the cleaned-source fallback: commutative diagrams,
-  `\overbrace`/`\underbrace`, tensor multi-index, continued fractions,
-  `align` multi-line environments, `\phantom`/arbitrary spacing.
+  `\overbrace`/`\underbrace` 2D braces, tensor multi-index, continued fractions,
+  `\phantom`/arbitrary spacing. (The `aligned`/`align`/`split`/`gathered`
+  environments now render as of P3 — they are no longer punted.)
 
 ## Testing
 

@@ -29,10 +29,10 @@ func TestToolCallHeader(t *testing.T) {
 		})
 	}
 
-	// Long values are truncated to 40 runes + ellipsis.
+	// Long values are truncated to toolHeaderMaxValue runes + ellipsis.
 	got := toolCallHeader(provider.ToolCall{Name: "x", Arguments: map[string]any{"a": strings.Repeat("z", 100)}})
-	if !strings.Contains(got, strings.Repeat("z", 40)+"…") || strings.Contains(got, strings.Repeat("z", 41)) {
-		t.Errorf("long value not truncated to 40 runes + ellipsis: %q", got)
+	if !strings.Contains(got, strings.Repeat("z", toolHeaderMaxValue)+"…") || strings.Contains(got, strings.Repeat("z", toolHeaderMaxValue+1)) {
+		t.Errorf("long value not truncated to %d runes + ellipsis: %q", toolHeaderMaxValue, got)
 	}
 }
 
