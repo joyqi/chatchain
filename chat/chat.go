@@ -476,7 +476,7 @@ func echoRows(raw string, tw int) int {
 	return rows
 }
 
-func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, contextWindow int, agent AgentOptions, w io.Writer) error {
+func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, contextWindow int, agent AgentOptions, reqLog *RequestLog, w io.Writer) error {
 	// Detect the terminal background now, while it is idle, so the OSC query for
 	// the code-block theme never races user keystrokes mid-stream.
 	detectCodeTheme()
@@ -580,7 +580,7 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 	}
 
 	DimStyle.Fprintln(w, "Chat started. Press Ctrl+C to exit.")
-	DimStyle.Fprintln(w, "Commands: /file [path], /session, /model, /compact, /export, /status, /tools"+agentCommandHint(overlay))
+	DimStyle.Fprintln(w, "Commands: /file [path], /session, /model, /compact, /export, /status, /tools, /debug"+agentCommandHint(overlay))
 	if id := sw.ID(); id != "" {
 		DimStyle.Fprintf(w, "Session: %s\n", id)
 	}
@@ -742,9 +742,15 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		// Expand paste tags: [#1 first few chars... N lines] → full pasted text
 		input = expandPasteTags(input, pf)
 
-		// Wait for any in-flight title generation before touching the provider
-		// or session writer, so the background goroutine never races them.
-		titleWG.Wait()
+		// Wait for any in-flight title generation before touching the provider or
+		// session writer, so the background goroutine never races them. Skipped
+		// for read-only viewers (/debug, /status, /tools, /skills), which touch
+		// neither — otherwise opening one right after the first chat would block
+		// on the ~1s async title request and appear frozen (the console only
+		// opening once the title returns, entries popping in "late").
+		if !isReadOnlyViewer(input) {
+			titleWG.Wait()
+		}
 
 		// Handle commands
 		if input == "/file" || strings.HasPrefix(input, "/file ") {
@@ -835,6 +841,10 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		}
 		if input == "/tools" || strings.HasPrefix(input, "/tools ") {
 			showCapabilities(dispatch, mgr)
+			continue
+		}
+		if input == "/debug" || strings.HasPrefix(input, "/debug ") {
+			manageDebug(reqLog)
 			continue
 		}
 		if overlay != nil && (input == "/skills" || strings.HasPrefix(input, "/skills ")) {
@@ -1008,6 +1018,18 @@ func generateTitle(ctx context.Context, p provider.Provider, firstUser, firstAss
 		sw.SetTitle(title)
 		setTerminalTitle(title)
 	}
+}
+
+// isReadOnlyViewer reports whether input is a command that only opens a
+// read-only viewer — it never calls the provider or mutates the session writer,
+// so it need not wait on background title generation.
+func isReadOnlyViewer(input string) bool {
+	for _, c := range []string{"/debug", "/status", "/tools", "/skills"} {
+		if input == c || strings.HasPrefix(input, c+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 func sanitizeTitle(s string) string {
@@ -1663,11 +1685,17 @@ func reportMCPFailures(mgr *mcpmgr.Manager, rl *readline.Instance) {
 // merged /tools command, with the former /mcp folded into the second tab.
 func showCapabilities(dispatch tool.Dispatcher, mgr *mcpmgr.Manager) {
 	tools := promptui.NewViewPanel("Tools", toolStatusLines(dispatch, mgr))
+	// Both tabs refresh live: MCP servers connect in the background, so the tool
+	// list grows and each server's status flips connecting… → connected/failed
+	// while the viewer is open (LiveRefresh drives the repaint).
+	tools.RefreshFunc = func() []string { return toolStatusLines(dispatch, mgr) }
 	mcp := promptui.NewViewPanel("MCP", mcpStatusLines(mgr))
 	mcp.Wrap = true // the per-server tool list is long — wrap it, like the old /mcp
+	mcp.RefreshFunc = func() []string { return mcpStatusLines(mgr) }
 	tb := &promptui.Tabbed{
-		Panels:    []promptui.Panel{tools, mcp},
-		RuneWidth: runeWidth,
+		Panels:      []promptui.Panel{tools, mcp},
+		RuneWidth:   runeWidth,
+		LiveRefresh: 500 * time.Millisecond,
 	}
 	_, _ = tb.Run()
 }

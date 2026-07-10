@@ -2,21 +2,11 @@ package promptui
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
-func stripANSI(s string) string {
-	var b []byte
-	for i := 0; i < len(s); {
-		if n := ansiLen(s, i); n > 0 {
-			i += n
-			continue
-		}
-		b = append(b, s[i])
-		i++
-	}
-	return string(b)
-}
+// stripANSI lives in clipboard.go (production); tests reuse it.
 
 func TestWrapLine(t *testing.T) {
 	if got := wrapLine("0123456789", 4); !reflect.DeepEqual(got, []string{"0123", "4567", "89"}) {
@@ -138,5 +128,25 @@ func TestClipLine(t *testing.T) {
 				t.Errorf("clipLine(%q, %d, %d) = %q, want %q", tt.in, tt.start, tt.width, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestTruncateANSI: plain strings behave like truncate; styled strings never
+// miscount escapes as width and close a mid-style cut with a reset.
+func TestTruncateANSI(t *testing.T) {
+	one := func(rune) int { return 1 }
+	if got := truncateANSI("abcdef", 4, one); got != "abc…" {
+		t.Errorf("plain = %q, want abc…", got)
+	}
+	if got := truncateANSI("abc", 5, one); got != "abc" {
+		t.Errorf("short (no cut) = %q, want abc", got)
+	}
+	styled := "\x1b[4mabcdef\x1b[0m" // underlined "abcdef", 6 visible cols
+	got := truncateANSI(styled, 4, one)
+	if !strings.HasPrefix(got, "\x1b[4mabc") || !strings.HasSuffix(got, "\x1b[0m…") {
+		t.Errorf("styled cut malformed: %q", got)
+	}
+	if vis := stripANSI(got); vis != "abc…" {
+		t.Errorf("visible content = %q, want abc…", vis)
 	}
 }

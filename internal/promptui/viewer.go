@@ -3,6 +3,7 @@ package promptui
 import (
 	"io"
 	"os"
+	"strings"
 	"unicode/utf8"
 
 	"chatchain/internal/promptui/screenbuf"
@@ -244,6 +245,57 @@ func ansiLen(s string, i int) int {
 		j++ // include the final byte
 	}
 	return j - i
+}
+
+// hasANSI reports whether s carries any ANSI CSI escape sequence.
+func hasANSI(s string) bool { return strings.Contains(s, "\x1b[") }
+
+// truncateANSI clips s to at most width VISIBLE columns (per rw, so CJK counts
+// as two), preserving ANSI escapes and appending "…" when it had to cut. Unlike
+// truncate it never miscounts an escape as visible width, so styled rows keep
+// their true width. A cut inside a styled span is closed with a reset so the
+// color/underline never bleeds into the rest of the line; a plain string gets no
+// spurious escapes (keeping NoColor output escape-free).
+func truncateANSI(s string, width int, rw func(rune) int) string {
+	if width <= 0 {
+		return ""
+	}
+	styled, visible := false, 0
+	for i := 0; i < len(s); {
+		if n := ansiLen(s, i); n > 0 {
+			styled = true
+			i += n
+			continue
+		}
+		r, sz := utf8.DecodeRuneInString(s[i:])
+		visible += rw(r)
+		i += sz
+	}
+	if visible <= width {
+		return s
+	}
+	limit, col := width-1, 0
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if n := ansiLen(s, i); n > 0 {
+			b.WriteString(s[i : i+n])
+			i += n
+			continue
+		}
+		r, sz := utf8.DecodeRuneInString(s[i:])
+		w := rw(r)
+		if col+w > limit {
+			break
+		}
+		b.WriteString(s[i : i+sz])
+		col += w
+		i += sz
+	}
+	if styled {
+		b.WriteString("\x1b[0m")
+	}
+	b.WriteString("…")
+	return b.String()
 }
 
 // wrapLine soft-wraps s into rows of at most width visible columns, ANSI- and

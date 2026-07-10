@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"chatchain/internal/promptui/screenbuf"
 	"chatchain/internal/readline"
@@ -44,6 +46,10 @@ type Tabbed struct {
 	// Size caps the number of body rows shown before a panel scrolls. Defaults
 	// to 15.
 	Size int
+	// LiveRefresh, if > 0, repaints the UI on a background ticker at that interval
+	// so a panel with a RefreshFunc shows new data while the user is idle (e.g.
+	// the /debug request log filling in). Off (0) by default.
+	LiveRefresh time.Duration
 
 	focused int
 }
@@ -94,11 +100,18 @@ func (t *Tabbed) Run() (int, error) {
 		width = 80
 	}
 
+	// renderMu serializes the listener's repaints (keypress) against the optional
+	// background LiveRefresh ticker, so the two never write the screen buffer or
+	// touch panel state at the same time.
+	var renderMu sync.Mutex
+
 	// The listener owns all in-place drawing: it applies the key to the focused
 	// panel (Tab / Shift+Tab switch tabs and never reach the panel), then repaints
 	// the whole UI. Enter is special — readline returns from Readline() without
 	// invoking the listener — so it is handled in the loop below instead.
 	c.SetListener(func(line []rune, pos int, key rune) ([]rune, int, bool) {
+		renderMu.Lock()
+		defer renderMu.Unlock()
 		switch key {
 		case 0: // initial invocation (nil, 0, 0)
 		case readline.CharTab:
@@ -113,6 +126,30 @@ func (t *Tabbed) Run() (int, error) {
 		// runes (j/k/Space/…) never accumulate under our own rendering.
 		return nil, 0, true
 	})
+
+	// Background repaint: while the user sits idle in a live view, re-render on a
+	// ticker so a RefreshFunc-backed panel picks up new rows. It is stopped and
+	// joined right after the input loop (before the screen teardown below), so no
+	// repaint races the buffer reset or the caller reading panel state.
+	var stopTick, tickDone chan struct{}
+	if t.LiveRefresh > 0 {
+		stopTick, tickDone = make(chan struct{}), make(chan struct{})
+		go func() {
+			defer close(tickDone)
+			tk := time.NewTicker(t.LiveRefresh)
+			defer tk.Stop()
+			for {
+				select {
+				case <-stopTick:
+					return
+				case <-tk.C:
+					renderMu.Lock()
+					t.render(sb, width, size)
+					renderMu.Unlock()
+				}
+			}
+		}()
+	}
 
 	for {
 		_, rerr := rl.Readline()
@@ -129,12 +166,25 @@ func (t *Tabbed) Run() (int, error) {
 		}
 		// Enter: give the focused panel a chance to consume it (e.g. BrowserPanel
 		// descends into a directory). If it does, redraw and keep looping;
-		// otherwise the selection is committed.
-		if t.Panels[t.focused].HandleKey(KeyEnter) {
+		// otherwise the selection is committed. Held under renderMu so the Enter
+		// repaint never races the background ticker.
+		renderMu.Lock()
+		consumed := t.Panels[t.focused].HandleKey(KeyEnter)
+		if consumed {
 			t.render(sb, width, size)
+		}
+		renderMu.Unlock()
+		if consumed {
 			continue
 		}
 		break
+	}
+
+	// Stop the background repaint and wait for it to exit before tearing down the
+	// screen, so no in-flight render touches sb after this point.
+	if stopTick != nil {
+		close(stopTick)
+		<-tickDone
 	}
 
 	sb.Reset()
@@ -163,6 +213,13 @@ func (t *Tabbed) render(sb *screenbuf.ScreenBuf, width, size int) {
 	hint := "↑↓ move · ←→ page · Space toggle · Enter confirm · q/Esc cancel"
 	if h, ok := t.Panels[t.focused].(interface{ HelpHint() string }); ok {
 		hint = h.HelpHint()
+	}
+	// A scrollable panel appends its scroll position, so the user knows how far
+	// through a long list/view they are.
+	if sp, ok := t.Panels[t.focused].(interface{ ScrollPercent() (int, bool) }); ok {
+		if pct, scrollable := sp.ScrollPercent(); scrollable {
+			hint = fmt.Sprintf("%s · %d%%", hint, pct)
+		}
 	}
 	sb.WriteString(FGFaintStyle("Tab switch · " + hint))
 	sb.Flush()
@@ -240,12 +297,18 @@ type ListPanel struct {
 	Items []string
 	// Multi turns the list into a checkbox multi-select.
 	Multi bool
+	// RefreshFunc, if set, is called at the start of every Render to refresh
+	// Items from a live source (e.g. a request log). The cursor is clamped to the
+	// new bounds. Combined with a container repaint this shows new rows without
+	// rebuilding the panel.
+	RefreshFunc func() []string
 	// RuneWidth returns a rune's display width (CJK = 2); nil means 1 per rune.
 	RuneWidth func(rune) int
 
 	cursor  int
 	scroll  int
 	height  int // last body height Render saw, for page up/down
+	visible int // items that fit that height (accounts for Spaced)
 	checked map[int]bool
 }
 
@@ -300,11 +363,24 @@ func (p *ListPanel) HandleKey(key rune) (consumed bool) {
 // window scrolls to keep the cursor in view.
 func (p *ListPanel) Render(width, height int) []string {
 	p.height = height
+	if p.RefreshFunc != nil {
+		p.Items = p.RefreshFunc()
+		if p.cursor > len(p.Items)-1 {
+			p.cursor = len(p.Items) - 1
+		}
+		if p.cursor < 0 {
+			p.cursor = 0
+		}
+	}
 	if len(p.Items) == 0 {
 		return []string{FGFaintStyle("  (empty)")}
 	}
-	p.reScroll(height)
-	end := p.scroll + height
+	p.visible = height
+	if p.visible < 1 {
+		p.visible = 1
+	}
+	p.reScroll(p.visible)
+	end := p.scroll + p.visible
 	if end > len(p.Items) {
 		end = len(p.Items)
 	}
@@ -318,24 +394,32 @@ func (p *ListPanel) Render(width, height int) []string {
 			}
 			row = box + row
 		}
-		if i == p.cursor {
+		switch {
+		case i == p.cursor && hasANSI(row):
+			// A styled row (per-column colors/underline) keeps its own styling; the
+			// selection is a cyan ▸ marker, because recoloring the whole row would
+			// fight the embedded resets and wash the columns out.
+			out = append(out, Styler(FGCyan)("▸ ")+truncateANSI(row, width-2, p.rw))
+		case i == p.cursor:
+			// Plain row: the classic whole-row cyan highlight.
 			out = append(out, "▸ "+Styler(FGCyan)(truncate(row, width-2, p.rw)))
-		} else {
-			out = append(out, "  "+truncate(row, width-2, p.rw))
+		default:
+			out = append(out, "  "+truncateANSI(row, width-2, p.rw))
 		}
 	}
 	return out
 }
 
-// reScroll adjusts the scroll offset so the cursor stays within the window.
-func (p *ListPanel) reScroll(height int) {
-	if height < 1 {
-		height = 1
+// reScroll adjusts the scroll offset so the cursor stays within the window of
+// `visible` items.
+func (p *ListPanel) reScroll(visible int) {
+	if visible < 1 {
+		visible = 1
 	}
 	if p.cursor < p.scroll {
 		p.scroll = p.cursor
-	} else if p.cursor >= p.scroll+height {
-		p.scroll = p.cursor - height + 1
+	} else if p.cursor >= p.scroll+visible {
+		p.scroll = p.cursor - visible + 1
 	}
 	if p.scroll < 0 {
 		p.scroll = 0
@@ -343,9 +427,9 @@ func (p *ListPanel) reScroll(height int) {
 }
 
 // page moves the cursor by dir full windows (dir = -1 up, +1 down), clamped to
-// the item bounds; the window height is the last one Render saw.
+// the item bounds; the window is the item count that fit the last Render.
 func (p *ListPanel) page(dir int) {
-	step := p.height
+	step := p.visible
 	if step < 1 {
 		step = 1
 	}
@@ -380,6 +464,17 @@ func (p *ListPanel) Selected() []int {
 
 // Cursor returns the highlighted row index.
 func (p *ListPanel) Cursor() int { return p.cursor }
+
+// ScrollPercent reports how far the cursor sits through the list (0–100) and
+// whether the list is long enough to scroll at all. The container shows it as a
+// scroll indicator in the help line.
+func (p *ListPanel) ScrollPercent() (int, bool) {
+	n := len(p.Items)
+	if n == 0 || n <= p.visible {
+		return 0, false
+	}
+	return int(float64(p.cursor)/float64(n-1)*100 + 0.5), true
+}
 
 // SetCursor pre-positions the highlight on row i, clamped to the item bounds
 // (used to open a tab on the currently active value).
@@ -605,11 +700,34 @@ func (b *BrowserPanel) page(dir int) {
 // Chosen returns the absolute path of the picked file, or "" if none was chosen.
 func (b *BrowserPanel) Chosen() string { return b.chosen }
 
+// ScrollPercent reports the cursor's position through the directory listing
+// (0–100) and whether it is long enough to scroll.
+func (b *BrowserPanel) ScrollPercent() (int, bool) {
+	n := len(b.items)
+	if n == 0 || n <= b.rows {
+		return 0, false
+	}
+	return int(float64(b.cursor)/float64(n-1)*100 + 0.5), true
+}
+
 func (b *BrowserPanel) rw(r rune) int {
 	if b.RuneWidth != nil {
 		return b.RuneWidth(r)
 	}
 	return 1
+}
+
+// equalLines reports whether two line slices are element-wise identical.
+func equalLines(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // truncate clips s to at most width display columns (per rw), appending "…" when
@@ -664,6 +782,10 @@ type ViewPanel struct {
 	// Wrap soft-wraps each logical line to the width instead of clipping it;
 	// horizontal panning (h/l) is then disabled.
 	Wrap bool
+	// RefreshFunc, if set, is called at the start of every Render to refresh Lines
+	// from a live source (e.g. MCP connection status). With a container repaint
+	// (Tabbed.LiveRefresh) the view updates on its own while the user watches.
+	RefreshFunc func() []string
 
 	voff     int // vertical scroll offset, in display rows
 	hoff     int // horizontal pan offset, in columns (Wrap == false only)
@@ -672,6 +794,7 @@ type ViewPanel struct {
 
 	wrapped   []string // Lines soft-wrapped to wrapWidth (Wrap == true)
 	wrapWidth int      // width the wrap cache was built for
+	copied    bool     // last key was 'c' and the copy succeeded (help-line feedback)
 }
 
 // NewViewPanel builds a read-only ViewPanel over lines (clip + h/l pan by
@@ -684,12 +807,16 @@ func NewViewPanel(title string, lines []string) *ViewPanel {
 func (p *ViewPanel) Title() string { return p.TitleText }
 
 // HelpHint tailors the container's help line to a read-only viewer (the generic
-// selector help — Space toggle / Enter confirm — doesn't apply here).
+// selector help — Space toggle / Enter confirm — doesn't apply here). After a
+// successful copy it briefly shows a confirmation until the next key.
 func (p *ViewPanel) HelpHint() string {
-	if p.Wrap {
-		return "↑↓ scroll · ←→ page · g/G top/bottom · q/Esc close"
+	if p.copied {
+		return "✓ copied to clipboard"
 	}
-	return "↑↓ scroll · ←→ page · h/l pan · g/G top/bottom · q/Esc close"
+	if p.Wrap {
+		return "↑↓ scroll · ←→ page · g/G top/bottom · c copy · q/Esc close"
+	}
+	return "↑↓ scroll · ←→ page · h/l pan · g/G top/bottom · c copy · q/Esc close"
 }
 
 // HandleKey implements Panel: ↑↓ (vim jk) scroll a line, ←→ / Space / b page
@@ -699,6 +826,10 @@ func (p *ViewPanel) HandleKey(key rune) (consumed bool) {
 	switch {
 	case key == KeyEnter:
 		return false // container closes the view
+	case key == 'c':
+		// Copy the panel's plain-text content to the clipboard.
+		p.copied = copyFn(stripANSI(strings.Join(p.Lines, "\n"))) == nil
+		return true
 	case key == KeyPrev || key == 'k':
 		p.voff--
 	case key == KeyNext || key == 'j':
@@ -718,7 +849,26 @@ func (p *ViewPanel) HandleKey(key rune) (consumed bool) {
 	default:
 		return false
 	}
+	p.copied = false // any other handled key clears the copy confirmation
 	return true
+}
+
+// ScrollPercent reports how far the view is scrolled (0–100) and whether the
+// content is taller than the viewport. Shown by the container in the help line.
+func (p *ViewPanel) ScrollPercent() (int, bool) {
+	total := len(p.rows())
+	if p.height < 1 || total <= p.height {
+		return 0, false
+	}
+	maxOff := total - p.height
+	off := p.voff
+	if off < 0 {
+		off = 0
+	}
+	if off > maxOff {
+		off = maxOff
+	}
+	return int(float64(off)/float64(maxOff)*100 + 0.5), true
 }
 
 // rows returns the current display rows: the wrapped lines when Wrap is set,
@@ -735,6 +885,16 @@ func (p *ViewPanel) rows() []string {
 // width changes.
 func (p *ViewPanel) Render(width, height int) []string {
 	p.height = height
+
+	if p.RefreshFunc != nil {
+		next := p.RefreshFunc()
+		// Rebuild the wrap cache only when the content actually changed, so a
+		// steady live view doesn't re-wrap every tick.
+		if !equalLines(next, p.Lines) {
+			p.Lines = next
+			p.wrapped = nil
+		}
+	}
 
 	var lines []string
 	if p.Wrap {

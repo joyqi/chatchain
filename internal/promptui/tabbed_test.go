@@ -2,10 +2,13 @@ package promptui
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"chatchain/internal/readline"
 )
@@ -331,5 +334,145 @@ func TestViewPanelPan(t *testing.T) {
 	feed(p, 'h', 'h', 'h', 'h', 'h', 'h', 'h') // pan back left, clamped at 0
 	if got := p.Render(10, 1); got[0] != "0123456789" {
 		t.Fatalf("after pan left = %q, want 0123456789", got[0])
+	}
+}
+
+// TestViewPanelCopy checks the 'c' key copies the panel's ANSI-stripped content
+// through copyFn, flags the confirmation, and clears it on the next key.
+func TestViewPanelCopy(t *testing.T) {
+	old := copyFn
+	var captured string
+	copyFn = func(s string) error { captured = s; return nil }
+	defer func() { copyFn = old }()
+
+	p := NewViewPanel("t", []string{"\x1b[2mhello\x1b[0m", "world"})
+	if !p.HandleKey('c') {
+		t.Fatal("'c' should be consumed")
+	}
+	if captured != "hello\nworld" {
+		t.Errorf("clipboard got %q, want stripped %q", captured, "hello\nworld")
+	}
+	if !p.copied || !strings.Contains(p.HelpHint(), "copied") {
+		t.Error("copy confirmation not shown")
+	}
+	if p.HandleKey('j'); p.copied {
+		t.Error("confirmation not cleared on next key")
+	}
+
+	// A failing clipboard writer leaves copied false.
+	copyFn = func(string) error { return errTest }
+	p2 := NewViewPanel("t", []string{"x"})
+	p2.HandleKey('c')
+	if p2.copied {
+		t.Error("copied should be false when the writer fails")
+	}
+}
+
+var errTest = fmt.Errorf("clipboard unavailable")
+
+// delayedStdin feeds one byte per Read with a delay before each, so a Tabbed's
+// background ticker and the input-driven renders genuinely interleave.
+type delayedStdin struct {
+	data  []byte
+	delay time.Duration
+	pos   int
+	done  chan struct{}
+}
+
+func newDelayedStdin(data []byte, delay time.Duration) *delayedStdin {
+	return &delayedStdin{data: data, delay: delay, done: make(chan struct{})}
+}
+
+func (d *delayedStdin) Read(p []byte) (int, error) {
+	time.Sleep(d.delay)
+	if d.pos < len(d.data) {
+		p[0] = d.data[d.pos]
+		d.pos++
+		return 1, nil
+	}
+	<-d.done
+	return 0, nil
+}
+
+func (d *delayedStdin) Close() error {
+	select {
+	case <-d.done:
+	default:
+		close(d.done)
+	}
+	return nil
+}
+
+// TestTabbedLiveRefreshNoRace runs a Tabbed with LiveRefresh + a RefreshFunc-backed
+// panel while feeding delayed keys, so the background ticker and the listener
+// repaint concurrently. `calls` is written only inside RefreshFunc (which runs
+// under the container's renderMu) — under -race this proves the lock covers both
+// render paths. It also proves the ticker is stopped and joined cleanly on exit.
+func TestTabbedLiveRefreshNoRace(t *testing.T) {
+	calls := 0
+	p := NewListPanel("A", nil, false)
+	p.RefreshFunc = func() []string {
+		calls++
+		return []string{"row"}
+	}
+	stdin := newDelayedStdin([]byte("jjjq"), 6*time.Millisecond) // 'q' quits at the end
+	var out bytes.Buffer
+	tb := &Tabbed{
+		Panels:      []Panel{p},
+		Stdin:       stdin,
+		Stdout:      nopWriteCloser{&out},
+		RuneWidth:   cjkWidth,
+		LiveRefresh: time.Millisecond,
+	}
+	if _, err := tb.Run(); err != ErrInterrupt {
+		t.Fatalf("Run err = %v, want ErrInterrupt (from 'q')", err)
+	}
+	if calls == 0 {
+		t.Fatal("RefreshFunc never called — ticker/refresh not wired")
+	}
+}
+
+// TestListPanelRefreshFunc checks Render pulls Items from RefreshFunc each call,
+// picking up a growing source without a rebuild.
+func TestListPanelRefreshFunc(t *testing.T) {
+	items := []string{"a"}
+	p := NewListPanel("A", nil, false)
+	p.RuneWidth = cjkWidth
+	p.RefreshFunc = func() []string { return items }
+	p.Render(80, 10)
+	if len(p.Items) != 1 {
+		t.Fatalf("RefreshFunc not applied on first render: %v", p.Items)
+	}
+	items = []string{"a", "b", "c"} // source grows while the panel is open
+	p.Render(80, 10)
+	if len(p.Items) != 3 {
+		t.Fatalf("RefreshFunc didn't pick up new items: %v", p.Items)
+	}
+}
+
+// TestScrollPercent covers the scroll indicator: a list taller than its window
+// is scrollable and reports 0→100 as the cursor moves; a short list is not.
+func TestScrollPercent(t *testing.T) {
+	p := NewListPanel("A", make([]string, 10), false)
+	p.RuneWidth = cjkWidth
+	p.Render(80, 4) // visible window = 4 rows
+	if _, ok := p.ScrollPercent(); !ok {
+		t.Fatal("10 items in a 4-row window should be scrollable")
+	}
+	p.SetCursor(9)
+	p.Render(80, 4)
+	if pct, _ := p.ScrollPercent(); pct != 100 {
+		t.Errorf("cursor at end: pct = %d, want 100", pct)
+	}
+	p.SetCursor(0)
+	p.Render(80, 4)
+	if pct, _ := p.ScrollPercent(); pct != 0 {
+		t.Errorf("cursor at start: pct = %d, want 0", pct)
+	}
+	short := NewListPanel("A", []string{"a", "b"}, false)
+	short.RuneWidth = cjkWidth
+	short.Render(80, 10)
+	if _, ok := short.ScrollPercent(); ok {
+		t.Error("a list that fits should not be scrollable")
 	}
 }

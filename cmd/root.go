@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -26,7 +25,6 @@ var (
 	chatMessage       string
 	systemPrompt      string
 	systemInteractive bool
-	verbose           bool
 	configPath        string
 	list              bool
 	mcpFlags          []string
@@ -106,12 +104,11 @@ var rootCmd = &cobra.Command{
 			temp = &temperature
 		}
 
-		var httpClient *http.Client
-		if verbose {
-			httpClient = chat.NewVerboseHTTPClient()
-		}
-
-		p, err := provider.New(providerType, apiKey, baseURL, model, temp, httpClient)
+		// Always install the recording transport: the /debug command browses
+		// recent requests, and its Verbose toggle flips the live echo to stderr
+		// (this replaces the old -v flag).
+		reqLog := chat.NewRequestLog()
+		p, err := provider.New(providerType, apiKey, baseURL, model, temp, reqLog.HTTPClient())
 		if err != nil {
 			return err
 		}
@@ -123,12 +120,8 @@ var rootCmd = &cobra.Command{
 
 		// Build MCP server configs from CLI flags + config file
 		mcpConfigs := buildMCPConfigs(cfg)
+		// MCP connection logging was tied to the removed -v flag; keep it off.
 		var logf mcpmgr.LogFunc
-		if verbose {
-			logf = func(format string, args ...any) {
-				chat.DimStyle.Fprintf(os.Stderr, format, args...)
-			}
-		}
 
 		// The working directory is recorded in session meta in both modes; in
 		// agent mode the project root additionally anchors the AGENTS.md/skills
@@ -287,7 +280,7 @@ var rootCmd = &cobra.Command{
 		// prompt and reports each server as it resolves); the dispatcher reads the
 		// manager's tool set live, so late-arriving tools appear without a rebuild.
 		dispatch := buildDispatcher(pc, mgr, agentMode)
-		return chat.Run(p, systemPrompt, importedHistory, dispatch, mgr, sw, contextWindow, agentOpts, os.Stdout)
+		return chat.Run(p, systemPrompt, importedHistory, dispatch, mgr, sw, contextWindow, agentOpts, reqLog, os.Stdout)
 	},
 }
 
@@ -300,7 +293,6 @@ func init() {
 	rootCmd.Flags().StringVarP(&systemPrompt, "system", "s", "", "System prompt")
 	rootCmd.Flags().BoolVarP(&systemInteractive, "system-input", "S", false, "Enter system prompt interactively")
 	rootCmd.Flags().BoolVarP(&list, "list", "l", false, "List configured providers, or models for a given provider")
-	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print request and response bodies for debugging")
 	rootCmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to config file (default: ~/.chatchain.yaml)")
 	rootCmd.Flags().StringArrayVar(&mcpFlags, "mcp", nil, "MCP server (command string or URL, repeatable)")
 	rootCmd.Flags().StringVar(&resumeID, "resume", "", "Resume a saved session: --resume to pick interactively, or --resume=<id>")
@@ -379,12 +371,7 @@ func runList(cmd *cobra.Command, cfg *config.Config, args []string) error {
 		return fmt.Errorf("API key is required to list models: use -k/--key or set %s", envKey)
 	}
 
-	var httpClient *http.Client
-	if verbose {
-		httpClient = chat.NewVerboseHTTPClient()
-	}
-
-	p, err := provider.New(providerType, apiKey, baseURL, "", nil, httpClient)
+	p, err := provider.New(providerType, apiKey, baseURL, "", nil, nil)
 	if err != nil {
 		return err
 	}

@@ -17,7 +17,7 @@ import (
 // trailing space); the completer appends the space it inserts when a command
 // is chosen.
 var slashCommands = []string{
-	"/file", "/session", "/model", "/compact", "/export", "/status", "/tools",
+	"/file", "/session", "/model", "/compact", "/export", "/status", "/tools", "/debug",
 }
 
 // agentSlashCommands exist only while agent mode is on; off, they are fully

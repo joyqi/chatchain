@@ -18,6 +18,7 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 - **Model settings mid-chat** — `/model` opens a tabbed panel over the model, context window, reasoning effort, and temperature, all persisted with the session and replayed on resume
 - **Conversation export** — `/export` renders the session to a single self-contained HTML file (inline CSS, dark mode with a toggle, syntax-highlighted code) or a plain Markdown document; saved sessions export the full on-disk log, so compaction never hides older rounds (ephemeral `--no-save` sessions export the current in-memory view)
 - **Agent mode** — opt-in via `--agent` (or `agent: true` per provider): layered `AGENTS.md` instructions and [Agent Skills](https://agentskills.io/specification) are injected as a volatile system-prompt overlay, the `read_file` tool is auto-enabled, and sessions are grouped per project
+- **Request inspector** — `/debug` opens a two-tab console: a **Verbose** toggle turns recording on/off (off by default), and **Messages** browses the captured API calls (newest first), each summarized by action and content (e.g. `Chat 你好…`) rather than raw method/URL — drill into any one to read its `↑ Request` and `↓ Response` bodies, pretty-printed, with `c` to copy to the clipboard. Nothing is printed to the terminal; it replaces the old `-v` flag
 - **System prompt** — set via flag or interactive input
 - **Config file** — persistent API keys, default models, custom provider aliases, and MCP server definitions via `~/.chatchain.yaml`
 - **Styled terminal output** — color-coded prompts
@@ -103,7 +104,6 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 | `--mcp` | | MCP server (command string or URL, repeatable) |
 | `--agent` | | Enable agent mode (AGENTS.md overlay, skills, `read_file`, project-scoped sessions) |
 | `--config` | `-c` | Path to config file (default: `~/.chatchain.yaml`) |
-| `--verbose` | `-v` | Print HTTP request/response bodies for debugging |
 
 ### Environment Variables
 
