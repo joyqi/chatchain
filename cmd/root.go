@@ -143,26 +143,31 @@ var rootCmd = &cobra.Command{
 			agentOpts = chat.AgentOptions{Enabled: true, Root: chat.ProjectRoot(cwd)}
 		}
 
-		// Non-interactive mode: connect MCP synchronously (quiet), then respond.
+		// Non-interactive mode: connect MCP synchronously (the single request needs
+		// the full tool set before it is sent), quietly, then respond.
 		if chatMessage != "" {
 			var mgr *mcpmgr.Manager
 			if len(mcpConfigs) > 0 {
-				mgr, _ = mcpmgr.NewManager(context.Background(), mcpConfigs, logf)
+				mgr = mcpmgr.NewManager(mcpConfigs, logf)
+				mgr.ConnectWait(context.Background())
 				defer mgr.Close()
 			}
 			dispatch := buildDispatcher(pc, mgr, agentMode)
 			return chat.Once(context.Background(), p, chatMessage, systemPrompt, dispatch, agentOpts, os.Stdout)
 		}
 
-		// Interactive: kick off MCP connect concurrently in the background so it
-		// overlaps the interactive model/session prompts; we join before chat.
-		var mcpCh chan *mcpmgr.Manager
+		// Interactive: start connecting MCP servers NOW, in the background, so the
+		// connect overlaps the (potentially slow) model/session selection below
+		// instead of only starting once we reach chat.Run. Their tools join the
+		// live set as they resolve; chat.Run consumes mgr.Events() to report
+		// failures once the prompt (and its refreshing writer) exist.
+		var mgr *mcpmgr.Manager
 		if len(mcpConfigs) > 0 {
-			mcpCh = make(chan *mcpmgr.Manager, 1)
-			go func() {
-				m, _ := mcpmgr.NewManager(context.Background(), mcpConfigs, logf)
-				mcpCh <- m
-			}()
+			mgr = mcpmgr.NewManager(mcpConfigs, logf)
+			defer mgr.Close()
+			connectCtx, cancelConnect := context.WithCancel(context.Background())
+			defer cancelConnect()
+			mgr.Connect(connectCtx)
 		}
 
 		if noSave && cmd.Flags().Changed("resume") {
@@ -278,16 +283,9 @@ var rootCmd = &cobra.Command{
 			contextWindow = n
 		}
 
-		// Join the background MCP connect (started above) before entering chat.
-		// Already-finished → spinner flashes briefly; otherwise it shows until
-		// the slowest server resolves. Failed servers are reported, not fatal.
-		var mgr *mcpmgr.Manager
-		if mcpCh != nil {
-			chat.WithSpinner("Connecting to MCP servers…", func() { mgr = <-mcpCh })
-			reportMCPStatus(mgr)
-			defer mgr.Close()
-		}
-
+		// MCP connects in the background from inside chat.Run (which owns the
+		// prompt and reports each server as it resolves); the dispatcher reads the
+		// manager's tool set live, so late-arriving tools appear without a rebuild.
 		dispatch := buildDispatcher(pc, mgr, agentMode)
 		return chat.Run(p, systemPrompt, importedHistory, dispatch, mgr, sw, contextWindow, agentOpts, os.Stdout)
 	},
@@ -420,42 +418,6 @@ func providerEnvKey(providerType string) string {
 		return key
 	}
 	return "API_KEY"
-}
-
-// reportMCPStatus prints a persistent one-line MCP summary plus a warning line
-// per failed server. Persistent (unlike the ephemeral connect spinner, which is
-// invisible when the connect finishes during interactive model selection) so the
-// user always sees what loaded. Connected servers stay usable on failure
-// (graceful degradation); failures are surfaced, not silently dropped.
-func reportMCPStatus(mgr *mcpmgr.Manager) {
-	if mgr == nil {
-		return
-	}
-	servers := mgr.Servers()
-	if len(servers) == 0 {
-		return
-	}
-
-	connected, tools := 0, 0
-	for _, s := range servers {
-		if s.Connected {
-			connected++
-			tools += s.ToolCount
-		}
-	}
-	if connected > 0 {
-		chat.DimStyle.Fprintf(os.Stdout, "MCP: %d/%d servers connected, %d tools\n", connected, len(servers), tools)
-	}
-	for _, s := range servers {
-		if s.Connected {
-			continue
-		}
-		msg := s.Err
-		if i := strings.IndexByte(msg, '\n'); i >= 0 {
-			msg = msg[:i]
-		}
-		chat.ErrorStyle.Fprintf(os.Stdout, "⚠ MCP %s: %s\n", s.Name, msg)
-	}
 }
 
 // buildDispatcher assembles the tool dispatcher for a provider: its enabled

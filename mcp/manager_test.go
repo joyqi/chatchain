@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"chatchain/provider"
 
@@ -202,8 +204,10 @@ func startEchoServer(t *testing.T, id string) *mcp.ClientSession {
 func TestManagerRoutesSameToolNameAcrossServers(t *testing.T) {
 	ctx := context.Background()
 	m := &Manager{toolIndex: make(map[string]toolTarget)}
-	for _, id := range []string{"alpha", "beta"} {
-		m.addServer(serverResult{
+	ids := []string{"alpha", "beta"}
+	m.servers = make([]ServerStatus, len(ids))
+	for i, id := range ids {
+		m.mergeResult(i, serverResult{
 			status: ServerStatus{
 				Name:      id,
 				Connected: true,
@@ -212,7 +216,7 @@ func TestManagerRoutesSameToolNameAcrossServers(t *testing.T) {
 			},
 			session: startEchoServer(t, id),
 			tools:   []provider.ToolDef{{Name: "echo", Description: "echo back the server id"}},
-		}, nil)
+		})
 	}
 
 	// Both tools survive registration under distinct wire names.
@@ -257,8 +261,10 @@ func TestManagerRoutesSameToolNameAcrossServers(t *testing.T) {
 func TestManagerDuplicateServerNames(t *testing.T) {
 	ctx := context.Background()
 	m := &Manager{toolIndex: make(map[string]toolTarget)}
-	for _, id := range []string{"first", "second"} {
-		m.addServer(serverResult{
+	ids := []string{"first", "second"}
+	m.servers = make([]ServerStatus, len(ids))
+	for i, id := range ids {
+		m.mergeResult(i, serverResult{
 			status: ServerStatus{
 				Name:      "npx",
 				Connected: true,
@@ -267,7 +273,7 @@ func TestManagerDuplicateServerNames(t *testing.T) {
 			},
 			session: startEchoServer(t, id),
 			tools:   []provider.ToolDef{{Name: "echo"}},
-		}, nil)
+		})
 	}
 
 	defs := m.Tools()
@@ -298,8 +304,10 @@ func TestManagerDuplicateServerNames(t *testing.T) {
 // sanitize to "my_server", so the second gets the "_2" segment.
 func TestManagerSanitizeCollidingServerNames(t *testing.T) {
 	m := &Manager{toolIndex: make(map[string]toolTarget)}
-	for _, name := range []string{"my-server", "my_server"} {
-		m.addServer(serverResult{
+	names := []string{"my-server", "my_server"}
+	m.servers = make([]ServerStatus, len(names))
+	for i, name := range names {
+		m.mergeResult(i, serverResult{
 			status: ServerStatus{
 				Name:      name,
 				Connected: true,
@@ -308,7 +316,7 @@ func TestManagerSanitizeCollidingServerNames(t *testing.T) {
 			},
 			session: startEchoServer(t, name),
 			tools:   []provider.ToolDef{{Name: "echo"}},
-		}, nil)
+		})
 	}
 
 	defs := m.Tools()
@@ -317,18 +325,19 @@ func TestManagerSanitizeCollidingServerNames(t *testing.T) {
 	}
 }
 
-// TestManagerSkipsDuplicateWireName exercises the addServer guardrail. Unique
+// TestManagerSkipsDuplicateWireName exercises the mergeResult guardrail. Unique
 // segments make wire collisions unreachable through normal registration, so
 // force one with a (spec-violating) duplicated raw tool name: the first
 // registration wins, the duplicate is skipped — never overwritten — and a
 // warning is emitted through logf.
 func TestManagerSkipsDuplicateWireName(t *testing.T) {
-	m := &Manager{toolIndex: make(map[string]toolTarget)}
 	var warnings []string
 	logf := func(format string, args ...any) {
 		warnings = append(warnings, fmt.Sprintf(format, args...))
 	}
-	m.addServer(serverResult{
+	m := &Manager{toolIndex: make(map[string]toolTarget), logf: logf}
+	m.servers = make([]ServerStatus, 1)
+	m.mergeResult(0, serverResult{
 		status: ServerStatus{
 			Name:      "srv",
 			Connected: true,
@@ -340,7 +349,7 @@ func TestManagerSkipsDuplicateWireName(t *testing.T) {
 			{Name: "echo", Description: "first"},
 			{Name: "echo", Description: "second"},
 		},
-	}, logf)
+	})
 
 	defs := m.Tools()
 	if len(defs) != 1 || defs[0].Name != "mcp__srv__echo" || defs[0].Description != "first" {
@@ -348,5 +357,98 @@ func TestManagerSkipsDuplicateWireName(t *testing.T) {
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "mcp__srv__echo") {
 		t.Fatalf("expected one warning naming the duplicate, got %v", warnings)
+	}
+}
+
+// TestManagerConcurrentMergeAndRead exercises the lock: several servers merge
+// concurrently (as Connect's goroutines do) while readers hammer Tools /
+// Servers / CallTool. Run under -race, it proves the incremental, background
+// connection has no data race between a merging writer and a live reader.
+func TestManagerConcurrentMergeAndRead(t *testing.T) {
+	ctx := context.Background()
+	const n = 8
+	m := &Manager{toolIndex: make(map[string]toolTarget)}
+	m.servers = make([]ServerStatus, n)
+
+	stop := make(chan struct{})
+	var readers sync.WaitGroup
+	for r := 0; r < 4; r++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					_ = m.Tools()
+					_ = m.Servers()
+					_, _, _ = m.CallTool(ctx, "mcp__srv0__echo", map[string]any{})
+				}
+			}
+		}()
+	}
+
+	var mergers sync.WaitGroup
+	for i := 0; i < n; i++ {
+		mergers.Add(1)
+		go func(i int) {
+			defer mergers.Done()
+			id := fmt.Sprintf("srv%d", i)
+			m.mergeResult(i, serverResult{
+				status:  ServerStatus{Name: id, Connected: true, ToolCount: 1, Tools: []string{"echo"}},
+				session: startEchoServer(t, id),
+				tools:   []provider.ToolDef{{Name: "echo"}},
+			})
+		}(i)
+	}
+	mergers.Wait()
+	close(stop)
+	readers.Wait()
+
+	// All servers resolved to connected with their tool registered.
+	if got := len(m.Tools()); got != n {
+		t.Errorf("Tools() = %d, want %d after all merges", got, n)
+	}
+	for _, s := range m.Servers() {
+		if !s.Connected || s.Pending {
+			t.Errorf("server %s: Connected=%v Pending=%v, want connected & not pending", s.Name, s.Connected, s.Pending)
+		}
+	}
+}
+
+// TestManagerConnectTimeout verifies the connect timeout is one kind of failure:
+// a subprocess that starts but never speaks MCP (here a `cat` that reads and
+// discards, emitting nothing) is abandoned when the timeout fires, surfacing as
+// a failed server with a "timed out" error and no tools — quickly, not after the
+// full 30s default. The SDK closes the session on the failed handshake, which
+// terminates the subprocess (no leak; `cat` exits on the stdin EOF).
+func TestManagerConnectTimeout(t *testing.T) {
+	old := connectTimeout
+	connectTimeout = 300 * time.Millisecond
+	defer func() { connectTimeout = old }()
+
+	m := NewManager([]ServerConfig{{Name: "hang", Command: "sh", Args: []string{"-c", "cat >/dev/null"}}}, nil)
+	defer m.Close()
+
+	start := time.Now()
+	m.ConnectWait(context.Background())
+	if elapsed := time.Since(start); elapsed > 15*time.Second {
+		t.Fatalf("ConnectWait took %s — timeout did not fire (would be ~%s)", elapsed, connectTimeout)
+	}
+
+	servers := m.Servers()
+	if len(servers) != 1 {
+		t.Fatalf("want 1 server, got %d", len(servers))
+	}
+	s := servers[0]
+	if s.Connected || s.Pending {
+		t.Errorf("hung server should be a resolved failure: Connected=%v Pending=%v", s.Connected, s.Pending)
+	}
+	if !strings.Contains(s.Err, "timed out") {
+		t.Errorf("expected a timeout error, got %q", s.Err)
+	}
+	if got := len(m.Tools()); got != 0 {
+		t.Errorf("timed-out server should contribute no tools, got %d", got)
 	}
 }

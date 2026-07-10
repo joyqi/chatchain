@@ -136,35 +136,48 @@ func (r *Registry) CallTool(ctx context.Context, name string, args map[string]an
 // typed-nil whose Tools() is nil-safe) contribute nothing. On a tool-name
 // collision the earlier dispatcher wins, so pass built-ins before MCP to let
 // them take precedence. The result is always non-nil.
+//
+// The merged view is LIVE, not a snapshot: Tools() and CallTool re-query each
+// part on every call, so a part whose tool set grows after Merge (e.g. an MCP
+// manager still connecting servers in the background) is reflected immediately.
 func Merge(parts ...Dispatcher) Dispatcher {
-	md := &multiDispatcher{owner: make(map[string]Dispatcher)}
+	md := &multiDispatcher{}
 	for _, p := range parts {
-		if p == nil {
-			continue
-		}
-		for _, def := range p.Tools() {
-			if _, dup := md.owner[def.Name]; dup {
-				continue
-			}
-			md.owner[def.Name] = p
-			md.tools = append(md.tools, def)
+		if p != nil {
+			md.parts = append(md.parts, p)
 		}
 	}
 	return md
 }
 
-// multiDispatcher routes each tool call to whichever merged dispatcher owns the
-// tool name.
+// multiDispatcher routes each tool call to whichever merged part owns the tool
+// name, re-querying parts live so late-arriving tools appear without a rebuild.
 type multiDispatcher struct {
-	tools []provider.ToolDef
-	owner map[string]Dispatcher
+	parts []Dispatcher
 }
 
-func (m *multiDispatcher) Tools() []provider.ToolDef { return m.tools }
+func (m *multiDispatcher) Tools() []provider.ToolDef {
+	var tools []provider.ToolDef
+	seen := make(map[string]bool)
+	for _, p := range m.parts {
+		for _, def := range p.Tools() {
+			if seen[def.Name] {
+				continue // earlier part wins the name
+			}
+			seen[def.Name] = true
+			tools = append(tools, def)
+		}
+	}
+	return tools
+}
 
 func (m *multiDispatcher) CallTool(ctx context.Context, name string, args map[string]any) (string, bool, error) {
-	if p, ok := m.owner[name]; ok {
-		return p.CallTool(ctx, name, args)
+	for _, p := range m.parts {
+		for _, def := range p.Tools() {
+			if def.Name == name {
+				return p.CallTool(ctx, name, args) // first (earliest) owner
+			}
+		}
 	}
 	return "", true, fmt.Errorf("unknown tool: %s", name)
 }

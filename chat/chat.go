@@ -521,6 +521,14 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 	}
 	setTerminalTitle(sw.Title())
 
+	// MCP servers are already connecting in the background (started in cmd, so the
+	// connect overlaps model/session selection). Their tools join the live tool
+	// set (re-read every turn) as they resolve; here — now that the prompt and its
+	// refreshing writer exist — report only FAILURES above the prompt.
+	if mgr != nil {
+		go reportMCPFailures(mgr, rl)
+	}
+
 	var history []provider.Message
 	// persisted = number of leading history messages already written to the
 	// session. We persist only committed turns (after a successful response),
@@ -891,6 +899,13 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		// Re-detect the terminal background now (idle, before streaming) so code
 		// blocks in this reply follow a light/dark switch made since the last turn.
 		detectCodeTheme()
+
+		// Re-read the tool set each turn: MCP servers connect in the background,
+		// so a server that finished since the last turn adds its tools here (and
+		// flips the len>0 gate on once the first one connects).
+		if dispatch != nil {
+			tools = dispatch.Tools()
+		}
 
 		// Use tool-call loop if provider supports tools and MCP tools are available
 		if isToolProvider && len(tools) > 0 {
@@ -1605,8 +1620,11 @@ func mcpStatusLines(mgr *mcpmgr.Manager) []string {
 	lines := []string{DimStyle.Sprintf("%d server(s) · %d tool(s)", len(servers), totalTools)}
 	for _, s := range servers {
 		status := ErrorStyle.Sprint("disconnected")
-		if s.Connected {
+		switch {
+		case s.Connected:
 			status = CodeBlockStyle.Sprint("connected") // green
+		case s.Pending:
+			status = DimStyle.Sprint("connecting…")
 		}
 		lines = append(lines, fmt.Sprintf("%s  [%s]", BoldStyle.Sprint(s.Name), status))
 		lines = append(lines, DimStyle.Sprintf("  endpoint: %s", s.Endpoint))
@@ -1620,6 +1638,24 @@ func mcpStatusLines(mgr *mcpmgr.Manager) []string {
 		}
 	}
 	return lines
+}
+
+// reportMCPFailures consumes the manager's connect-event stream (the background
+// connect was started in cmd) and reports only FAILURES — a connect error, auth
+// required, unreachable host, or the connect timeout, all one category. A
+// successful server is silent; its tools simply join the live set (re-read each
+// turn). Notices print above the prompt through readline's refreshing writer
+// (rl.Stdout()), which serializes concurrent writes and redraws the input line
+// so a notice never corrupts what the user is typing. Returns when the stream
+// closes (all servers resolved).
+func reportMCPFailures(mgr *mcpmgr.Manager, rl *readline.Instance) {
+	out := rl.Stdout()
+	for s := range mgr.Events() {
+		if s.Connected {
+			continue // success is silent
+		}
+		io.WriteString(out, ErrorStyle.Sprintf("⚠ MCP %s failed: %s\n", s.Name, strings.SplitN(s.Err, "\n", 2)[0]))
+	}
 }
 
 // showCapabilities opens a tabbed read-only viewer over the model's capabilities:

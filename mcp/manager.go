@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"chatchain/provider"
 
@@ -27,11 +28,15 @@ type ServerConfig struct {
 	Headers map[string]string
 }
 
-// ServerStatus holds runtime info about a connected MCP server.
+// ServerStatus holds runtime info about a configured MCP server. A server is
+// Pending until its background connect attempt finishes; then either Connected
+// is set (tools available) or Err is set (failed, skipped). Pending and Err are
+// mutually exclusive with a resolved state.
 type ServerStatus struct {
 	Name      string   // display name
 	Segment   string   // manager-assigned wire-name segment (unique across connected servers; empty when not Connected)
 	Endpoint  string   // command or URL
+	Pending   bool     // connect attempt still in flight (not yet resolved)
 	Connected bool     // whether connection succeeded
 	ToolCount int      // number of tools from this server
 	Tools     []string // raw tool names as reported by the server (not wire names)
@@ -47,12 +52,20 @@ type toolTarget struct {
 }
 
 // Manager manages connections to MCP servers and dispatches tool calls.
+// Connection is incremental and concurrent (see Connect): each server is merged
+// as it finishes, so mu guards every field a reader (Tools/Servers/CallTool)
+// might touch while a connect goroutine is still merging.
 type Manager struct {
+	configs []ServerConfig // configured servers, index-aligned with servers
+	logf    LogFunc
+	events  chan ServerStatus // each server's resolved status; closed when all resolve
+
+	mu        sync.RWMutex
 	sessions  []*mcp.ClientSession
 	tools     []provider.ToolDef
 	toolIndex map[string]toolTarget // wire tool name → target
 	segments  map[string]bool       // wire-name segments already assigned to servers
-	servers   []ServerStatus        // per-server status
+	servers   []ServerStatus        // per-server status, index-aligned with configs
 }
 
 // wireNameMaxLen is the longest tool name accepted by every supported
@@ -141,43 +154,105 @@ type serverResult struct {
 	logs    []string // buffered verbose lines, flushed in config order
 }
 
-// NewManager connects to all configured MCP servers concurrently and discovers
-// their tools. Connection is graceful: a server that fails to connect or list
-// tools is marked (ServerStatus.Connected=false, .Err set) and skipped — the
-// remaining servers are still usable. logf is called for verbose output (per
-// server, emitted in config order); pass nil to suppress.
-func NewManager(ctx context.Context, configs []ServerConfig, logf LogFunc) (*Manager, error) {
+// NewManager builds a manager for the given configs but does NOT connect: every
+// server starts Pending. Call Connect (background, incremental) or ConnectWait
+// (blocking). logf is called for verbose output; pass nil to suppress.
+func NewManager(configs []ServerConfig, logf LogFunc) *Manager {
 	m := &Manager{
+		configs:   configs,
+		logf:      logf,
 		toolIndex: make(map[string]toolTarget),
+		// Buffered to the server count so a connect goroutine never blocks
+		// sending its result, even before anyone consumes Events().
+		events: make(chan ServerStatus, len(configs)),
 	}
-	if len(configs) == 0 {
-		return m, nil
+	for _, cfg := range configs {
+		m.servers = append(m.servers, ServerStatus{
+			Name:     cfg.Name,
+			Endpoint: endpointOf(cfg),
+			Pending:  true,
+		})
 	}
+	return m
+}
 
-	// Connect concurrently. Each goroutine writes its own results[i] slot
-	// (distinct indices → no shared-state race); we merge in config order
-	// afterwards to keep tool ordering and toolIndex deterministic.
-	results := make([]serverResult, len(configs))
+// Connect starts connecting to every configured server concurrently, one
+// goroutine each, and returns immediately so it can overlap slow interactive
+// steps (model/session selection) instead of blocking them. As each server
+// finishes, its result is merged under the lock (its tools become available at
+// once) and its resolved status is sent on Events(), which is closed when every
+// server has resolved. Graceful: a server that fails to connect or list tools is
+// marked (Connected=false, Err set) and skipped — the rest stay usable.
+func (m *Manager) Connect(ctx context.Context) {
 	var wg sync.WaitGroup
-	for i, raw := range configs {
+	for i, cfg := range m.configs {
 		wg.Add(1)
-		go func(i int, raw ServerConfig) {
+		go func(i int, cfg ServerConfig) {
 			defer wg.Done()
-			results[i] = connectServer(ctx, raw)
-		}(i, raw)
+			m.events <- m.connectOne(ctx, i, cfg)
+		}(i, cfg)
 	}
-	wg.Wait()
+	go func() {
+		wg.Wait()
+		close(m.events)
+	}()
+}
 
-	for _, r := range results {
-		if logf != nil {
-			for _, line := range r.logs {
-				logf("%s", line)
-			}
-		}
-		m.addServer(r, logf)
+// Events streams each server's resolved status (success or failure) as its
+// background connect finishes, and is closed once every server has resolved.
+// The channel is buffered to the server count, so a slow or late consumer never
+// blocks a connect. Consume it after Connect to report outcomes (e.g. failures).
+func (m *Manager) Events() <-chan ServerStatus {
+	return m.events
+}
+
+// ConnectWait connects to every configured server and blocks until all attempts
+// resolve, draining the event stream. Used by the non-interactive one-shot path,
+// where the single request needs the full tool set before it is sent.
+func (m *Manager) ConnectWait(ctx context.Context) {
+	m.Connect(ctx)
+	for range m.events { // drain to completion
 	}
+}
 
-	return m, nil
+// connectTimeout bounds a single server's connect + initialize + tool-listing
+// phase. It is generous enough for a cold `npx`/`uvx` server start yet stops a
+// hung or unreachable server (unresolvable host, a server that never completes
+// the handshake) from leaving its goroutine pending forever. Because the SDK
+// decouples an established session from the connect context (the jsonrpc2
+// connection wraps it in a Done-less context), cancelling this timeout after
+// connectServer returns never drops a session that did connect in time. A
+// var (not const) so tests can shorten it. On timeout the SDK closes the
+// session, which terminates a spawned subprocess — no leak.
+var connectTimeout = 30 * time.Second
+
+// connectOne connects a single server under the timeout and merges its result,
+// returning the resolved status. A timeout is just one more kind of connect
+// failure (marked with a clear message) so it surfaces through the same path as
+// an auth error or an unreachable host.
+func (m *Manager) connectOne(ctx context.Context, i int, cfg ServerConfig) ServerStatus {
+	cctx, cancel := context.WithTimeout(ctx, connectTimeout)
+	r := connectServer(cctx, cfg)
+	timedOut := cctx.Err() == context.DeadlineExceeded
+	cancel()
+	if timedOut && !r.status.Connected {
+		r.status.Err = fmt.Sprintf("connection timed out after %s", connectTimeout)
+	}
+	return m.mergeResult(i, r)
+}
+
+// endpointOf renders a server's command/URL for display, matching what
+// connectServer records (used to seed the Pending status before connecting).
+func endpointOf(raw ServerConfig) string {
+	cfg := expandServerConfig(raw)
+	if cfg.URL != "" {
+		return cfg.URL
+	}
+	endpoint := cfg.Command
+	if len(cfg.Args) > 0 {
+		endpoint += " " + strings.Join(cfg.Args, " ")
+	}
+	return endpoint
 }
 
 // assignSegment reserves a unique wire-name segment for a server: the
@@ -198,20 +273,36 @@ func (m *Manager) assignSegment(name string) string {
 	return seg
 }
 
-// addServer merges one server's connect outcome into the manager. A failed
-// server only contributes its status; a connected one is assigned a unique
+// mergeResult merges one server's connect outcome into the manager under the
+// lock and returns the resolved status (for the Connect callback). It updates
+// servers[i] IN PLACE (index-aligned with configs, seeded Pending by
+// NewManager) rather than appending, so the per-server slot stays stable. A
+// failed server just clears Pending; a connected one is assigned a unique
 // wire-name segment (exposed as ServerStatus.Segment) and contributes its
-// session and tools, each registered under its wire name (see
-// ComposeWireName) mapped to the session index and the server's raw tool
-// name. Unique segments that never contain "__", per-server tool uniqueness
-// (MCP spec), and the hash suffix on lossy/truncated tool segments together
-// make wire names unique, so the duplicate check below should be unreachable;
-// it is a guardrail that skips the duplicate (never overwrites the earlier
-// registration) and reports it through logf.
-func (m *Manager) addServer(r serverResult, logf LogFunc) {
+// session and tools, each registered under its wire name (see ComposeWireName)
+// mapped to the session index and the server's raw tool name.
+//
+// Segments are assigned in connect-COMPLETION order (not config order), so a
+// collision suffix ("_2") may fall to whichever of two same-named servers
+// finishes second — wire names stay unique and stable within the run, which is
+// all that matters. Unique segments that never contain "__", per-server tool
+// uniqueness (MCP spec), and the hash suffix on lossy/truncated tool segments
+// make wire names unique, so the duplicate check is a guardrail (skips the
+// duplicate, never overwrites) reported through logf.
+func (m *Manager) mergeResult(i int, r serverResult) ServerStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.logf != nil {
+		for _, line := range r.logs {
+			m.logf("%s", line)
+		}
+	}
+
+	r.status.Pending = false
 	if !r.status.Connected {
-		m.servers = append(m.servers, r.status)
-		return
+		m.servers[i] = r.status
+		return r.status
 	}
 	idx := len(m.sessions)
 	m.sessions = append(m.sessions, r.session)
@@ -220,15 +311,16 @@ func (m *Manager) addServer(r serverResult, logf LogFunc) {
 		raw := td.Name
 		td.Name = ComposeWireName(r.status.Segment, raw)
 		if _, dup := m.toolIndex[td.Name]; dup {
-			if logf != nil {
-				logf("Warning: MCP server %s: duplicate wire tool name %s, skipping\n", r.status.Name, td.Name)
+			if m.logf != nil {
+				m.logf("Warning: MCP server %s: duplicate wire tool name %s, skipping\n", r.status.Name, td.Name)
 			}
 			continue
 		}
 		m.tools = append(m.tools, td)
 		m.toolIndex[td.Name] = toolTarget{session: idx, raw: raw}
 	}
-	m.servers = append(m.servers, r.status)
+	m.servers[i] = r.status
+	return r.status
 }
 
 // connectServer connects to a single MCP server and lists its tools. It never
@@ -294,35 +386,49 @@ func connectServer(ctx context.Context, raw ServerConfig) serverResult {
 	return res
 }
 
-// Servers returns status info for all configured MCP servers.
+// Servers returns status info for all configured MCP servers. The returned
+// slice is a copy, safe to read while background connects mutate the manager.
 func (m *Manager) Servers() []ServerStatus {
 	if m == nil {
 		return nil
 	}
-	return m.servers
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]ServerStatus(nil), m.servers...)
 }
 
-// Tools returns the aggregated list of tools from all connected servers.
-// Each ToolDef.Name is the namespaced wire name ("mcp__<segment>__<tool>",
-// see ComposeWireName), which is what gets advertised to models and must be
-// passed back to CallTool.
+// Tools returns the aggregated list of tools from all currently-connected
+// servers. Each ToolDef.Name is the namespaced wire name ("mcp__<segment>__
+// <tool>", see ComposeWireName), advertised to models and passed back to
+// CallTool. The returned slice is a copy and reflects whatever has connected so
+// far — callers re-read it each turn to pick up servers that connect later.
 func (m *Manager) Tools() []provider.ToolDef {
 	if m == nil {
 		return nil
 	}
-	return m.tools
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]provider.ToolDef(nil), m.tools...)
 }
 
 // CallTool dispatches a tool call to the appropriate MCP server. name is the
 // wire name the tool was advertised under (see ComposeWireName); it is
 // translated back to the server's raw tool name for the actual call.
 func (m *Manager) CallTool(ctx context.Context, name string, arguments map[string]any) (string, bool, error) {
+	// Resolve the target under the lock, then release it before the (possibly
+	// slow) network call — a background connect can keep merging meanwhile.
+	m.mu.RLock()
 	target, ok := m.toolIndex[name]
+	var session *mcp.ClientSession
+	if ok {
+		session = m.sessions[target.session]
+	}
+	m.mu.RUnlock()
 	if !ok {
 		return "", true, fmt.Errorf("unknown tool: %s", name)
 	}
 
-	result, err := m.sessions[target.session].CallTool(ctx, &mcp.CallToolParams{
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      target.raw,
 		Arguments: arguments,
 	})
@@ -347,7 +453,11 @@ func (m *Manager) Close() {
 	if m == nil {
 		return
 	}
-	for _, s := range m.sessions {
+	m.mu.Lock()
+	sessions := m.sessions
+	m.sessions = nil
+	m.mu.Unlock()
+	for _, s := range sessions {
 		s.Close()
 	}
 }
