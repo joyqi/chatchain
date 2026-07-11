@@ -33,9 +33,12 @@ type InlineDelimiter struct {
 //	               ("$5", "$ ", or an unmatched trailing $)
 //
 // A "$" is treated as currency (and skipped) when the character immediately
-// after it is a digit or ASCII space, or when no unescaped closing "$" follows
-// on the same run — the classic "it costs $5 to $10" case. "$$" is a display
-// fence and is not matched here.
+// after it is an ASCII space, or when no unescaped closing "$" follows on the
+// same run. A digit right after the opener no longer disqualifies it — real
+// formulas like "$1/\pi$" start with a digit — so the "it costs $5 to $10"
+// case is ruled out at the CLOSING "$" instead (scanDollarMath refuses to
+// close on a "$" immediately followed by a digit). "$$" is a display fence and
+// is not matched here.
 func FindInline(src string, from int) (InlineDelimiter, bool) {
 	for i := from; i < len(src); i++ {
 		switch src[i] {
@@ -69,15 +72,16 @@ func FindInline(src string, from int) (InlineDelimiter, bool) {
 	return InlineDelimiter{}, false
 }
 
-// isCurrencyDollar reports whether the '$' at byte offset i is currency rather
-// than a math opener: it is followed by a digit or a space, which no real
-// inline formula starts with.
+// isCurrencyDollar reports whether the '$' at byte offset i cannot open an
+// inline math span: it is a trailing lone '$' or is immediately followed by a
+// space ("$ 5"). A digit right after it is allowed — "$1/\pi$" is a valid
+// formula — so the currency case "$5 or $10" is ruled out at the closing '$'
+// (see scanDollarMath) rather than here.
 func isCurrencyDollar(src string, i int) bool {
 	if i+1 >= len(src) {
 		return true // trailing lone '$'
 	}
-	c := src[i+1]
-	return c == ' ' || (c >= '0' && c <= '9')
+	return src[i+1] == ' '
 }
 
 // scanDollarMath scans from the byte after an opening '$' for the matching
@@ -85,6 +89,11 @@ func isCurrencyDollar(src string, i int) bool {
 // body, the offset just past the close, and ok. An empty body ("$$" already
 // handled elsewhere, but "$ $"-like spans) is rejected so plain prose with a
 // stray pair is not swallowed.
+//
+// A '$' immediately followed by a digit does NOT close the span: it is
+// currency ("$10"), so the scan keeps going. This is what keeps "$5 or $10"
+// literal now that a digit right after the opening '$' is allowed (so a
+// formula like "$1/\pi$" can render).
 func scanDollarMath(src string, start int) (body string, end int, ok bool) {
 	for i := start; i < len(src); i++ {
 		switch src[i] {
@@ -93,6 +102,14 @@ func scanDollarMath(src string, start int) (body string, end int, ok bool) {
 		case '\n':
 			return "", 0, false // inline math never spans a newline
 		case '$':
+			if i+1 < len(src) && src[i+1] >= '0' && src[i+1] <= '9' {
+				continue // "$10" — currency, not a closing delimiter
+			}
+			if src[i-1] == ' ' {
+				continue // "$a and $b" — a space before the close means the
+				// second '$' opens a new token (a var/price), it does not
+				// close the first. Keep scanning for a real close.
+			}
 			inner := src[start:i]
 			if strings.TrimSpace(inner) == "" {
 				return "", 0, false

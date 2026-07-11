@@ -42,7 +42,8 @@ func TestFindInlineEscapedDollarLiteral(t *testing.T) {
 }
 
 func TestFindInlineCurrencyGuard(t *testing.T) {
-	// "$5 is cheap" — the $ is currency (digit follows), not math.
+	// "$5 is cheap" — a digit opener is allowed, but there is no closing $,
+	// so it stays literal.
 	if _, ok := FindInline("$5 is cheap", 0); ok {
 		t.Errorf("FindInline matched a currency $")
 	}
@@ -53,6 +54,101 @@ func TestFindInlineCurrencyGuard(t *testing.T) {
 	// Unbalanced trailing $ is not math.
 	if _, ok := FindInline("only $100", 0); ok {
 		t.Errorf("FindInline matched an unbalanced trailing $")
+	}
+	// "$5 or $10" has two dollars, but the second is currency (a digit
+	// follows), so it does not close — the pair never forms.
+	if _, ok := FindInline("it costs $5 or $10", 0); ok {
+		t.Errorf("FindInline paired two currency dollars into a span")
+	}
+	// "$20,000 and $30,000" — same: the closing candidate is followed by a
+	// digit, so no span forms.
+	if _, ok := FindInline("$20,000 and $30,000 total", 0); ok {
+		t.Errorf("FindInline matched a thousands-separated currency pair")
+	}
+}
+
+// TestFindInlineDigitOpener pins the fix for the regression where a formula
+// starting with a digit (e.g. a Ramanujan "$1/\pi$" series) was misread as
+// currency and left as raw LaTeX. A digit opener with a non-digit close is math.
+func TestFindInlineDigitOpener(t *testing.T) {
+	cases := map[string]string{
+		`$1/\pi$ series`: `1/\pi`,
+		`$2x+3$ here`:    `2x+3`,
+		`at $0.5$ scale`: `0.5`,
+	}
+	for in, want := range cases {
+		d, ok := FindInline(in, 0)
+		if !ok {
+			t.Errorf("FindInline(%q) = no match, want body %q", in, want)
+			continue
+		}
+		if d.Body != want {
+			t.Errorf("FindInline(%q) body = %q, want %q", in, d.Body, want)
+		}
+	}
+}
+
+// TestFindInlineAdversarial is the disambiguation corpus at the package layer:
+// the boundary between a real inline span ($...$) and ordinary dollar usage
+// (currency, price ranges, thousands separators, shell/prose variables). It
+// mirrors chat.TestInlineMathVsDollarAdversarial but without the markdown
+// code-span/escape context, so it excludes the `code` and \$ rows. The rule
+// (opener not before a space; close neither before a digit nor after a space)
+// must give exactly one classification per line: the first math span's body, or
+// no span at all.
+func TestFindInlineAdversarial(t *testing.T) {
+	math := map[string]string{ // input -> first span body
+		`$x$`:               `x`,
+		`$1/\pi$ series`:    `1/\pi`,
+		`$E=mc^2$`:          `E=mc^2`,
+		`$2x + 3$`:          `2x + 3`,
+		`$0.5$`:             `0.5`,
+		`$\alpha + \beta$`:  `\alpha + \beta`,
+		`$a_1$`:             `a_1`,
+		`value $x=5$ ok`:    `x=5`,
+		`$\frac{1}{2}$`:     `\frac{1}{2}`,
+		`the $n$-th term`:   `n`,
+		`$P(A|B)$`:          `P(A|B)`,
+		`$x$ and $y$`:       `x`, // first span
+		`$a + b$ and $c-d$`: `a + b`,
+	}
+	for in, want := range math {
+		d, ok := FindInline(in, 0)
+		if !ok {
+			t.Errorf("FindInline(%q) = no span, want body %q", in, want)
+			continue
+		}
+		if d.Body != want {
+			t.Errorf("FindInline(%q) body = %q, want %q", in, d.Body, want)
+		}
+	}
+
+	literal := []string{
+		"It costs $5",
+		"$5.00 total",
+		"from $5 to $10",
+		"$20,000 and $30,000",
+		"prices $1, $2, $3",
+		"the total is $100.",
+		"$5-$10 range",
+		"I paid $99 today",
+		"echo $PATH",
+		"$HOME/bin exists",
+		"set $a and $b now",
+		"run $CMD then $ARG",
+		"$5 for the $x plan",
+		"a $b and $c z",
+		"cost $5, gain $x, net $y",
+		"just $ alone",
+		"ends with $",
+		"$$x$$ fence",
+		"$ x $ padded",
+		"100$ suffix",
+	}
+	for _, in := range literal {
+		if d, ok := FindInline(in, 0); ok {
+			t.Errorf("FindInline(%q) matched span %q, want no span (literal dollars)", in, d.Body)
+		}
 	}
 }
 
@@ -149,8 +245,13 @@ func TestIsInlineOpen(t *testing.T) {
 	if !IsInlineOpen("$x$", 0) {
 		t.Errorf("IsInlineOpen at a math $ = false")
 	}
-	if IsInlineOpen("$5", 0) {
-		t.Errorf("IsInlineOpen at a currency $ = true")
+	// A digit opener now passes the cheap gate (FindInline validates the close);
+	// only a "$" followed by a space is rejected outright.
+	if !IsInlineOpen("$5", 0) {
+		t.Errorf("IsInlineOpen at a digit $ = false, want true (gate only, close validated later)")
+	}
+	if IsInlineOpen("$ 5", 0) {
+		t.Errorf("IsInlineOpen at a $ followed by space = true")
 	}
 	if IsInlineOpen("$$x", 0) {
 		t.Errorf("IsInlineOpen at a display fence = true")

@@ -522,9 +522,9 @@ func highlightInline(line string) string {
 		//   - "\$" is a literal dollar (backslash-escaped), never an opener.
 		//   - A "$" is math only when a matching UNESCAPED "$" closes it later on
 		//     the same line AND the enclosed body is non-empty; otherwise the "$"
-		//     is emitted literally. This makes a lone "$" (unclosed) and currency
-		//     like "$5"/"$5.00" stay literal — the closing "$" simply never
-		//     appears, so the span never forms.
+		//     is emitted literally. A closing "$" immediately followed by a digit
+		//     is currency, not a close, so "$5 or $10" and "$20,000" stay literal
+		//     while a formula like "$1/\pi$" (digit opener, non-digit close) forms.
 		//   - "\(" ... "\)" is always math (an explicit LaTeX delimiter).
 		// ApproxInline guarantees a single physical line, so inline math is safe
 		// inside table cells (styledCell → highlightInline) — no row-height
@@ -670,11 +670,13 @@ func findDoubleClose(runes []rune, start int, delim rune) int {
 // delimiter. It is the rune-index twin of internal/mathtext.FindInline (the
 // markdown inline loop indexes runes, not bytes), applying the same rules:
 //
-//   - "$ … $": a math span only when the "$" is not immediately followed by a
-//     digit or space (the currency guard: "$5"/"$ 5" stay literal), an UNESCAPED
-//     "$" closes it later on this line, and the body between the two dollars is
-//     non-empty. A lone "$" with no close stays literal too. The guard is what
-//     keeps "it costs $5 or $10" from pairing its two dollars into a span.
+//   - "$ … $": a math span only when the opening "$" is not immediately
+//     followed by a space ("$ 5"), an UNESCAPED "$" closes it later on this
+//     line, and the body between the two dollars is non-empty. A digit right
+//     after the opener is fine (so "$1/\pi$" renders); the currency case is
+//     ruled out at the CLOSE — a "$" immediately followed by a digit is not a
+//     close, which keeps "it costs $5 or $10" and "$20,000" literal. A lone
+//     "$" with no close stays literal too.
 //   - "\$" is a backslash-escaped literal dollar and never opens a span; the
 //     opener check skips it because runes[start] is the '\', not the '$'.
 //   - "\( … \)": always math (an explicit LaTeX inline delimiter).
@@ -686,16 +688,17 @@ func findInlineMath(runes []rune, start int) (body string, end int, ok bool) {
 		if start+1 < len(runes) && runes[start+1] == '$' {
 			return "", 0, false // "$$" display fence, handled in P2
 		}
-		// Currency guard: a "$" immediately followed by a digit or a space is
-		// currency ("$5", "$ 5"), not a math opener. Without this, a run like
-		// "it costs $5 or $10" would pair the two dollars into a spurious span
-		// with body "5 or ". This mirrors internal/mathtext.isCurrencyDollar so
-		// the markdown path and the package agree on what a "$" opener is.
+		// Opener guard: a "$" at end of line or immediately followed by a space
+		// ("$ 5") is not a math opener. A digit right after it IS allowed —
+		// "$1/\pi$" is a real formula — so the currency case is handled at the
+		// close (a "$" followed by a digit does not close). This mirrors
+		// internal/mathtext (isCurrencyDollar + scanDollarMath) so the markdown
+		// path and the package agree on what a "$" span is.
 		if start+1 >= len(runes) {
 			return "", 0, false // trailing lone "$"
 		}
-		if c := runes[start+1]; c == ' ' || (c >= '0' && c <= '9') {
-			return "", 0, false
+		if runes[start+1] == ' ' {
+			return "", 0, false // "$ " — spacing/currency, never a math opener
 		}
 		// Scan for the matching unescaped "$" on this line (highlightInline is
 		// already called per line, so runes never span a newline).
@@ -705,6 +708,17 @@ func findInlineMath(runes []rune, start int) (body string, end int, ok bool) {
 				continue
 			}
 			if runes[i] == '$' {
+				// A "$" immediately followed by a digit is currency ("$10"),
+				// not a close — keep scanning. This keeps "$5 or $10" literal
+				// now that a digit right after the opener is allowed (so
+				// "$1/\pi$" renders).
+				if i+1 < len(runes) && runes[i+1] >= '0' && runes[i+1] <= '9' {
+					continue
+				}
+				if runes[i-1] == ' ' {
+					continue // space before the close ("$a and $b"): the second
+					// "$" opens a new token, it does not close the first.
+				}
 				inner := string(runes[start+1 : i])
 				if strings.TrimSpace(inner) == "" {
 					return "", 0, false // empty body ("$ $"): not math

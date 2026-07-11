@@ -1152,3 +1152,68 @@ func TestDisplayMathNoCombiningMarks(t *testing.T) {
 		}
 	}
 }
+
+// TestInlineMathVsDollarAdversarial is the disambiguation corpus for the live
+// inline path (highlightInline, with its code-span-first and \$-escape
+// handling). It pins the boundary between real inline math ($...$) and ordinary
+// dollar usage — currency, price ranges, thousands separators, shell/prose
+// variables. The `want` is the exact plain (ANSI-stripped) render: math cases
+// lose their delimiters, dollar cases survive byte-for-byte. See the pandoc-
+// style rule in findInlineMath: opener not before a space, close neither before
+// a digit ("$10") nor after a space ("and $b").
+func TestInlineMathVsDollarAdversarial(t *testing.T) {
+	color.NoColor = false
+	t.Cleanup(func() { color.NoColor = true })
+	cases := []struct {
+		in, want, note string
+	}{
+		// Real inline math — delimiters consumed, body approximated.
+		{`$x$`, "x", "simple var"},
+		{`$1/\pi$ series`, "1/π series", "digit opener + macro (the reported bug)"},
+		{`$E=mc^2$`, "E=mc²", "superscript"},
+		{`$2x + 3$`, "2x + 3", "digit opener, inner spaces"},
+		{`$0.5$`, "0.5", "decimal opener"},
+		{`$\alpha + \beta$`, "α + β", "greek"},
+		{`$a_1$`, "a₁", "subscript"},
+		{`value $x=5$ ok`, "value x=5 ok", "digit before close, then space"},
+		{`$\frac{1}{2}$`, "1/2", "frac"},
+		{`the $n$-th term`, "the n-th term", "single letter, hyphen after close"},
+		{`$a + b$ and $c - d$`, "a + b and c - d", "two spans with inner spaces"},
+		{`$P(A|B)$`, "P(A|B)", "pipe inside body"},
+		{`$x$ and $y$`, "x and y", "two adjacent spans"},
+
+		// Currency — must survive verbatim.
+		{`It costs $5`, "It costs $5", "single price"},
+		{`$5.00 total`, "$5.00 total", "decimal price"},
+		{`from $5 to $10`, "from $5 to $10", "price range (classic pair trap)"},
+		{`$20,000 and $30,000`, "$20,000 and $30,000", "thousands separators"},
+		{`prices $1, $2, $3`, "prices $1, $2, $3", "three prices"},
+		{`the total is $100.`, "the total is $100.", "price at end"},
+		{`$5-$10 range`, "$5-$10 range", "dash range"},
+		{`I paid $99 today`, "I paid $99 today", "mid-sentence price"},
+
+		// Shell / prose variables and code — must survive.
+		{`echo $PATH`, "echo $PATH", "single shell var (no close)"},
+		{`$HOME/bin exists`, "$HOME/bin exists", "path var"},
+		{`set $a and $b now`, "set $a and $b now", "two letter vars, space before close"},
+		{`run $CMD then $ARG`, "run $CMD then $ARG", "two upper vars"},
+		{`$5 for the $x plan`, "$5 for the $x plan", "price + var (digit-opener rule guard)"},
+		{"use `$x$` inline", "use $x$ inline", "code span wins over math"},
+		{`\$5 escaped`, "$5 escaped", "backslash-escaped dollar"},
+		{`a $b and $c z`, "a $b and $c z", "letter var pair"},
+		{`cost $5, gain $x, net $y`, "cost $5, gain $x, net $y", "price + two vars"},
+
+		// Boundary / degenerate.
+		{`just $ alone`, "just $ alone", "lone dollar with space"},
+		{`ends with $`, "ends with $", "trailing dollar"},
+		{`$$x$$ fence`, "$$x$$ fence", "display fence, not inline"},
+		{`$ x $ padded`, "$ x $ padded", "space right after opener"},
+		{`100$ suffix`, "100$ suffix", "dollar as suffix"},
+	}
+	for _, c := range cases {
+		got := visible(highlightInline(c.in))
+		if got != c.want {
+			t.Errorf("[%s] highlightInline(%q) = %q, want %q", c.note, c.in, got, c.want)
+		}
+	}
+}
