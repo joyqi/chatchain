@@ -97,9 +97,11 @@ func bottomReserveListener() readline.Listener {
 		// Worst-case column estimate: every rune as 2 cols (CJK), plus a fixed
 		// allowance for the visible prompt. cols/w already grows the reserve as a
 		// long line wraps; the chrome rows sit ABOVE the editable line and need no
-		// headroom below it, so they are not added here.
+		// headroom below it, so they are not added here. The fixed +2 keeps the
+		// active row a couple lines off the bottom (enough to dodge the crash)
+		// while minimizing the visible bounce — pending real Terminal.app testing.
 		cols := len(line)*2 + 8
-		lines := cols/w + 4
+		lines := cols/w + 2
 		if lines > 40 {
 			lines = 40
 		}
