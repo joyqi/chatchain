@@ -89,12 +89,7 @@ func main() {
 		// macOS Terminal.app; skip it everywhere else so the composer sits flush
 		// at the bottom with no upward bounce.
 		if os.Getenv("TERM_PROGRAM") == "Apple_Terminal" {
-			w := termWidth()
-			lines := (len(line)*2+8)/w + 4
-			if lines > 40 {
-				lines = 40
-			}
-			reserveBottomLines(lines)
+			reserveBottomLines(2) // fixed: keep the active row 2 off the bottom
 		}
 		// Rebuild the live status and force a full three-line repaint on real keys.
 		if rl != nil {
