@@ -90,22 +90,12 @@ func bottomReserveListener() readline.Listener {
 		if !appleTerminal {
 			return nil, 0, false
 		}
-		w, _, err := term.GetSize(int(os.Stdout.Fd()))
-		if err != nil || w <= 0 {
-			w = 80
-		}
-		// Worst-case column estimate: every rune as 2 cols (CJK), plus a fixed
-		// allowance for the visible prompt. cols/w already grows the reserve as a
-		// long line wraps; the chrome rows sit ABOVE the editable line and need no
-		// headroom below it, so they are not added here. The fixed +2 keeps the
-		// active row a couple lines off the bottom (enough to dodge the crash)
-		// while minimizing the visible bounce — pending real Terminal.app testing.
-		cols := len(line)*2 + 8
-		lines := cols/w + 2
-		if lines > 40 {
-			lines = 40
-		}
-		reserveBottomLines(lines)
+		// A small FIXED reserve keeps the active (cursor) row a couple lines off
+		// the bottom, which is all the crash needs. Do NOT scale by the input's
+		// wrap depth: those wrapped rows sit ABOVE the cursor, and since
+		// reserveBottomLines only ever adds rows (never removes), a length-scaled
+		// reserve piles up one more blank line under the composer on every wrap.
+		reserveBottomLines(2)
 		return nil, 0, false
 	}
 }
