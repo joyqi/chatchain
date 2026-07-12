@@ -78,19 +78,28 @@ func reserveBottomLines(n int) {
 // required bottom headroom on every keystroke based on the current buffer
 // length and terminal width. Called both at prompt init (with line=nil) and
 // after each rune is written to the buffer.
+//
+// The whole workaround exists for ONE terminal: macOS Terminal.app crashes when
+// a CJK (wide) glyph wraps on the very bottom row. Every other terminal —
+// Ghostty, iTerm2, WezTerm, VS Code, … — handles it fine, so the reserve is
+// skipped there: it would only scroll the screen up to hold blank rows below the
+// input, which reads as an unwanted upward "bounce" on each keystroke.
 func bottomReserveListener() readline.Listener {
+	appleTerminal := os.Getenv("TERM_PROGRAM") == "Apple_Terminal"
 	return func(line []rune, pos int, key rune) ([]rune, int, bool) {
+		if !appleTerminal {
+			return nil, 0, false
+		}
 		w, _, err := term.GetSize(int(os.Stdout.Fd()))
 		if err != nil || w <= 0 {
 			w = 80
 		}
-		// Worst-case column estimate: every rune as 2 cols (CJK), plus
-		// a fixed allowance for the visible prompt. The input composer's
-		// multi-line prompt pushes the editable row composerChromeRows lower,
-		// so reserve that much extra headroom to keep a bottom-row CJK wrap
-		// (which crashes macOS Terminal) from ever landing on the last line.
+		// Worst-case column estimate: every rune as 2 cols (CJK), plus a fixed
+		// allowance for the visible prompt. cols/w already grows the reserve as a
+		// long line wraps; the chrome rows sit ABOVE the editable line and need no
+		// headroom below it, so they are not added here.
 		cols := len(line)*2 + 8
-		lines := cols/w + 4 + composerChromeRows
+		lines := cols/w + 4
 		if lines > 40 {
 			lines = 40
 		}
