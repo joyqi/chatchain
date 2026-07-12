@@ -17,4 +17,11 @@ var (
 	ItalicStyle    = color.New(color.Italic)
 	UnderlineStyle = color.New(color.Underline)
 	LinkStyle      = color.New(color.FgCyan, color.Underline)
+
+	// Input-composer status-bar field styles: each field gets its own faint hue
+	// so they read as distinct at a glance while staying muted (see the composer
+	// status line). color.Faint dims the hue; NoColor drops both.
+	StatusModelStyle = color.New(color.FgCyan, color.Faint)  // model name
+	StatusCtxStyle   = color.New(color.FgGreen, color.Faint) // context-window usage
+	StatusSepStyle   = color.New(color.Faint)                // " · " field separator
 )

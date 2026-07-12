@@ -85,9 +85,12 @@ func bottomReserveListener() readline.Listener {
 			w = 80
 		}
 		// Worst-case column estimate: every rune as 2 cols (CJK), plus
-		// a fixed allowance for the visible prompt.
+		// a fixed allowance for the visible prompt. The input composer's
+		// multi-line prompt pushes the editable row composerChromeRows lower,
+		// so reserve that much extra headroom to keep a bottom-row CJK wrap
+		// (which crashes macOS Terminal) from ever landing on the last line.
 		cols := len(line)*2 + 8
-		lines := cols/w + 4
+		lines := cols/w + 4 + composerChromeRows
 		if lines > 40 {
 			lines = 40
 		}
@@ -390,19 +393,21 @@ func retryWithCountdown(w io.Writer, fn func() error) error {
 // width can be measured when erasing the echoed line.
 const userPrompt = "❯ "
 
-// rewriteUserMessage replaces the line readline just echoed ("❯ <raw>") with a
-// full-width highlighted block showing only <display>, so a sent message stands
-// out from the assistant's reply. It assumes the cursor is at column 0 on the
-// row directly below the (possibly wrapped) echoed input — true right after
-// rl.Readline returns and before anything else is printed.
-func rewriteUserMessage(w io.Writer, raw, display string) {
+// eraseComposer clears the whole input composer — the separator + live status
+// chrome plus readline's echoed "❯ <raw>" line — so none of it lingers in
+// scrollback once the input is acted on (a command's output, or a sent message's
+// highlighted block, takes its place). It assumes the cursor is at column 0 on
+// the row directly below the (possibly wrapped) echoed input — true right after
+// rl.Readline returns and before anything else is printed. It leaves the cursor
+// at column 0 on the composer's former first row.
+func eraseComposer(w io.Writer, raw string) {
 	tw, _, err := term.GetSize(int(os.Stdout.Fd()))
 	if err != nil || tw <= 0 {
 		tw = 80
 	}
-	// Move up to the first echoed row and clear everything from there down.
-	fmt.Fprintf(w, "\033[%dA\r\033[J", echoRows(raw, tw))
-	printUserBlock(w, display)
+	// Move up past the echoed input AND the composerChromeRows above the marker,
+	// then clear everything from there down.
+	fmt.Fprintf(w, "\033[%dA\r\033[J", echoRows(raw, tw)+composerChromeRows)
 }
 
 // printUserBlock renders a user message as a stack of full-width reversed
@@ -488,14 +493,23 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 	// the command token live as it is typed.
 	var lineEmpty atomic.Bool
 	lineEmpty.Store(true)
-	rl, err := readline.NewEx(&readline.Config{
-		Prompt:          UserStyle.Sprint(userPrompt),
+	// The context budget is created here — before readline — so the input
+	// composer's live status line can read window/usage; it is seeded from any
+	// loaded history further below (usage stays 0 until then, which only the
+	// first, pre-seed render would show, and the listener re-renders before it).
+	budget := newContextBudget(contextWindow)
+	// rl is forward-declared so the composer listener can reach it via a closure
+	// (to push the live prompt); the listener only ever runs after NewEx assigns rl.
+	var rl *readline.Instance
+	var err error
+	rl, err = readline.NewEx(&readline.Config{
+		Prompt:          composerPrompt(p, budget, 0, composerTermWidth()),
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
 		AutoComplete:    &chatCompleter{},
 		Stdin:           newSlashTriggerReader(pf, &lineEmpty),
 		Painter:         commandPainter,
-		Listener:        slashTriggerListener(&lineEmpty, bottomReserveListener()),
+		Listener:        composerChromeListener(func() *readline.Instance { return rl }, p, budget, slashTriggerListener(&lineEmpty, bottomReserveListener())),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize input: %w", err)
@@ -567,7 +581,6 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		sessionScope = agent.Root
 	}
 
-	budget := newContextBudget(contextWindow)
 	if len(history) > 0 {
 		budget.update(p, history) // seed from loaded history on resume
 	}
@@ -720,7 +733,15 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 		budget.update(p, history)
 	}
 
+	// Wrap the output writer so the input composer is erased exactly once, just
+	// before each turn's first real output — uniformly, with no per-command code
+	// (see composerEraser). Interactive TUIs render through their own readline,
+	// bypassing this writer, so the composer frames them until they print.
+	eraser := newComposerEraser(w)
+	w = eraser
+
 	for {
+		eraser.flush() // erase a composer left by a pure-viewer / blank previous turn
 		input, err := rl.Readline()
 		if err != nil { // io.EOF or readline.ErrInterrupt
 			titleWG.Wait()
@@ -728,12 +749,13 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			return nil
 		}
 
-		// rawLine is exactly what readline echoed after the prompt; we use its
-		// width to know how many rows to erase when redrawing a sent message.
+		// rawLine is exactly what readline echoed after the prompt; arm the eraser
+		// with it so the composer is cleared just before this turn's first output.
 		rawLine := input
+		eraser.arm(rawLine)
 		input = strings.TrimSpace(input)
 		if input == "" {
-			continue
+			continue // blank line: the next flush erases the composer, redraw follows
 		}
 
 		// displayInput is what the user saw on screen (paste tags intact); the
@@ -856,10 +878,10 @@ func Run(p provider.Provider, systemPrompt string, importedHistory []provider.Me
 			continue
 		}
 
-		// Real message: replace readline's echoed "❯ <input>" line with a
-		// full-width highlighted block. Must run before anything else prints, so
-		// the cursor is still on the row directly below the echoed input.
-		rewriteUserMessage(w, rawLine, displayInput)
+		// Real message: printing the highlighted block is this turn's first write
+		// through the eraser, which clears the composer in place first — the block
+		// then lands where the composer was.
+		printUserBlock(w, displayInput)
 
 		// Lazy model selection: if startup selection was skipped (ESC), pick a
 		// model before sending the first real message. Cancelling again skips

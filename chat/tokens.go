@@ -161,14 +161,20 @@ func (b *contextBudget) shouldOfferCompact(extra, declinedAt int) bool {
 }
 
 // status renders "used / window (pct)"; a leading ≈ marks a local estimate.
-func (b *contextBudget) status() string {
+func (b *contextBudget) status() string { return b.statusWithDraft(0) }
+
+// statusWithDraft renders usage like status() but adds `draft` not-yet-sent
+// tokens (the message currently being composed) to the used figure, so the
+// input composer can show the context window filling live as the user types.
+func (b *contextBudget) statusWithDraft(draft int) string {
+	used := b.used + draft
 	pct := 0
 	if b.window > 0 {
-		pct = b.used * 100 / b.window
+		pct = used * 100 / b.window
 	}
 	prefix := ""
 	if !b.haveUsage {
 		prefix = "≈"
 	}
-	return fmt.Sprintf("%s%s / %s (%d%%)", prefix, formatTokens(b.used), formatTokens(b.window), pct)
+	return fmt.Sprintf("%s%s / %s (%d%%)", prefix, formatTokens(used), formatTokens(b.window), pct)
 }
