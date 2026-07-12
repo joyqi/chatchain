@@ -85,12 +85,17 @@ func main() {
 
 	listener := func(line []rune, pos int, key rune) ([]rune, int, bool) {
 		// Reserve bottom headroom like the real composer.
-		w := termWidth()
-		lines := (len(line)*2+8)/w + 2
-		if lines > 40 {
-			lines = 40
+		// Match the real app: the bottom-row CJK-wrap reserve is only needed on
+		// macOS Terminal.app; skip it everywhere else so the composer sits flush
+		// at the bottom with no upward bounce.
+		if os.Getenv("TERM_PROGRAM") == "Apple_Terminal" {
+			w := termWidth()
+			lines := (len(line)*2+8)/w + 4
+			if lines > 40 {
+				lines = 40
+			}
+			reserveBottomLines(lines)
 		}
-		reserveBottomLines(lines)
 		// Rebuild the live status and force a full three-line repaint on real keys.
 		if rl != nil {
 			rl.SetPrompt(composerPrompt(len(line)))
@@ -112,7 +117,9 @@ func main() {
 	defer rl.Close()
 
 	stop := make(chan struct{})
-	go streamAbove(rl, stop)
+	if os.Getenv("NOSTREAM") == "" {
+		go streamAbove(rl, stop)
+	}
 
 	out := rl.Stdout()
 	fmt.Fprintln(out, sepStyle.Sprint("── type-ahead spike ──"))
