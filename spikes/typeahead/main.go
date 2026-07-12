@@ -86,7 +86,7 @@ func main() {
 	listener := func(line []rune, pos int, key rune) ([]rune, int, bool) {
 		// Reserve bottom headroom like the real composer.
 		w := termWidth()
-		lines := (len(line)*2+8)/w + 6
+		lines := (len(line)*2+8)/w + 2
 		if lines > 40 {
 			lines = 40
 		}
