@@ -146,7 +146,11 @@ func streamAbove(rl *readline.Instance, stop <-chan struct{}) {
 			return
 		default:
 		}
-		fmt.Fprintf(out, lines[i%len(lines)]+"\n", i)
+		line := lines[i%len(lines)]
+		if strings.Contains(line, "%d") {
+			line = fmt.Sprintf(line, i)
+		}
+		fmt.Fprintln(out, line) // always exactly one clean line + newline
 		i++
 		// Vary the cadence to stress both steady and bursty output.
 		d := 140 * time.Millisecond
