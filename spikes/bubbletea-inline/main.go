@@ -179,6 +179,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ta.SetWidth(msg.Width)
+		// Resize + reflow is the structural weak spot of ANY inline renderer:
+		// the terminal rewraps long painted rows (the full-width separator,
+		// the selector title), shifting the frame under a renderer that only
+		// tracks positions RELATIVELY — the repaint lands off-by-N and the
+		// displaced rows leak into scrollback as orphans (terminal-dependent:
+		// tmux reflow stays aligned, Ghostty/Terminal.app rewrap and leak).
+		// Mitigation: collapse the transient selector on resize so the leak
+		// surface shrinks from a 9-row frame to the 3-row composer chrome.
+		if m.mode == selecting {
+			return m, m.closeSelector("")
+		}
 		return m, nil
 
 	case tea.KeyPressMsg:
