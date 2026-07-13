@@ -392,7 +392,11 @@ func (m *model) View() tea.View {
 	var b strings.Builder
 	rowsAbove := 0 // frame rows above the textarea, to offset the real cursor
 
-	// Busy spinner (elapsed appended by ui — logic never ticks labels).
+	// Busy spinner and the block preview render on the CONTENT side (above the
+	// separator): they are content-in-progress, not interaction (unlike the
+	// surfaces below the composer). The close-shrink bounce this position
+	// implies is minimized by the adapter deferring the preview close until
+	// the rendered block arrives (adjacent messages — at most one frame).
 	if m.busy != nil {
 		elapsed := int(time.Since(m.busy.since).Seconds())
 		b.WriteString(cyan + spinnerFrames[m.spin%len(spinnerFrames)] + sgrReset +
@@ -406,8 +410,6 @@ func (m *model) View() tea.View {
 		b.WriteString(sgrReset + "\n")
 		rowsAbove++
 	}
-
-	// Live block preview: spinner header + rolling raw-source window.
 	if m.preview != nil {
 		b.WriteString(cyan + spinnerFrames[m.spin%len(spinnerFrames)] + sgrReset +
 			faint + " " + m.preview.label + sgrReset + "\n")

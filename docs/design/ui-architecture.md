@@ -114,14 +114,15 @@ Facade shape decisions from the adversarial review:
 - **Frame stacking order is fixed and ui-owned**:
   `[busy] [stream preview] [queue] [separator] [status] [composer]
   [selector/viewer/confirm]` — each slot optional; logic never reasons about
-  composition. Interaction surfaces render BELOW the composer (shell
-  convention: completion menus sit under the prompt). This placement is
-  load-bearing: bubbletea's top-anchored shrink drops a frame's vacated rows
-  at the BOTTOM of its old extent, so with the shrinking surfaces lowest,
-  dead rows always land at the screen bottom where subsequent output
-  consumes them one insert at a time — **shrinks are self-healing by
-  construction**, and the composer never moves when a surface closes (it
-  moves once, at open, to make room).
+  composition. INTERACTION surfaces render below the composer (shell
+  convention; their close-shrink dies at the screen bottom and self-heals —
+  no re-anchor machinery). Busy and the stream preview are
+  content-in-progress and stay on the CONTENT side, above the separator
+  (user decision: a rendering preview belongs with the output, not the
+  input). The close-shrink bounce this implies is inherent to the renderer's
+  top-anchored shrink; it is minimized adapter-side: uiMDSink DEFERS the
+  preview close until the rendered block arrives, so shrink and push are
+  adjacent messages (at most a one-frame blip instead of a render-time gap).
 
 ## internal/markdown (P1)
 

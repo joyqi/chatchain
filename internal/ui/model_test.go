@@ -210,6 +210,13 @@ func TestPreviewRollingTail(t *testing.T) {
 			t.Fatalf("missing %q:\n%s", want, c)
 		}
 	}
+	// The preview is content-in-progress: it renders on the CONTENT side,
+	// above the separator (unlike interaction surfaces, which sit below the
+	// composer). The close-shrink bounce is minimized adapter-side by
+	// deferring the close until the rendered block arrives.
+	if strings.Index(c, "rendering table…") > strings.Index(c, "───") {
+		t.Fatalf("preview not above the separator:\n%s", c)
+	}
 	m = step(t, m, previewCloseMsg{})
 	if strings.Contains(content(m), "r5") {
 		t.Fatal("preview not cleared on close")
