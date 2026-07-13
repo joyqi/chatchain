@@ -78,14 +78,34 @@ type model struct {
 // cursor-control spinner cannot exist in this architecture).
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// tableRows is the fake streaming table (mixed CJK) for the live-region demo.
-var tableRows = []string{
-	"┌──────────┬──────┬───────┐",
-	"│ model    │ ctx  │ price │",
-	"├──────────┼──────┼───────┤",
-	"│ gpt-4o   │ 128k │ $2.50 │",
-	"│ 中文模型 │ 1m   │ $0.80 │",
-	"└──────────┴──────┴───────┘",
+// The live-region demo mirrors the REAL app's StreamView semantics
+// (chat/markdown.go): while a table block buffers, show a spinner header plus
+// a rolling window of the last previewWindow RAW SOURCE lines (dim); when the
+// source is complete, clear the preview and render the final table ONCE.
+const previewWindow = 3
+
+// tableSrc is the raw markdown source that "streams in" line by line.
+var tableSrc = []string{
+	"| model | ctx | price |",
+	"| --- | --- | --- |",
+	"| gpt-4o | 128k | $2.50 |",
+	"| claude-opus | 200k | $3.00 |",
+	"| gemini-pro | 1m | $1.20 |",
+	"| 中文模型 | 1m | $0.80 |",
+	"| grok | 128k | $2.00 |",
+}
+
+// tableRendered is the final one-shot render emitted after the source ends.
+var tableRendered = []string{
+	"┌─────────────┬──────┬───────┐",
+	"│ model       │ ctx  │ price │",
+	"├─────────────┼──────┼───────┤",
+	"│ gpt-4o      │ 128k │ $2.50 │",
+	"│ claude-opus │ 200k │ $3.00 │",
+	"│ gemini-pro  │ 1m   │ $1.20 │",
+	"│ 中文模型    │ 1m   │ $0.80 │",
+	"│ grok        │ 128k │ $2.00 │",
+	"└─────────────┴──────┴───────┘",
 }
 
 func newModel() model {
@@ -191,36 +211,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinTickMsg:
-		if !m.thinking {
-			return m, nil // spinner phase over — stop the tick chain
+		if !m.thinking && len(m.live) == 0 {
+			return m, nil // no animated header on screen — stop the tick chain
 		}
-		m.spin++
+		m.spin++ // drives both the Thinking spinner and the preview header
 		return m, tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinTickMsg{} })
 
 	case tableRowMsg:
-		m.thinking = false // first row ends the spinner phase
-		m.live = append(m.live, tableRows[msg.i])
-		if msg.i+1 < len(tableRows) {
+		m.thinking = false // first source line ends the "waiting" spinner phase
+		m.live = append(m.live, tableSrc[msg.i])
+		if msg.i+1 < len(tableSrc) {
 			return m, tea.Tick(350*time.Millisecond, func(time.Time) tea.Msg { return tableRowMsg{i: msg.i + 1} })
 		}
 		return m, tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return tableCommitMsg{} })
 
 	case tableCommitMsg:
-		// Commit the finished block: the frame sheds the live region and ONE
-		// multi-line Println lands the final table in scrollback. Its own
-		// len(tableRows) pushes re-anchor most of the shrink; the deferred
-		// path pads the (header) difference.
-		final := green + strings.Join(tableRows, "\n") + stReset
-		shed := len(m.live) + 1 // rows + the "◐ streaming…" header line
+		// Source complete: clear the preview (the frame sheds header+window)
+		// and render the final table ONCE — a single multi-line Println into
+		// scrollback, exactly the real StreamView.Done + flushTable sequence.
+		// The commit's own line count re-anchors the shrink (usually more
+		// lines than the shed 1+3 window); the deferred path pads any deficit.
+		final := green + strings.Join(tableRendered, "\n") + stReset
+		shed := 1 + min(previewWindow, len(m.live)) // header + rolling window rows
 		m.live = nil
 		if m.inserted >= m.height { // frame at the bottom → defer past the shrink flush
 			m.pendingResult = final
-			if blanks := shed - len(tableRows); blanks > 0 {
+			if blanks := shed - len(tableRendered); blanks > 0 {
 				m.pendingBlanks += blanks
 			}
 			return m, tea.Tick(reanchorDelay, func(time.Time) tea.Msg { return reanchorMsg{} })
 		}
-		m.inserted += len(tableRows)
+		m.inserted += len(tableRendered)
 		return m, tea.Println(final)
 
 	case reanchorMsg:
@@ -372,11 +393,18 @@ func (m model) View() tea.View {
 		rowsAbove++
 	}
 	if len(m.live) > 0 {
-		b.WriteString(faint + "◐ streaming table (live region — repainted in frame)" + stReset + "\n")
-		for _, r := range m.live {
-			b.WriteString(r + "\n")
+		// Real StreamView semantics: spinner header + a ROLLING window of the
+		// last previewWindow RAW SOURCE lines (dim), repainted each frame.
+		// Once the window fills, the frame height stays CONSTANT until commit.
+		b.WriteString(cyan + spinnerFrames[m.spin%len(spinnerFrames)] + stReset + faint + " rendering table…" + stReset + "\n")
+		tail := m.live
+		if len(tail) > previewWindow {
+			tail = tail[len(tail)-previewWindow:]
 		}
-		rowsAbove += 1 + len(m.live)
+		for _, r := range tail {
+			b.WriteString(faint + "  " + r + stReset + "\n")
+		}
+		rowsAbove += 1 + len(tail)
 	}
 
 	w := m.width
