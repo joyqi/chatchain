@@ -1,26 +1,21 @@
-package chat
+package markdown
 
 import (
 	"fmt"
 	"io"
-	"os"
 	"regexp"
 	"strings"
-	"time"
 	"unicode"
 
 	"chatchain/internal/mathtext"
-	"chatchain/internal/promptui"
+	"chatchain/internal/textwidth"
 
 	"github.com/alecthomas/chroma/v2/quick"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/list"
 	"github.com/charmbracelet/lipgloss/table"
 	"github.com/fatih/color"
-	"github.com/mattn/go-runewidth"
 	"github.com/muesli/termenv"
-	"github.com/rivo/uniseg"
-	"golang.org/x/term"
 )
 
 // mdRenderer is the single lipgloss renderer used by the markdown path.
@@ -106,10 +101,41 @@ const (
 	unitBlock               // the last emitted unit was a rendered block element
 )
 
-// markdownWriter wraps an io.Writer and applies ANSI highlighting to markdown
-// syntax elements line by line, without modifying the original text content.
-type markdownWriter struct {
-	w         io.Writer
+// Sink is where the Writer sends output and reads terminal context. It is
+// the purity seam: the renderer itself never touches the terminal.
+//
+//   - Write receives committed rendered lines (ANSI text).
+//   - Width is consulted LIVE at each block flush, so a mid-stream terminal
+//     resize changes the layout of the NEXT block (today's behavior).
+//   - BlockPreview opens a live "rendering…" preview for a buffering block
+//     (table/code/list/quote/math); the returned writer receives the RAW
+//     source lines and Close clears the preview. It may return nil — the
+//     piped/non-TTY shape, where blocks render with no live preview.
+type Sink interface {
+	io.Writer
+	Width() int
+	BlockPreview(label string) io.WriteCloser
+}
+
+// plainSink is the no-preview Sink over a plain writer at a fixed width: the
+// shape used for piped output, tests, and blockquote child rendering.
+type plainSink struct {
+	w     io.Writer
+	width int
+}
+
+func (s plainSink) Write(p []byte) (int, error)        { return s.w.Write(p) }
+func (s plainSink) Width() int                         { return s.width }
+func (s plainSink) BlockPreview(string) io.WriteCloser { return nil }
+
+// NewWriterTo returns a Writer emitting plain rendered output to w at a fixed
+// layout width — no live previews (the piped/non-TTY shape).
+func NewWriterTo(w io.Writer, width int) *Writer { return NewWriter(plainSink{w: w, width: width}) }
+
+// Writer applies ANSI highlighting to markdown syntax elements line by line,
+// without modifying the original text content, emitting through a Sink.
+type Writer struct {
+	w         Sink
 	buf       []byte
 	inFence   bool
 	tableRows [][]string // buffered parsed cells per row
@@ -125,26 +151,24 @@ type markdownWriter struct {
 	inMath    bool       // a display-math ($$…$$ / \[…\]) block is buffering
 	mathLines []string   // buffered inner display-math lines (fence lines excluded)
 	lastUnit  mdUnit     // classification of the last emitted unit (spacing state machine)
-	width     int        // width override for block layout; 0 = the terminal width
-	// (a blockquote renders its inner content through a child writer whose width
-	// is reduced by the quote frame, so nested tables/quotes fit inside the bar)
 	// tableView / codeView / listView / quoteView show a live "rendering…"
-	// preview of a block while it buffers (terminals only); the flush clears it
-	// before emitting the result.
-	tableView *promptui.StreamView
-	codeView  *promptui.StreamView
-	listView  *promptui.StreamView
-	quoteView *promptui.StreamView
-	mathView  *promptui.StreamView
+	// preview of a block while it buffers (nil when the sink has no preview);
+	// the flush Closes it before emitting the result.
+	tableView io.WriteCloser
+	codeView  io.WriteCloser
+	listView  io.WriteCloser
+	quoteView io.WriteCloser
+	mathView  io.WriteCloser
 }
 
-func newMarkdownWriter(w io.Writer) *markdownWriter {
+// NewWriter returns a Writer emitting through sink.
+func NewWriter(w Sink) *Writer {
 	// lastUnit starts unitNone so leading blank lines (before any content) are
 	// suppressed and no separator is inserted before the first block or text.
-	return &markdownWriter{w: w, lastUnit: unitNone}
+	return &Writer{w: w, lastUnit: unitNone}
 }
 
-func (m *markdownWriter) Write(p []byte) (int, error) {
+func (m *Writer) Write(p []byte) (int, error) {
 	m.buf = append(m.buf, p...)
 
 	for {
@@ -183,7 +207,7 @@ func (m *markdownWriter) Write(p []byte) (int, error) {
 				m.inFence = true
 				m.fenceLang = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "```"))
 				m.codeLines = nil
-				m.codeView = newBlockPreview(m.w, codeLabel(m.fenceLang))
+				m.codeView = m.w.BlockPreview(codeLabel(m.fenceLang))
 			}
 			continue
 		}
@@ -262,7 +286,7 @@ func (m *markdownWriter) Write(p []byte) (int, error) {
 
 		if isTableLine(line) {
 			if len(m.tableRows) == 0 {
-				m.tableView = newBlockPreview(m.w, "rendering table…")
+				m.tableView = m.w.BlockPreview("rendering table…")
 			}
 			cells := parseTableCells(line)
 			m.tableRows = append(m.tableRows, cells)
@@ -317,7 +341,7 @@ func (m *markdownWriter) Write(p []byte) (int, error) {
 }
 
 // Flush writes any remaining buffered content.
-func (m *markdownWriter) Flush() {
+func (m *Writer) Flush() {
 	if m.inFence {
 		// Unterminated code block: emit what we buffered.
 		if len(m.buf) > 0 {
@@ -410,7 +434,7 @@ func indexOf(b []byte, c byte) int {
 }
 
 // highlightLine applies ANSI styles to a single line based on markdown syntax.
-func (m *markdownWriter) highlightLine(line string) string {
+func (m *Writer) highlightLine(line string) string {
 	syncMDRenderer()
 	trimmed := strings.TrimSpace(line)
 
@@ -808,9 +832,9 @@ func indentLevel(indent string) int {
 }
 
 // startList opens a list block with the given marker line as its first item.
-func (m *markdownWriter) startList(line string) {
+func (m *Writer) startList(line string) {
 	m.inList = true
-	m.listView = newBlockPreview(m.w, "rendering list…")
+	m.listView = m.w.BlockPreview("rendering list…")
 	m.listAppendItem(line)
 	m.listPreview(line)
 }
@@ -818,7 +842,7 @@ func (m *markdownWriter) startList(line string) {
 // listConsume feeds one line to the buffering list block. It reports whether
 // the line was consumed; when it was not, the block (and any held blank line)
 // has already been flushed and the caller must process the line normally.
-func (m *markdownWriter) listConsume(line string) (bool, error) {
+func (m *Writer) listConsume(line string) (bool, error) {
 	trimmed := strings.TrimSpace(line)
 	switch {
 	case trimmed == "":
@@ -864,7 +888,7 @@ func (m *markdownWriter) listConsume(line string) (bool, error) {
 }
 
 // listAppendItem parses a marker line into a new item of the buffering block.
-func (m *markdownWriter) listAppendItem(line string) {
+func (m *Writer) listAppendItem(line string) {
 	marker, rest, _ := splitListMarker(line)
 	bullet := strings.TrimLeft(marker, " \t")
 	level := indentLevel(marker[:len(marker)-len(bullet)])
@@ -888,7 +912,7 @@ func (m *markdownWriter) listAppendItem(line string) {
 }
 
 // listPreview mirrors a consumed raw line into the live block preview.
-func (m *markdownWriter) listPreview(line string) {
+func (m *Writer) listPreview(line string) {
 	if m.listView != nil {
 		io.WriteString(m.listView, line+"\n")
 	}
@@ -896,7 +920,7 @@ func (m *markdownWriter) listPreview(line string) {
 
 // finishList flushes the buffering list block and re-emits a held blank line
 // after it (the blank turned out to end the list, not to make it loose).
-func (m *markdownWriter) finishList() error {
+func (m *Writer) finishList() error {
 	err := m.flushList()
 	if m.listBlank {
 		m.listBlank = false
@@ -912,9 +936,9 @@ func (m *markdownWriter) finishList() error {
 }
 
 // flushList clears the live preview and renders the buffered list block.
-func (m *markdownWriter) flushList() error {
+func (m *Writer) flushList() error {
 	if m.listView != nil {
-		m.listView.Done("") // clear the live preview before emitting the list
+		m.listView.Close() // clear the live preview before emitting the list
 		m.listView = nil
 	}
 	items := m.listItems
@@ -952,16 +976,16 @@ func stripQuoteMarker(line string) string {
 
 // startQuote opens a blockquote block with the given line as its first inner
 // line.
-func (m *markdownWriter) startQuote(line string) {
+func (m *Writer) startQuote(line string) {
 	m.inQuote = true
 	m.quoteBody = nil
-	m.quoteView = newBlockPreview(m.w, "rendering quote…")
+	m.quoteView = m.w.BlockPreview("rendering quote…")
 	m.quoteAppend(line)
 }
 
 // quoteAppend buffers one quote line's inner content and mirrors the raw line
 // into the live preview.
-func (m *markdownWriter) quoteAppend(line string) {
+func (m *Writer) quoteAppend(line string) {
 	m.quoteBody = append(m.quoteBody, stripQuoteMarker(line))
 	if m.quoteView != nil {
 		io.WriteString(m.quoteView, line+"\n")
@@ -971,9 +995,9 @@ func (m *markdownWriter) quoteAppend(line string) {
 // flushQuote clears the live preview and renders the buffered blockquote as a
 // single lipgloss block so the left bar stays continuous down every row. The
 // flush counts as non-blank output for the blank-run collapse.
-func (m *markdownWriter) flushQuote() error {
+func (m *Writer) flushQuote() error {
 	if m.quoteView != nil {
-		m.quoteView.Done("") // clear the live preview before emitting the quote
+		m.quoteView.Close() // clear the live preview before emitting the quote
 		m.quoteView = nil
 	}
 	body := m.quoteBody
@@ -990,27 +1014,23 @@ func (m *markdownWriter) flushQuote() error {
 	return err
 }
 
-// termWidth returns the width for block layout: the writer's override when set
-// (a blockquote's child writer), otherwise the terminal width (80 on error).
-func (m *markdownWriter) termWidth() int {
-	if m.width > 0 {
-		return m.width
+// termWidth returns the width for block layout: the sink's live width (so a
+// mid-stream resize changes the next block), 80 when the sink reports none.
+func (m *Writer) termWidth() int {
+	if tw := m.w.Width(); tw > 0 {
+		return tw
 	}
-	tw, _, err := term.GetSize(int(os.Stdout.Fd()))
-	if err != nil || tw <= 0 {
-		return 80
-	}
-	return tw
+	return 80
 }
 
 // renderQuote frames the buffered inner content in the mdQuote block style with
 // a continuous left bar. The inner lines are a mini-document: they are rendered
-// recursively through a child markdownWriter (so lists, headings, tables,
+// recursively through a child Writer (so lists, headings, tables,
 // nested quotes, and inline markdown inside a quote all work by reusing the
 // full pipeline), at a width reduced by the quote frame so nested blocks fit.
 // The bar is then prepended to every line of that pre-rendered content — no
 // Width is set on the style, so lipgloss never re-wraps the child's tables.
-func (m *markdownWriter) renderQuote(body []string) string {
+func (m *Writer) renderQuote(body []string) string {
 	syncMDRenderer()
 
 	inner := m.termWidth() - quoteBorderCols
@@ -1018,8 +1038,7 @@ func (m *markdownWriter) renderQuote(body []string) string {
 		inner = quoteBorderCols + 1
 	}
 	var buf strings.Builder
-	child := newMarkdownWriter(&buf)
-	child.width = inner
+	child := NewWriter(plainSink{w: &buf, width: inner})
 	_, _ = child.Write([]byte(strings.Join(body, "\n") + "\n"))
 	child.Flush()
 
@@ -1042,7 +1061,7 @@ func (m *markdownWriter) renderQuote(body []string) string {
 // emitBlank writes a blank separator line, collapsing runs of blanks and
 // suppressing leading blanks: it does nothing when the last unit was already a
 // blank (or nothing has been emitted yet), otherwise it writes one "\n".
-func (m *markdownWriter) emitBlank() error {
+func (m *Writer) emitBlank() error {
 	if m.lastUnit == unitBlank || m.lastUnit == unitNone {
 		return nil // collapse a run of blanks (and drop leading blanks)
 	}
@@ -1055,7 +1074,7 @@ func (m *markdownWriter) emitBlank() error {
 // block, one separating blank line is inserted first (block→paragraph
 // boundary); after a text unit no separator is written so consecutive plain
 // lines stay in the same paragraph.
-func (m *markdownWriter) emitText(s string) error {
+func (m *Writer) emitText(s string) error {
 	if m.lastUnit == unitBlock {
 		if _, err := io.WriteString(m.w, "\n"); err != nil {
 			return err
@@ -1071,7 +1090,7 @@ func (m *markdownWriter) emitText(s string) error {
 // block (text→block or block→block boundary); after a blank or at the start it
 // writes nothing. It deliberately does not update lastUnit — the block's render
 // followed by endBlock does that.
-func (m *markdownWriter) beginBlock() error {
+func (m *Writer) beginBlock() error {
 	if m.lastUnit == unitText || m.lastUnit == unitBlock {
 		_, err := io.WriteString(m.w, "\n")
 		return err
@@ -1082,7 +1101,7 @@ func (m *markdownWriter) beginBlock() error {
 // endBlock records that a rendered block was just written. The blank line that
 // follows a block is produced lazily by the next unit's separator, so nothing
 // is emitted here — this only updates the state machine.
-func (m *markdownWriter) endBlock() {
+func (m *Writer) endBlock() {
 	m.lastUnit = unitBlock
 }
 
@@ -1291,23 +1310,6 @@ func isTableSeparator(cells []string) bool {
 // stream in, but only when writing to a terminal — off a terminal (pipe, tests)
 // there is no cursor control, so the raw lines would just duplicate the rendered
 // result. Returns nil when there is no terminal.
-func newBlockPreview(w io.Writer, label string) *promptui.StreamView {
-	f, ok := w.(*os.File)
-	if !ok || !term.IsTerminal(int(f.Fd())) {
-		return nil
-	}
-	return &promptui.StreamView{
-		Spinner:     spinnerFrames,
-		Label:       label,
-		HeaderStyle: dim,
-		Window:      3,
-		Indent:      "  ",
-		RuneWidth:   runeWidth,
-		Style:       dim,
-		Stdout:      w,
-	}
-}
-
 func codeLabel(lang string) string {
 	if lang == "" {
 		return "rendering code…"
@@ -1317,9 +1319,9 @@ func codeLabel(lang string) string {
 
 // flushCode clears the live preview and emits the buffered code block, syntax
 // highlighted for the terminal.
-func (m *markdownWriter) flushCode() error {
+func (m *Writer) flushCode() error {
 	if m.codeView != nil {
-		m.codeView.Done("")
+		m.codeView.Close()
 		m.codeView = nil
 	}
 	code := strings.Join(m.codeLines, "\n")
@@ -1336,15 +1338,15 @@ func (m *markdownWriter) flushCode() error {
 
 // startMath opens a buffered display-math block. Its inner lines are collected
 // until the closing fence, then laid out in 2D by flushMath.
-func (m *markdownWriter) startMath() {
+func (m *Writer) startMath() {
 	m.inMath = true
 	m.mathLines = nil
-	m.mathView = newBlockPreview(m.w, "rendering math…")
+	m.mathView = m.w.BlockPreview("rendering math…")
 }
 
 // mathAppend buffers one inner display-math line and mirrors the raw line into
 // the live preview.
-func (m *markdownWriter) mathAppend(line string) {
+func (m *Writer) mathAppend(line string) {
 	m.mathLines = append(m.mathLines, line)
 	if m.mathView != nil {
 		io.WriteString(m.mathView, line+"\n")
@@ -1369,9 +1371,9 @@ const mathIndent = "  "
 // (dim is reserved for decoration: quote bars, bullets, rules, URLs). Both
 // outcomes are glyph-based and carry no ANSI of their own, so under
 // color.NoColor the whole block stays escape-free.
-func (m *markdownWriter) flushMath() error {
+func (m *Writer) flushMath() error {
 	if m.mathView != nil {
-		m.mathView.Done("") // clear the live preview before emitting the block
+		m.mathView.Close() // clear the live preview before emitting the block
 		m.mathView = nil
 	}
 	lines := m.mathLines
@@ -1419,7 +1421,7 @@ func highlightCode(code, lang string) string {
 	}
 	var sb strings.Builder
 	if err := quick.Highlight(&sb, code, lang, "terminal256", codeStyleName()); err != nil {
-		return indentCode(CodeBlockStyle.Sprint(code))
+		return indentCode(codeFallbackStyle.Sprint(code))
 	}
 	return indentCode(sb.String())
 }
@@ -1435,10 +1437,18 @@ func indentCode(s string) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
-var (
-	codeTheme     = "monokai" // chroma style matching the current terminal background
-	bgUnsupported bool        // terminal didn't answer OSC 11; stop re-querying
-)
+// codeTheme is the chroma style matching the current terminal background.
+// The OSC background query that picks it is a terminal interaction and lives
+// with the caller (chat/ui); it injects the result via SetCodeTheme.
+var codeTheme = "monokai"
+
+// SetCodeTheme sets the chroma style used for subsequent code blocks
+// ("monokai" for dark backgrounds, "github" for light).
+func SetCodeTheme(name string) { codeTheme = name }
+
+// codeFallbackStyle colors a code block when chroma highlighting fails
+// (matching the app-wide green used for code).
+var codeFallbackStyle = color.New(color.FgGreen)
 
 // codeStyleName returns the chroma style for the current terminal background. A
 // light background gets a light theme so dark-on-light text stays readable;
@@ -1449,36 +1459,13 @@ var (
 // background change.
 func codeStyleName() string { return codeTheme }
 
-// detectCodeTheme re-detects the terminal background (OSC 11 via termenv) and
-// updates codeTheme. Call it only at quiet moments (startup, the start of a
-// turn) — never mid-stream — so the query can't race user keystrokes. A
-// responsive terminal answers in milliseconds, so per-turn re-detection is
-// cheap and tracks light/dark switches; a terminal that ignores OSC 11 hits
-// termenv's 5s timeout once, after which we latch off so later turns don't pay
-// it again.
-func detectCodeTheme() {
-	if bgUnsupported {
-		return
-	}
-	start := time.Now()
-	dark := termenv.HasDarkBackground()
-	if time.Since(start) > time.Second {
-		bgUnsupported = true
-	}
-	if dark {
-		codeTheme = "monokai"
-	} else {
-		codeTheme = "github"
-	}
-}
-
 // flushTable renders the buffered table rows with aligned columns via
 // lipgloss/table. If the table would exceed terminal width, columns are
 // shrunk (water-filling) and cell text wraps within the cell across multiple
 // visual lines.
-func (m *markdownWriter) flushTable() error {
+func (m *Writer) flushTable() error {
 	if m.tableView != nil {
-		m.tableView.Done("") // clear the live preview before emitting the table
+		m.tableView.Close() // clear the live preview before emitting the table
 		m.tableView = nil
 	}
 
@@ -1661,14 +1648,11 @@ func cellDisplayWidth(cell string) int {
 // widths stay aligned. Use it for any whole string; see runeWidth for the
 // single-rune seam.
 func displayWidth(s string) int {
-	return uniseg.StringWidth(s)
+	return textwidth.StringWidth(s)
 }
 
-// runeWidth returns the display width of a single rune. A lone rune has no
-// sequence context (no following VS16, ZWJ, or combining mark), so grapheme
-// segmentation cannot apply and go-runewidth's per-rune tables are the right
-// tool. This is the seam injected into promptui components that walk text one
-// rune at a time.
+// runeWidth is the single-rune twin (see textwidth.RuneWidth for the ruler
+// rationale).
 func runeWidth(r rune) int {
-	return runewidth.RuneWidth(r)
+	return textwidth.RuneWidth(r)
 }

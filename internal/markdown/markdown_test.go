@@ -1,4 +1,4 @@
-package chat
+package markdown
 
 import (
 	"io"
@@ -8,6 +8,13 @@ import (
 	"github.com/fatih/color"
 	"github.com/rivo/uniseg"
 )
+
+// newTestWriter builds a Writer over a plain buffer at the pre-extraction
+// test width (80 — the old non-TTY fallback), no live previews.
+func newTestWriter(w io.Writer) *Writer { return NewWriterTo(w, 80) }
+
+// stripANSI removes ANSI SGR codes (test-local twin of chat's helper).
+func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 // visible strips ANSI SGR codes, leaving the text the user actually sees.
 func visible(s string) string { return ansiRe.ReplaceAllString(s, "") }
@@ -24,11 +31,11 @@ func sgrParams(s string) map[string]bool {
 	return params
 }
 
-// renderMD runs src through a markdownWriter and returns the visible output.
+// renderMD runs src through a Writer and returns the visible output.
 func renderMD(t *testing.T, src string) string {
 	t.Helper()
 	var out strings.Builder
-	m := newMarkdownWriter(&out)
+	m := newTestWriter(&out)
 	if _, err := m.Write([]byte(src)); err != nil {
 		t.Fatalf("Write(%q): %v", src, err)
 	}
@@ -89,7 +96,7 @@ func TestTableRender(t *testing.T) {
 	color.NoColor = false
 	src := "| Name | Note |\n|------|------|\n| `--key` | the **secret** |\n| x | y |\n"
 	var out strings.Builder
-	m := newMarkdownWriter(&out)
+	m := newTestWriter(&out)
 	m.Write([]byte(src))
 	m.Flush()
 	got := visible(out.String())
@@ -128,7 +135,7 @@ func TestTableAlignsEmojiAndCJK(t *testing.T) {
 		"| 🏛️ | Museum | VS16 |\n" +
 		"| 中文 | 漢字テスト | CJK and ascii42 |\n"
 	var out strings.Builder
-	m := newMarkdownWriter(&out)
+	m := newTestWriter(&out)
 	m.Write([]byte(src))
 	m.Flush()
 	got := strings.TrimRight(visible(out.String()), "\n")
@@ -171,7 +178,7 @@ func TestCodeBlockRender(t *testing.T) {
 	color.NoColor = false
 	src := "```python\ndef f():\n    return 1\n```\n"
 	var out strings.Builder
-	m := newMarkdownWriter(&out)
+	m := newTestWriter(&out)
 	m.Write([]byte(src))
 	m.Flush()
 	got := out.String()
@@ -217,7 +224,7 @@ func TestListOrderedStartOffset(t *testing.T) {
 	color.NoColor = false
 	src := "3. third\n4. fourth\n5. fifth\n"
 	var out strings.Builder
-	m := newMarkdownWriter(&out)
+	m := newTestWriter(&out)
 	m.Write([]byte(src))
 	m.Flush()
 	assertLines(t, visible(out.String()), []string{
@@ -294,7 +301,7 @@ func TestListCJKWidth(t *testing.T) {
 }
 
 func TestHighlightLineHidesMarkers(t *testing.T) {
-	m := newMarkdownWriter(io.Discard)
+	m := newTestWriter(io.Discard)
 	tests := []struct {
 		in, want string
 	}{
@@ -319,7 +326,7 @@ func TestHighlightLineHidesMarkers(t *testing.T) {
 // markers hidden throughout.
 func TestHeadingLevels(t *testing.T) {
 	color.NoColor = false
-	m := newMarkdownWriter(io.Discard)
+	m := newTestWriter(io.Discard)
 	tests := []struct {
 		in, text string
 		want     []string // required SGR params (1 bold, 2 faint, 4 underline)
@@ -354,7 +361,7 @@ func TestHeadingLevels(t *testing.T) {
 // concern (they render as a buffered block — see TestBlockquote*).
 func TestRuleDim(t *testing.T) {
 	color.NoColor = false
-	m := newMarkdownWriter(io.Discard)
+	m := newTestWriter(io.Discard)
 	tests := []struct{ in, want string }{
 		{"---", "\x1b[2m---\x1b[0m"},
 		{"* * *", "\x1b[2m* * *\x1b[0m"},
@@ -419,7 +426,7 @@ func TestMarkdownNoColorDisablesStyling(t *testing.T) {
 		"|---|---|\n" +
 		"| 1 | 2 |\n"
 	var out strings.Builder
-	m := newMarkdownWriter(&out)
+	m := newTestWriter(&out)
 	if _, err := m.Write([]byte(src)); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -500,12 +507,12 @@ func TestHeadingStripsInlineMarkers(t *testing.T) {
 	}
 }
 
-// renderMDRaw runs src through a markdownWriter and returns the raw output,
+// renderMDRaw runs src through a Writer and returns the raw output,
 // escape codes intact (renderMD strips them).
 func renderMDRaw(t *testing.T, src string) string {
 	t.Helper()
 	var out strings.Builder
-	m := newMarkdownWriter(&out)
+	m := newTestWriter(&out)
 	if _, err := m.Write([]byte(src)); err != nil {
 		t.Fatalf("Write(%q): %v", src, err)
 	}
@@ -798,7 +805,7 @@ func TestBlockAdjacencyNoColor(t *testing.T) {
 		"| 1 | 2 |\n" +
 		"Tail\n"
 	var out strings.Builder
-	m := newMarkdownWriter(&out)
+	m := newTestWriter(&out)
 	if _, err := m.Write([]byte(src)); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -975,13 +982,13 @@ func TestInlineMathLeavesDisplayFence(t *testing.T) {
 	}
 }
 
-// renderMDChunked feeds src to a markdownWriter in fixed-size byte chunks (to
+// renderMDChunked feeds src to a Writer in fixed-size byte chunks (to
 // exercise the streaming path where a fence or formula line arrives split
 // across Write calls) and returns the visible output.
 func renderMDChunked(t *testing.T, src string, chunk int) string {
 	t.Helper()
 	var out strings.Builder
-	m := newMarkdownWriter(&out)
+	m := newTestWriter(&out)
 	b := []byte(src)
 	for i := 0; i < len(b); i += chunk {
 		end := i + chunk

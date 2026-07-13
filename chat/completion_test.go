@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -31,7 +32,8 @@ func TestSlashHelpers(t *testing.T) {
 	}
 }
 
-// reuses ansiRe from markdown.go
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
 func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 // commandPainter must never change the visible text (only add zero-width color),
