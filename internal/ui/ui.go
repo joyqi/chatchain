@@ -106,6 +106,10 @@ func (u *UI) Close() error {
 	return u.err
 }
 
+// Done is closed when the Program has exited — background reporters select on
+// it so they never write into a dead Program.
+func (u *UI) Done() <-chan struct{} { return u.done }
+
 // ReadInput blocks until the user submits a line (or a queued type-ahead
 // submit is pending — the queue drains in order). Idle Ctrl+C/Ctrl+D surface
 // as ErrInterrupted.
@@ -169,6 +173,17 @@ func (u *UI) Busy(label string) (stop func()) {
 	u.p.Send(busyOnMsg{label: label})
 	return func() { u.p.Send(busyOffMsg{}) }
 }
+
+// PushCancelScope registers an inner interrupt scope (e.g. one tool call):
+// ESC fires the innermost scope, Ctrl+C the turn. The returned pop removes it
+// (idempotent pairing is the caller's job — pop exactly once).
+func (u *UI) PushCancelScope(cancel context.CancelFunc) (pop func()) {
+	u.p.Send(scopePushMsg{cancel: cancel})
+	return func() { u.p.Send(scopePopMsg{}) }
+}
+
+// Width reports the last known terminal width (80 before the first resize).
+func (u *UI) Width() int { return int(u.width.Load()) }
 
 // SetStatus updates the live status line fields.
 func (u *UI) SetStatus(s StatusData) { u.p.Send(statusMsg(s)) }

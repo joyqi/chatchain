@@ -1030,17 +1030,26 @@ func ensureModel(ctx context.Context, p provider.Provider, sw *SessionWriter, w 
 // generateTitle asks the model for a short conversation title and stores it on
 // the session. Best-effort: any error leaves the placeholder title in place.
 func generateTitle(ctx context.Context, p provider.Provider, firstUser, firstAssistant string, sw *SessionWriter) {
+	if title := generateTitleText(ctx, p, firstUser, firstAssistant, sw); title != "" {
+		setTerminalTitle(title)
+	}
+}
+
+// generateTitleText asks the model for a session title, persists it to the
+// session, and returns it — without touching the terminal (the v2 UI path
+// sets the window title through the Program instead of a raw OSC write).
+func generateTitleText(ctx context.Context, p provider.Provider, firstUser, firstAssistant string, sw *SessionWriter) string {
 	prompt := fmt.Sprintf("Write a short title (at most 6 words, no quotes, no trailing punctuation) for the conversation below, in the same language the conversation uses. Return only the title itself:\n\nUser: %s\n\nAssistant: %s",
 		truncateRunes(firstUser, 500), truncateRunes(firstAssistant, 500))
 	title, err := p.Chat(ctx, []provider.Message{{Role: "user", Content: prompt}})
 	if err != nil {
-		return
+		return ""
 	}
 	title = sanitizeTitle(title)
 	if title != "" {
 		sw.SetTitle(title)
-		setTerminalTitle(title)
 	}
+	return title
 }
 
 // isReadOnlyViewer reports whether input is a command that only opens a

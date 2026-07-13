@@ -15,10 +15,12 @@ import (
 	"chatchain/tool"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var (
 	apiKey            string
+	uiMode            string
 	baseURL           string
 	model             string
 	temperature       float64
@@ -167,7 +169,6 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("--no-save cannot be combined with --resume")
 		}
 
-
 		// Resume an existing session (before model selection: a resumed session
 		// can supply the model when -M is omitted).
 		var importedHistory []provider.Message
@@ -280,12 +281,19 @@ var rootCmd = &cobra.Command{
 		// prompt and reports each server as it resolves); the dispatcher reads the
 		// manager's tool set live, so late-arriving tools appear without a rebuild.
 		dispatch := buildDispatcher(pc, mgr, agentMode)
+		// --ui=v2: the bubbletea inline UI (experimental preview during the
+		// migration; docs/design/ui-architecture.md). Requires a terminal —
+		// piped sessions keep the classic path.
+		if uiMode == "v2" && term.IsTerminal(int(os.Stdout.Fd())) {
+			return chat.RunV2(p, systemPrompt, importedHistory, dispatch, mgr, sw, contextWindow, agentOpts, reqLog)
+		}
 		return chat.Run(p, systemPrompt, importedHistory, dispatch, mgr, sw, contextWindow, agentOpts, reqLog, os.Stdout)
 	},
 }
 
 func init() {
 	rootCmd.Flags().StringVarP(&apiKey, "key", "k", "", "API key (required)")
+	rootCmd.Flags().StringVar(&uiMode, "ui", "", `interactive UI variant ("v2" = bubbletea preview)`)
 	rootCmd.Flags().StringVarP(&baseURL, "url", "u", "", "Base URL (optional)")
 	rootCmd.Flags().StringVarP(&model, "model", "M", "", "Model name (optional, interactive selection if omitted)")
 	rootCmd.Flags().Float64VarP(&temperature, "temperature", "t", 0, "Sampling temperature (0.0-2.0)")
