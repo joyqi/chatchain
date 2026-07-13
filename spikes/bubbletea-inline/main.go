@@ -71,7 +71,12 @@ func newModel() model {
 	ta.SetVirtualCursor(false) // REAL terminal cursor — the IME probe hinges on this
 	ta.ShowLineNumbers = false
 	ta.SetHeight(1)
-	ta.SetPromptFunc(2, func(textarea.PromptInfo) string { return cyan + "❯ " + stReset })
+	ta.SetPromptFunc(2, func(pi textarea.PromptInfo) string {
+		if pi.LineNumber == 0 {
+			return cyan + "❯ " + stReset
+		}
+		return "  " // soft-wrapped continuation rows align under the input
+	})
 	ta.SetWidth(80) // after prompt/line-number config (see textarea.SetWidth doc)
 	ta.Focus()
 	return model{
@@ -111,18 +116,26 @@ type reanchorMsg struct{}
 // filler inserts run, or they would push the still-tall frame instead.
 const reanchorDelay = 35 * time.Millisecond
 
-// closeSelector shrinks the frame back to composing mode and, when the screen
-// is full (the frame sits at the bottom), schedules the deferred result print
-// + blank-filler re-anchor. On a not-yet-full screen the frame isn't at the
-// bottom, no dead rows appear, and the result prints immediately.
-func (m *model) closeSelector(result string) tea.Cmd {
-	m.mode = composing
-	shrink := 1 + len(m.selItems) // selector title + items
-	if m.inserted >= m.height {   // heuristic: screen full → frame was at the bottom
+// maxComposerRows caps the composer's dynamic growth; longer input scrolls
+// inside the textarea.
+const maxComposerRows = 5
+
+// scheduleShrink handles ANY frame shrink (selector closing, multi-row
+// composer collapsing on submit/delete): the frame is top-anchored, so on a
+// full screen a shrink strands the composer above the bottom. Defer `result`
+// (optional) plus blank filler so the total insert count equals `delta` —
+// each insertAbove pushes a not-at-bottom frame down one row — restoring the
+// bottom anchor in one hop after the shrunk frame has flushed. On a
+// not-yet-full screen (frame not at the bottom) the result prints directly.
+func (m *model) scheduleShrink(result string, delta int) tea.Cmd {
+	if delta > 0 && m.inserted >= m.height { // heuristic: screen full → frame at the bottom
 		m.pendingResult = result
-		m.pendingBlanks = shrink
+		blanks := delta
 		if result != "" {
-			m.pendingBlanks-- // the result line itself pushes the frame one row
+			blanks-- // the result line itself pushes the frame one row
+		}
+		if blanks > 0 {
+			m.pendingBlanks += blanks
 		}
 		return tea.Tick(reanchorDelay, func(time.Time) tea.Msg { return reanchorMsg{} })
 	}
@@ -131,6 +144,12 @@ func (m *model) closeSelector(result string) tea.Cmd {
 		return tea.Println(result)
 	}
 	return nil
+}
+
+// closeSelector shrinks the frame back to composing mode.
+func (m *model) closeSelector(result string) tea.Cmd {
+	m.mode = composing
+	return m.scheduleShrink(result, 1+len(m.selItems))
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -187,24 +206,59 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if k.Code == tea.KeyEnter {
 			input := strings.TrimSpace(m.ta.Value())
+			oldRows := m.ta.Height()
 			m.ta.Reset()
+			m.ta.SetHeight(1) // composer collapses back to one row on submit
 			switch input {
 			case "":
-				return m, nil
+				return m, m.scheduleShrink("", oldRows-1)
 			case "/model":
+				// The selector adds 6 rows while the composer sheds oldRows-1:
+				// net growth in practice ("/model" is a one-row input), so no
+				// re-anchor is needed here.
 				m.mode = selecting
 				m.selIdx = 0
 				return m, nil
 			default:
-				// Echo like the real app's user block, into native scrollback.
-				m.inserted++
-				return m, tea.Println(revOn + " ❯ " + input + " " + stReset)
+				// Echo like the real app's user block, into native scrollback;
+				// delta = the composer's shed rows, the echo provides one push.
+				return m, m.scheduleShrink(revOn+" ❯ "+input+" "+stReset, oldRows-1)
 			}
 		}
 	}
 
 	var cmd tea.Cmd
 	m.ta, cmd = m.ta.Update(msg)
+	// Dynamic composer height: Enter submits, so the content is one logical
+	// line and LineInfo().Height is its soft-wrapped display rows. Grow the
+	// textarea (the frame grows upward for free); a shrink (deleting back
+	// under a wrap boundary) re-anchors like any other frame shrink.
+	if m.mode == composing {
+		contentRows := m.ta.LineInfo().Height
+		rows := contentRows
+		if rows < 1 {
+			rows = 1
+		}
+		if rows > maxComposerRows {
+			rows = maxComposerRows
+		}
+		if old := m.ta.Height(); rows != old {
+			m.ta.SetHeight(rows)
+			if rows > old {
+				// The textarea's viewport may be left scrolled from when it
+				// was shorter (repositionView only keeps the cursor visible,
+				// it never scrolls back). If the whole content now fits, snap
+				// the view to the top, preserving the cursor column.
+				if contentRows <= maxComposerRows && m.ta.ScrollYOffset() > 0 {
+					col := m.ta.Column()
+					m.ta.MoveToBegin()
+					m.ta.SetCursorColumn(col)
+				}
+			} else {
+				return m, tea.Batch(cmd, m.scheduleShrink("", old-rows))
+			}
+		}
+	}
 	return m, cmd
 }
 
