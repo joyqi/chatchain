@@ -217,6 +217,12 @@ The markdown renderer's no-preview sink + NoColor keeps piped output clean.
   prompts, agent-mode surfaces.
 - **P5**: parity checklist sign-off → flip the default → delete
   `internal/readline`, `internal/promptui`, the flag, and the old loop.
+- **P6** (cleanup, non-blocking): converge `internal/markdown` from lipgloss
+  v1 to `charm.land/lipgloss/v2`, eliminating the dual-major coexistence.
+  Gated by the markdown test suite plus emoji/CJK table re-validation: v2's
+  internal width ruler changed (go-runewidth → displaywidth), which is
+  exactly the two-rulers trap recorded in the terminal-emoji-width lesson.
+  Until P6, the dual majors cost only binary size — functionally inert.
 
 ## Parity checklist (P5 gate, ranked)
 
