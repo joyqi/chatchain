@@ -64,6 +64,28 @@ type model struct {
 	// heuristic for "the screen is full, so the frame sits at the bottom"
 	pendingResult string // selector result, printed after the shrink flush
 	pendingBlanks int    // blank lines to re-anchor the frame after a shrink
+
+	// Live region ("/table" demo): dynamic in-flight content lives in the
+	// FRAME (repainted every frame) while committed history above is
+	// append-only. This is where the real app's spinner and the table/list
+	// StreamView previews map to in the bubbletea architecture.
+	thinking bool     // spinner phase
+	spin     int      // spinner animation frame
+	live     []string // partial table rows, streaming into the frame
+}
+
+// spinnerFrames animate the frame-resident spinner (the old stderr
+// cursor-control spinner cannot exist in this architecture).
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// tableRows is the fake streaming table (mixed CJK) for the live-region demo.
+var tableRows = []string{
+	"┌──────────┬──────┬───────┐",
+	"│ model    │ ctx  │ price │",
+	"├──────────┼──────┼───────┤",
+	"│ gpt-4o   │ 128k │ $2.50 │",
+	"│ 中文模型 │ 1m   │ $0.80 │",
+	"└──────────┴──────┴───────┘",
 }
 
 func newModel() model {
@@ -89,7 +111,7 @@ func newModel() model {
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		tea.Println(faint+"── bubbletea v2 inline spike ──"+stReset),
-		tea.Println("用中文输入法在下方输入(看候选框位置);/model + Enter 开选择器(流不停);Ctrl+C 退出。"),
+		tea.Println("中文输入法测试;/model=选择器(流不停);/table=spinner+流式表格预览(live 区演示);Ctrl+C 退出。"),
 	)
 }
 
@@ -100,6 +122,15 @@ func (m model) Init() tea.Cmd {
 // the cursor position and emits a MoveTo, shrinking the wrong-cursor window to
 // one message-loop iteration.
 type repaintMsg struct{}
+
+// Live-region demo messages: spinner ticks while "thinking", table rows arrive
+// one by one into the frame's live region, then the block commits — one
+// multi-line Println into immutable scrollback — and the live region clears.
+type (
+	spinTickMsg    struct{}
+	tableRowMsg    struct{ i int }
+	tableCommitMsg struct{}
+)
 
 // reanchorMsg fires ~2 render frames after a frame SHRINK (selector closing).
 // bubbletea's inline frame is TOP-anchored: when the 9-row selector frame
@@ -158,6 +189,39 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamed++ // view changes -> flush runs -> cursor restored
 		m.inserted++
 		return m, nil
+
+	case spinTickMsg:
+		if !m.thinking {
+			return m, nil // spinner phase over — stop the tick chain
+		}
+		m.spin++
+		return m, tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinTickMsg{} })
+
+	case tableRowMsg:
+		m.thinking = false // first row ends the spinner phase
+		m.live = append(m.live, tableRows[msg.i])
+		if msg.i+1 < len(tableRows) {
+			return m, tea.Tick(350*time.Millisecond, func(time.Time) tea.Msg { return tableRowMsg{i: msg.i + 1} })
+		}
+		return m, tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return tableCommitMsg{} })
+
+	case tableCommitMsg:
+		// Commit the finished block: the frame sheds the live region and ONE
+		// multi-line Println lands the final table in scrollback. Its own
+		// len(tableRows) pushes re-anchor most of the shrink; the deferred
+		// path pads the (header) difference.
+		final := green + strings.Join(tableRows, "\n") + stReset
+		shed := len(m.live) + 1 // rows + the "◐ streaming…" header line
+		m.live = nil
+		if m.inserted >= m.height { // frame at the bottom → defer past the shrink flush
+			m.pendingResult = final
+			if blanks := shed - len(tableRows); blanks > 0 {
+				m.pendingBlanks += blanks
+			}
+			return m, tea.Tick(reanchorDelay, func(time.Time) tea.Msg { return reanchorMsg{} })
+		}
+		m.inserted += len(tableRows)
+		return m, tea.Println(final)
 
 	case reanchorMsg:
 		// Shrink has flushed; now print the deferred result + blank filler to
@@ -230,6 +294,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = selecting
 				m.selIdx = 0
 				return m, nil
+			case "/table":
+				// Live-region demo: spinner in the frame, then a table streams
+				// row by row into the frame, then commits to scrollback — all
+				// while the background stream keeps flowing above.
+				m.thinking = true
+				m.spin = 0
+				return m, tea.Batch(
+					m.scheduleShrink("", oldRows-1),
+					tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinTickMsg{} }),
+					tea.Tick(900*time.Millisecond, func(time.Time) tea.Msg { return tableRowMsg{i: 0} }),
+				)
 			default:
 				// Echo like the real app's user block, into native scrollback;
 				// delta = the composer's shed rows, the echo provides one push.
@@ -287,6 +362,21 @@ func (m model) View() tea.View {
 			}
 		}
 		rowsAbove += 1 + len(m.selItems)
+	}
+
+	// Live region: dynamic in-flight content (spinner / streaming block
+	// preview) lives in the frame, repainted every render — the bubbletea
+	// mapping of the real app's spinner and table/list StreamView.
+	if m.thinking {
+		b.WriteString(cyan + spinnerFrames[m.spin%len(spinnerFrames)] + stReset + faint + " Thinking..." + stReset + "\n")
+		rowsAbove++
+	}
+	if len(m.live) > 0 {
+		b.WriteString(faint + "◐ streaming table (live region — repainted in frame)" + stReset + "\n")
+		for _, r := range m.live {
+			b.WriteString(r + "\n")
+		}
+		rowsAbove += 1 + len(m.live)
 	}
 
 	w := m.width
