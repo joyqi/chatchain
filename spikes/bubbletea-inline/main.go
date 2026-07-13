@@ -32,6 +32,7 @@ import (
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Raw ANSI styles — keep the spike dependency-light and deterministic.
@@ -72,6 +73,30 @@ type model struct {
 	thinking bool     // spinner phase
 	spin     int      // spinner animation frame
 	live     []string // partial table rows, streaming into the frame
+
+	// Type-ahead queue (ui-owned, per the architecture): submits during an
+	// active turn queue here, rendered as dim "»" lines ABOVE the separator
+	// (content side). The turn's end drains them in order; ESC/Ctrl+C cancels
+	// the turn and restores the queue into the composer draft (joined by \n).
+	turnActive bool
+	turnGen    int // generation guard: cancelling bumps it, stale ticks no-op
+	queue      []string
+}
+
+// queueShownMax caps the visible queued lines; beyond it a "+N more" row.
+const queueShownMax = 3
+
+// queueRows returns how many frame rows the queue block occupies.
+func (m *model) queueRows() int {
+	n := len(m.queue)
+	if n == 0 {
+		return 0
+	}
+	shown := n
+	if shown > queueShownMax {
+		return queueShownMax + 1 // +1 for the "+N more" line
+	}
+	return shown
 }
 
 // spinnerFrames animate the frame-resident spinner (the old stderr
@@ -131,7 +156,7 @@ func newModel() model {
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		tea.Println(faint+"── bubbletea v2 inline spike ──"+stReset),
-		tea.Println("中文输入法测试;/model=选择器(流不停);/table=spinner+流式表格预览(live 区演示);Ctrl+C 退出。"),
+		tea.Println("发消息=模拟回合(流式);回合中继续提交=排队(» 行);ESC/Ctrl+C=打断(队列退回草稿);/model /table 照常。"),
 	)
 }
 
@@ -151,6 +176,16 @@ type (
 	tableRowMsg    struct{ i int }
 	tableCommitMsg struct{}
 )
+
+// Turn simulation messages: a submitted message runs a fake turn (thinking →
+// N streamed lines → done); done drains the type-ahead queue.
+type (
+	streamLineMsg struct{ gen, n int }
+	turnDoneMsg   struct{ gen int }
+	drainMsg      struct{}
+)
+
+const turnLines = 10 // streamed lines per fake turn
 
 // reanchorMsg fires ~2 render frames after a frame SHRINK (selector closing).
 // bubbletea's inline frame is TOP-anchored: when the 9-row selector frame
@@ -197,10 +232,96 @@ func (m *model) scheduleShrink(result string, delta int) tea.Cmd {
 	return nil
 }
 
-// closeSelector shrinks the frame back to composing mode.
+// closeSelector shrinks the frame back to composing mode, then drains the
+// type-ahead queue (a command runs between turns; the next queued item goes
+// right after it).
 func (m *model) closeSelector(result string) tea.Cmd {
 	m.mode = composing
-	return m.scheduleShrink(result, 1+len(m.selItems))
+	return tea.Batch(
+		m.scheduleShrink(result, 1+len(m.selItems)),
+		tea.Tick(300*time.Millisecond, func(time.Time) tea.Msg { return drainMsg{} }),
+	)
+}
+
+// streamSrc are the fake reply lines for the turn simulation.
+var streamSrc = []string{
+	"The quick brown fox jumps over the lazy dog and keeps running.",
+	"这是一段中文流式回复,用来观察排队消息与 composer 的交互。",
+	"Mixed 中英文 line: numbers 1234567890, symbols · — √ π ≈, done.",
+	"更长的一行:包含标点符号、破折号——省略号……以及全角字符,ＡＢＣ。",
+	"emoji test 😀🚀🌟 and 中文 mixed with ASCII tail xyz.",
+}
+
+// dispatch routes one input (a fresh submit or a drained queue item): commands
+// open their surface, messages echo a user block and start a fake turn.
+func (m *model) dispatch(input string) tea.Cmd {
+	switch input {
+	case "/model":
+		m.mode = selecting
+		m.selIdx = 0
+		return nil
+	case "/table":
+		m.turnActive = true
+		m.thinking = true
+		m.spin = 0
+		return tea.Batch(
+			tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinTickMsg{} }),
+			tea.Tick(900*time.Millisecond, func(time.Time) tea.Msg { return tableRowMsg{i: 0} }),
+		)
+	default:
+		m.inserted++
+		return tea.Batch(
+			tea.Println(revOn+" ❯ "+input+" "+stReset),
+			m.startTurn(),
+		)
+	}
+}
+
+// startTurn begins the fake reply: thinking spinner, then streamed lines.
+func (m *model) startTurn() tea.Cmd {
+	m.turnActive = true
+	m.thinking = true
+	m.spin = 0
+	gen := m.turnGen
+	return tea.Batch(
+		tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinTickMsg{} }),
+		tea.Tick(600*time.Millisecond, func(time.Time) tea.Msg { return streamLineMsg{gen: gen, n: 0} }),
+	)
+}
+
+// cancelTurn implements the interrupt contract: stop the stream (generation
+// bump), restore the queue into the composer draft (joined by newlines, before
+// any half-typed draft), and print an "interrupted" marker.
+func (m *model) cancelTurn() tea.Cmd {
+	m.turnGen++ // stale stream/table ticks become no-ops
+	m.turnActive = false
+	m.thinking = false
+	shed := m.queueRows() + 1 + min(previewWindow, len(m.live)) // queue + any live preview
+	if len(m.live) == 0 {
+		shed = m.queueRows()
+	}
+	m.live = nil
+
+	oldRows := m.ta.Height()
+	if len(m.queue) > 0 {
+		draft := strings.Join(m.queue, "\n")
+		if cur := m.ta.Value(); strings.TrimSpace(cur) != "" {
+			draft += "\n" + cur
+		}
+		m.queue = nil
+		m.ta.SetValue(draft)
+		rows := m.ta.LineCount() // one row per restored logical line (short lines)
+		if rows > maxComposerRows {
+			rows = maxComposerRows
+		}
+		m.ta.SetHeight(rows)
+		m.ta.MoveToEnd()
+		shed -= rows - oldRows // draft growth reclaims part of the shed rows
+	}
+	if shed < 0 {
+		shed = 0
+	}
+	return m.scheduleShrink(faint+"✗ interrupted"+stReset, shed)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -218,6 +339,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinTickMsg{} })
 
 	case tableRowMsg:
+		if !m.turnActive {
+			return m, nil // cancelled — stale table tick
+		}
 		m.thinking = false // first source line ends the "waiting" spinner phase
 		m.live = append(m.live, tableSrc[msg.i])
 		if msg.i+1 < len(tableSrc) {
@@ -225,7 +349,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return tableCommitMsg{} })
 
+	case streamLineMsg:
+		if msg.gen != m.turnGen {
+			return m, nil // cancelled turn — stale tick
+		}
+		m.thinking = false
+		line := streamSrc[msg.n%len(streamSrc)]
+		next := tea.Tick(140*time.Millisecond, func(time.Time) tea.Msg { return streamLineMsg{gen: msg.gen, n: msg.n + 1} })
+		if msg.n+1 >= turnLines {
+			next = tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg { return turnDoneMsg{gen: msg.gen} })
+		}
+		return m, tea.Batch(
+			tea.Sequence(tea.Println(line), func() tea.Msg { return repaintMsg{} }),
+			next,
+		)
+
+	case turnDoneMsg:
+		if msg.gen != m.turnGen {
+			return m, nil
+		}
+		m.turnActive = false
+		return m, tea.Tick(300*time.Millisecond, func(time.Time) tea.Msg { return drainMsg{} })
+
+	case drainMsg:
+		// Drain the type-ahead queue: dispatch the next item between turns.
+		if m.turnActive || m.mode == selecting || len(m.queue) == 0 {
+			return m, nil
+		}
+		item := m.queue[0]
+		m.queue = m.queue[1:]
+		// The dispatched item's UserBlock/print pushes balance the shed queue
+		// row, so no explicit re-anchor is needed for the common case.
+		return m, m.dispatch(item)
+
 	case tableCommitMsg:
+		if !m.turnActive {
+			return m, nil // cancelled — stale table tick
+		}
 		// Source complete: clear the preview (the frame sheds header+window)
 		// and render the final table ONCE — a single multi-line Println into
 		// scrollback, exactly the real StreamView.Done + flushTable sequence.
@@ -234,15 +394,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		final := green + strings.Join(tableRendered, "\n") + stReset
 		shed := 1 + min(previewWindow, len(m.live)) // header + rolling window rows
 		m.live = nil
+		m.turnActive = false
+		drain := tea.Tick(400*time.Millisecond, func(time.Time) tea.Msg { return drainMsg{} })
 		if m.inserted >= m.height { // frame at the bottom → defer past the shrink flush
 			m.pendingResult = final
 			if blanks := shed - len(tableRendered); blanks > 0 {
 				m.pendingBlanks += blanks
 			}
-			return m, tea.Tick(reanchorDelay, func(time.Time) tea.Msg { return reanchorMsg{} })
+			return m, tea.Batch(tea.Tick(reanchorDelay, func(time.Time) tea.Msg { return reanchorMsg{} }), drain)
 		}
 		m.inserted += len(tableRendered)
-		return m, tea.Println(final)
+		return m, tea.Batch(tea.Println(final), drain)
 
 	case reanchorMsg:
 		// Shrink has flushed; now print the deferred result + blank filler to
@@ -280,7 +442,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		k := msg.Key()
 		if k.Mod == tea.ModCtrl && (k.Code == 'c' || k.Code == 'd') {
+			if m.turnActive {
+				return m, m.cancelTurn() // first Ctrl+C cancels the turn (queue → draft)
+			}
 			return m, tea.Quit
+		}
+		if k.Code == tea.KeyEscape && m.mode == composing && m.turnActive {
+			return m, m.cancelTurn() // ESC cancels the streaming turn
 		}
 		if m.mode == selecting {
 			switch k.Code {
@@ -305,32 +473,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			oldRows := m.ta.Height()
 			m.ta.Reset()
 			m.ta.SetHeight(1) // composer collapses back to one row on submit
-			switch input {
-			case "":
+			if input == "" {
 				return m, m.scheduleShrink("", oldRows-1)
-			case "/model":
-				// The selector adds 6 rows while the composer sheds oldRows-1:
-				// net growth in practice ("/model" is a one-row input), so no
-				// re-anchor is needed here.
-				m.mode = selecting
-				m.selIdx = 0
-				return m, nil
-			case "/table":
-				// Live-region demo: spinner in the frame, then a table streams
-				// row by row into the frame, then commits to scrollback — all
-				// while the background stream keeps flowing above.
-				m.thinking = true
-				m.spin = 0
-				return m, tea.Batch(
-					m.scheduleShrink("", oldRows-1),
-					tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinTickMsg{} }),
-					tea.Tick(900*time.Millisecond, func(time.Time) tea.Msg { return tableRowMsg{i: 0} }),
-				)
-			default:
-				// Echo like the real app's user block, into native scrollback;
-				// delta = the composer's shed rows, the echo provides one push.
-				return m, m.scheduleShrink(revOn+" ❯ "+input+" "+stReset, oldRows-1)
 			}
+			if m.turnActive {
+				// Type-ahead: a submit during an active turn queues (ui-owned).
+				// The queue block grows the frame by one row (net vs the shed
+				// composer rows).
+				m.queue = append(m.queue, input)
+				return m, m.scheduleShrink("", oldRows-1-1)
+			}
+			return m, tea.Batch(m.scheduleShrink("", oldRows-1), m.dispatch(input))
 		}
 	}
 
@@ -340,7 +493,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// line and LineInfo().Height is its soft-wrapped display rows. Grow the
 	// textarea (the frame grows upward for free); a shrink (deleting back
 	// under a wrap boundary) re-anchors like any other frame shrink.
-	if m.mode == composing {
+	// A restored multi-logical-line draft (queue → draft after cancel) keeps
+	// its explicit height; the single-line dynamic sizing below would squash it
+	// (LineInfo().Height covers only the CURRENT logical line).
+	if m.mode == composing && m.ta.LineCount() <= 1 {
 		contentRows := m.ta.LineInfo().Height
 		rows := contentRows
 		if rows < 1 {
@@ -407,6 +563,26 @@ func (m model) View() tea.View {
 		rowsAbove += 1 + len(tail)
 	}
 
+	// Type-ahead queue: dim "»" lines ABOVE the separator (content side, per
+	// design) — inputs waiting to become history the moment the turn ends.
+	if n := len(m.queue); n > 0 {
+		shown := n
+		if shown > queueShownMax {
+			shown = queueShownMax
+		}
+		for i := 0; i < shown; i++ {
+			item := ansi.Truncate(m.queue[i], max(4, m.width-4), "…")
+			if strings.HasPrefix(item, "/") {
+				item = green + item + stReset
+			}
+			b.WriteString(faint + "» " + stReset + faint + item + stReset + "\n")
+		}
+		if n > shown {
+			b.WriteString(faint + fmt.Sprintf("  … +%d more", n-shown) + stReset + "\n")
+		}
+		rowsAbove += m.queueRows()
+	}
+
 	w := m.width
 	if w < 1 {
 		w = 80
@@ -433,8 +609,8 @@ func (m model) View() tea.View {
 func main() {
 	p := tea.NewProgram(newModel())
 	done := make(chan struct{})
-	if os.Getenv("NOSTREAM") == "" {
-		go stream(p, done)
+	if os.Getenv("ENDLESS") != "" {
+		go stream(p, done) // legacy jitter-probe workload; turns are the default now
 	}
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "spike:", err)
