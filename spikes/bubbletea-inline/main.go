@@ -53,12 +53,17 @@ const (
 type model struct {
 	ta       textarea.Model
 	width    int
+	height   int
 	mode     uiMode
 	selIdx   int
 	selItems []string
 	streamed int // lines inserted so far — shown in the status line so each
 	// insert CHANGES the view (defeats flush's viewEquals early-return; see
 	// the repaintMsg comment)
+	inserted int // ALL lines printed above (stream + echoes + results):
+	// heuristic for "the screen is full, so the frame sits at the bottom"
+	pendingResult string // selector result, printed after the shrink flush
+	pendingBlanks int    // blank lines to re-anchor the frame after a shrink
 }
 
 func newModel() model {
@@ -91,13 +96,69 @@ func (m model) Init() tea.Cmd {
 // one message-loop iteration.
 type repaintMsg struct{}
 
+// reanchorMsg fires ~2 render frames after a frame SHRINK (selector closing).
+// bubbletea's inline frame is TOP-anchored: when the 9-row selector frame
+// shrinks back to 3 rows at the bottom of a full screen, the composer is left
+// stranded rows above the bottom with dead space below (cursed_renderer flush:
+// Erase+Resize at the same origin), and nothing reclaims it unless later
+// inserts push the frame down one row each. The fix: after the shrunk frame
+// has flushed, print the deferred selector result plus enough blank filler
+// lines — each insertAbove pushes a not-at-bottom frame down by one row — to
+// shove the composer back to the bottom in one hop.
+type reanchorMsg struct{}
+
+// reanchorDelay is two 60fps render frames: the shrink must FLUSH before the
+// filler inserts run, or they would push the still-tall frame instead.
+const reanchorDelay = 35 * time.Millisecond
+
+// closeSelector shrinks the frame back to composing mode and, when the screen
+// is full (the frame sits at the bottom), schedules the deferred result print
+// + blank-filler re-anchor. On a not-yet-full screen the frame isn't at the
+// bottom, no dead rows appear, and the result prints immediately.
+func (m *model) closeSelector(result string) tea.Cmd {
+	m.mode = composing
+	shrink := 1 + len(m.selItems) // selector title + items
+	if m.inserted >= m.height {   // heuristic: screen full → frame was at the bottom
+		m.pendingResult = result
+		m.pendingBlanks = shrink
+		if result != "" {
+			m.pendingBlanks-- // the result line itself pushes the frame one row
+		}
+		return tea.Tick(reanchorDelay, func(time.Time) tea.Msg { return reanchorMsg{} })
+	}
+	if result != "" {
+		m.inserted++
+		return tea.Println(result)
+	}
+	return nil
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case repaintMsg:
 		m.streamed++ // view changes -> flush runs -> cursor restored
+		m.inserted++
 		return m, nil
+
+	case reanchorMsg:
+		// Shrink has flushed; now print the deferred result + blank filler to
+		// push the frame back to the bottom, then bump the view (cursor fix).
+		var cmds []tea.Cmd
+		if m.pendingResult != "" {
+			cmds = append(cmds, tea.Println(m.pendingResult))
+			m.inserted++
+			m.pendingResult = ""
+		}
+		if m.pendingBlanks > 0 {
+			cmds = append(cmds, tea.Println(strings.Repeat("\n", m.pendingBlanks-1)))
+			m.pendingBlanks = 0
+		}
+		cmds = append(cmds, func() tea.Msg { return repaintMsg{} })
+		return m, tea.Sequence(cmds...)
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 		m.ta.SetWidth(msg.Width)
 		return m, nil
 
@@ -117,11 +178,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selIdx++
 				}
 			case tea.KeyEscape:
-				m.mode = composing
+				return m, m.closeSelector("")
 			case tea.KeyEnter:
 				choice := m.selItems[m.selIdx]
-				m.mode = composing
-				return m, tea.Println(faint + "model switched to " + choice + stReset)
+				return m, m.closeSelector(faint + "model switched to " + choice + stReset)
 			}
 			return m, nil // selector owns the keys; composer stays visible below
 		}
@@ -137,6 +197,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			default:
 				// Echo like the real app's user block, into native scrollback.
+				m.inserted++
 				return m, tea.Println(revOn + " ❯ " + input + " " + stReset)
 			}
 		}
