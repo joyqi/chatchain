@@ -112,8 +112,16 @@ Facade shape decisions from the adversarial review:
   flush ordering (close preview BEFORE committing the rendered block) is
   preserved by construction.
 - **Frame stacking order is fixed and ui-owned**:
-  `[selector/viewer] [busy] [stream preview] [separator] [status] [composer]`
-  — each slot optional; logic never reasons about composition.
+  `[busy] [stream preview] [queue] [separator] [status] [composer]
+  [selector/viewer/confirm]` — each slot optional; logic never reasons about
+  composition. Interaction surfaces render BELOW the composer (shell
+  convention: completion menus sit under the prompt). This placement is
+  load-bearing: bubbletea's top-anchored shrink drops a frame's vacated rows
+  at the BOTTOM of its old extent, so with the shrinking surfaces lowest,
+  dead rows always land at the screen bottom where subsequent output
+  consumes them one insert at a time — **shrinks are self-healing by
+  construction**, and the composer never moves when a surface closes (it
+  moves once, at open, to make room).
 
 ## internal/markdown (P1)
 
@@ -169,21 +177,26 @@ shared turn-state races. Adopted instead:
   history, /session ↔ session writer). Commands queue like messages and run
   between turns. The selector-during-stream capability remains proven ui
   tech; revisit for read-only viewers once snapshot feeds exist.
-- **The anchor manager**: all inserts (PrintLines/CommitLines/UserBlock) flow
-  through one ui component that owns the re-anchor state machine. During a
-  shrink's re-anchor window it buffers inserts and computes the blank filler
-  from actual delivered rows at fire time — the spike's precomputed
-  `pendingBlanks` arithmetic is not concurrency-safe.
+- **No re-anchor machinery**: the below-composer interaction area makes every
+  frame shrink self-healing (vacated rows die at the screen bottom; output
+  walks the frame back down; history stays contiguous). The spike's earlier
+  scheduleShrink / pendingBlanks / deferred-filler state machine — and the
+  concurrency hazards the review found in its arithmetic — were deleted
+  outright, and no frame-at-bottom detection is needed. A closing surface
+  commits only a one-line outcome record ("model switched to X") into
+  scrollback.
 - **Cursor-restore bump**: the spike's fix relies on the view changing per
   insert. Production ties it to a streaming activity glyph in the status line
   that advances per committed insert (also a nice activity indicator); this
   keeps viewEquals false per insert by design, not by accident. (Upstream
   issue to file: insertAbove should restore the cursor itself.)
-- **Frame-at-bottom detection**: the spike's `inserted >= height` heuristic
-  is wrong for the real app (the Program starts after a screenful of
-  pre-Program output). cmd measures the cursor row once (DSR) before starting
-  the Program and passes a `StartedAtBottom` hint; from then on ui tracks its
-  own inserts.
+- **Type-ahead queue rendering**: queued submits show as dim "»" lines above
+  the separator (content side — inputs about to become history), one row
+  each (ANSI-aware truncation), capped at 3 shown + "+N more"; commands keep
+  their highlight. On interrupt the queue joins (newline-separated) into the
+  composer draft, ahead of any half-typed text; when input history (↑↓)
+  lands in P3, queued items are also pushed there individually so message
+  boundaries stay recoverable.
 
 ## Non-TTY / Once
 
@@ -242,3 +255,6 @@ Tier 3 (polish): spinner elapsed labels, activity glyph, queued-line styling.
 - Cursor flicker window per insert (upstream fix pending).
 - Commands wait for turn completion (v1 scope).
 - Dual lipgloss majors + toolchain bump during the window.
+- The composer floats above the screen bottom transiently after a surface
+  closes or the input collapses, until the next output refills the vacated
+  rows (an idle session keeps the float — it reads as normal scroll state).
