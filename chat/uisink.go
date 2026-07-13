@@ -22,8 +22,15 @@ func newUIMDSink(sink ui.StreamSink, width func() int) *uiMDSink {
 	return &uiMDSink{sink: sink, width: width}
 }
 
+// Write commits every complete line in the chunk as ONE CommitLines batch —
+// a single multi-line insert. Per-line commits would make a flushed block
+// (a rendered table following its preview's frame shrink) crawl back row by
+// row: the shrink pops the composer up and nine separate inserts walk it back
+// down. One batched insert makes shrink+push land back to back, within a
+// render frame.
 func (s *uiMDSink) Write(p []byte) (int, error) {
 	s.buf = append(s.buf, p...)
+	var lines []string
 	for {
 		i := -1
 		for j, b := range s.buf {
@@ -35,8 +42,11 @@ func (s *uiMDSink) Write(p []byte) (int, error) {
 		if i < 0 {
 			break
 		}
-		s.sink.CommitLines(string(s.buf[:i]))
+		lines = append(lines, string(s.buf[:i]))
 		s.buf = s.buf[i+1:]
+	}
+	if len(lines) > 0 {
+		s.sink.CommitLines(lines...)
 	}
 	return len(p), nil
 }
