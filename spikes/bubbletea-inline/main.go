@@ -61,10 +61,7 @@ type model struct {
 	streamed int // lines inserted so far — shown in the status line so each
 	// insert CHANGES the view (defeats flush's viewEquals early-return; see
 	// the repaintMsg comment)
-	inserted int // ALL lines printed above (stream + echoes + results):
-	// heuristic for "the screen is full, so the frame sits at the bottom"
-	pendingResult string // selector result, printed after the shrink flush
-	pendingBlanks int    // blank lines to re-anchor the frame after a shrink
+	inserted int // ALL lines printed above (stream + echoes + results)
 
 	// Live region ("/table" demo): dynamic in-flight content lives in the
 	// FRAME (repainted every frame) while committed history above is
@@ -187,20 +184,16 @@ type (
 
 const turnLines = 10 // streamed lines per fake turn
 
-// reanchorMsg fires ~2 render frames after a frame SHRINK (selector closing).
-// bubbletea's inline frame is TOP-anchored: when the 9-row selector frame
-// shrinks back to 3 rows at the bottom of a full screen, the composer is left
-// stranded rows above the bottom with dead space below (cursed_renderer flush:
-// Erase+Resize at the same origin), and nothing reclaims it unless later
-// inserts push the frame down one row each. The fix: after the shrunk frame
-// has flushed, print the deferred selector result plus enough blank filler
-// lines — each insertAbove pushes a not-at-bottom frame down by one row — to
-// shove the composer back to the bottom in one hop.
-type reanchorMsg struct{}
-
-// reanchorDelay is two 60fps render frames: the shrink must FLUSH before the
-// filler inserts run, or they would push the still-tall frame instead.
-const reanchorDelay = 35 * time.Millisecond
+// NOTE on frame shrinks: bubbletea's inline frame is TOP-anchored, so a shrink
+// leaves dead rows at the BOTTOM of the old frame extent (= the screen bottom
+// once the frame has reached it). With the interaction area placed BELOW the
+// composer (and the composer collapse likewise shedding its lowest rows), the
+// dead rows always land at the screen bottom, where subsequent output consumes
+// them one insert at a time — the frame walks back down and history stays
+// contiguous. This layout choice DELETED the whole re-anchor state machine
+// (scheduleShrink / pendingBlanks / deferred filler) an above-the-composer
+// interaction area required. Cost: the composer floats above the bottom until
+// the next output refills the gap — transient, and it never moves on close.
 
 // maxComposerRows caps the composer's dynamic growth; longer input scrolls
 // inside the textarea.
@@ -213,32 +206,21 @@ const maxComposerRows = 5
 // each insertAbove pushes a not-at-bottom frame down one row — restoring the
 // bottom anchor in one hop after the shrunk frame has flushed. On a
 // not-yet-full screen (frame not at the bottom) the result prints directly.
-func (m *model) scheduleShrink(result string, delta int) tea.Cmd {
-	if delta > 0 && m.inserted >= m.height { // heuristic: screen full → frame at the bottom
-		m.pendingResult = result
-		blanks := delta
-		if result != "" {
-			blanks-- // the result line itself pushes the frame one row
-		}
-		if blanks > 0 {
-			m.pendingBlanks += blanks
-		}
-		return tea.Tick(reanchorDelay, func(time.Time) tea.Msg { return reanchorMsg{} })
-	}
-	if result != "" {
-		m.inserted++
-		return tea.Println(result)
-	}
-	return nil
-}
-
-// closeSelector shrinks the frame back to composing mode, then drains the
-// type-ahead queue (a command runs between turns; the next queued item goes
-// right after it).
-func (m *model) closeSelector(result string) tea.Cmd {
+// closeSelector returns to composing. With the interaction area BELOW the
+// composer, closing needs NO re-anchor machinery: the vacated rows sit at the
+// screen bottom and subsequent output consumes them one insert at a time (each
+// insertAbove pushes a not-at-bottom frame down one row), keeping history
+// contiguous — no blank gaps, no filler. Only a one-line outcome is committed
+// as the interaction record; then the type-ahead queue drains.
+func (m *model) closeSelector(chosen string, cancelled bool) tea.Cmd {
 	m.mode = composing
+	result := faint + "✗ /model cancelled" + stReset
+	if !cancelled {
+		result = faint + "model switched to " + chosen + stReset
+	}
+	m.inserted++
 	return tea.Batch(
-		m.scheduleShrink(result, 1+len(m.selItems)),
+		tea.Println(result),
 		tea.Tick(300*time.Millisecond, func(time.Time) tea.Msg { return drainMsg{} }),
 	)
 }
@@ -291,18 +273,14 @@ func (m *model) startTurn() tea.Cmd {
 
 // cancelTurn implements the interrupt contract: stop the stream (generation
 // bump), restore the queue into the composer draft (joined by newlines, before
-// any half-typed draft), and print an "interrupted" marker.
+// any half-typed draft), and print an "interrupted" marker. Shed rows (queue,
+// preview) die at the screen bottom and self-heal on the next output.
 func (m *model) cancelTurn() tea.Cmd {
 	m.turnGen++ // stale stream/table ticks become no-ops
 	m.turnActive = false
 	m.thinking = false
-	shed := m.queueRows() + 1 + min(previewWindow, len(m.live)) // queue + any live preview
-	if len(m.live) == 0 {
-		shed = m.queueRows()
-	}
 	m.live = nil
 
-	oldRows := m.ta.Height()
 	if len(m.queue) > 0 {
 		draft := strings.Join(m.queue, "\n")
 		if cur := m.ta.Value(); strings.TrimSpace(cur) != "" {
@@ -316,12 +294,9 @@ func (m *model) cancelTurn() tea.Cmd {
 		}
 		m.ta.SetHeight(rows)
 		m.ta.MoveToEnd()
-		shed -= rows - oldRows // draft growth reclaims part of the shed rows
 	}
-	if shed < 0 {
-		shed = 0
-	}
-	return m.scheduleShrink(faint+"✗ interrupted"+stReset, shed)
+	m.inserted++
+	return tea.Println(faint + "✗ interrupted" + stReset)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -386,41 +361,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.turnActive {
 			return m, nil // cancelled — stale table tick
 		}
-		// Source complete: clear the preview (the frame sheds header+window)
-		// and render the final table ONCE — a single multi-line Println into
-		// scrollback, exactly the real StreamView.Done + flushTable sequence.
-		// The commit's own line count re-anchors the shrink (usually more
-		// lines than the shed 1+3 window); the deferred path pads any deficit.
+		// Source complete: clear the preview and render the final table ONCE —
+		// a single multi-line Println into scrollback, exactly the real
+		// StreamView.Done + flushTable sequence. Its pushes walk the frame back
+		// down over the shed preview rows; history stays contiguous.
 		final := green + strings.Join(tableRendered, "\n") + stReset
-		shed := 1 + min(previewWindow, len(m.live)) // header + rolling window rows
 		m.live = nil
 		m.turnActive = false
-		drain := tea.Tick(400*time.Millisecond, func(time.Time) tea.Msg { return drainMsg{} })
-		if m.inserted >= m.height { // frame at the bottom → defer past the shrink flush
-			m.pendingResult = final
-			if blanks := shed - len(tableRendered); blanks > 0 {
-				m.pendingBlanks += blanks
-			}
-			return m, tea.Batch(tea.Tick(reanchorDelay, func(time.Time) tea.Msg { return reanchorMsg{} }), drain)
-		}
 		m.inserted += len(tableRendered)
-		return m, tea.Batch(tea.Println(final), drain)
-
-	case reanchorMsg:
-		// Shrink has flushed; now print the deferred result + blank filler to
-		// push the frame back to the bottom, then bump the view (cursor fix).
-		var cmds []tea.Cmd
-		if m.pendingResult != "" {
-			cmds = append(cmds, tea.Println(m.pendingResult))
-			m.inserted++
-			m.pendingResult = ""
-		}
-		if m.pendingBlanks > 0 {
-			cmds = append(cmds, tea.Println(strings.Repeat("\n", m.pendingBlanks-1)))
-			m.pendingBlanks = 0
-		}
-		cmds = append(cmds, func() tea.Msg { return repaintMsg{} })
-		return m, tea.Sequence(cmds...)
+		return m, tea.Batch(
+			tea.Sequence(tea.Println(final), func() tea.Msg { return repaintMsg{} }),
+			tea.Tick(400*time.Millisecond, func(time.Time) tea.Msg { return drainMsg{} }),
+		)
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -461,29 +413,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selIdx++
 				}
 			case tea.KeyEscape:
-				return m, m.closeSelector("")
+				return m, m.closeSelector("", true)
 			case tea.KeyEnter:
-				choice := m.selItems[m.selIdx]
-				return m, m.closeSelector(faint + "model switched to " + choice + stReset)
+				return m, m.closeSelector(m.selItems[m.selIdx], false)
 			}
 			return m, nil // selector owns the keys; composer stays visible below
 		}
 		if k.Code == tea.KeyEnter {
 			input := strings.TrimSpace(m.ta.Value())
-			oldRows := m.ta.Height()
 			m.ta.Reset()
-			m.ta.SetHeight(1) // composer collapses back to one row on submit
+			m.ta.SetHeight(1) // collapse sheds bottom rows — self-healing, no re-anchor
 			if input == "" {
-				return m, m.scheduleShrink("", oldRows-1)
+				return m, nil
 			}
 			if m.turnActive {
 				// Type-ahead: a submit during an active turn queues (ui-owned).
-				// The queue block grows the frame by one row (net vs the shed
-				// composer rows).
 				m.queue = append(m.queue, input)
-				return m, m.scheduleShrink("", oldRows-1-1)
+				return m, nil
 			}
-			return m, tea.Batch(m.scheduleShrink("", oldRows-1), m.dispatch(input))
+			return m, m.dispatch(input)
 		}
 	}
 
@@ -506,7 +454,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			rows = maxComposerRows
 		}
 		if old := m.ta.Height(); rows != old {
-			m.ta.SetHeight(rows)
+			m.ta.SetHeight(rows) // shrink sheds bottom rows — self-healing
 			if rows > old {
 				// The textarea's viewport may be left scrolled from when it
 				// was shorter (repositionView only keeps the cursor visible,
@@ -517,8 +465,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.ta.MoveToBegin()
 					m.ta.SetCursorColumn(col)
 				}
-			} else {
-				return m, tea.Batch(cmd, m.scheduleShrink("", old-rows))
 			}
 		}
 	}
@@ -528,18 +474,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) View() tea.View {
 	var b strings.Builder
 	rowsAbove := 0 // frame rows above the textarea, to offset the real cursor
-
-	if m.mode == selecting {
-		b.WriteString(faint + "── /model — 流不停,选择器照开(↑↓ Enter,ESC 取消) ──" + stReset + "\n")
-		for i, it := range m.selItems {
-			if i == m.selIdx {
-				b.WriteString(cyan + "▸ " + it + stReset + "\n")
-			} else {
-				b.WriteString("  " + it + "\n")
-			}
-		}
-		rowsAbove += 1 + len(m.selItems)
-	}
 
 	// Live region: dynamic in-flight content (spinner / streaming block
 	// preview) lives in the frame, repainted every render — the bubbletea
@@ -595,6 +529,21 @@ func (m model) View() tea.View {
 	rowsAbove += 2
 
 	b.WriteString(m.ta.View())
+
+	// Interaction area BELOW the composer (the user's layout insight): shell
+	// convention (completion menus render under the prompt), the composer
+	// never moves when the surface closes, and the vacated rows die at the
+	// screen bottom where output self-heals them — no re-anchor machinery.
+	if m.mode == selecting {
+		b.WriteString("\n" + faint + "── /model(↑↓ Enter,ESC 取消)──" + stReset)
+		for i, it := range m.selItems {
+			if i == m.selIdx {
+				b.WriteString("\n" + cyan + "▸ " + it + stReset)
+			} else {
+				b.WriteString("\n  " + it)
+			}
+		}
+	}
 
 	v := tea.NewView(b.String())
 	if m.mode == composing {
