@@ -431,8 +431,20 @@ func (m *model) surfaceKey(k tea.Key) {
 	p := s.spec.Panels[s.focus]
 	st := &s.ps[s.focus]
 
-	if k.Mod == tea.ModCtrl && k.Code == 'c' {
-		m.closeSurface(TabbedResult{Cancelled: true})
+	if k.Mod == tea.ModCtrl {
+		// readline heritage: Ctrl+P/N mirror ↑↓, Ctrl+B/F mirror ←→ (paging).
+		switch k.Code {
+		case 'c':
+			m.closeSurface(TabbedResult{Cancelled: true})
+		case 'p':
+			m.surfaceNav(p, st, -1)
+		case 'n':
+			m.surfaceNav(p, st, 1)
+		case 'b':
+			m.surfacePage(p, st, -1)
+		case 'f':
+			m.surfacePage(p, st, 1)
+		}
 		return
 	}
 	switch k.Code {
@@ -462,50 +474,77 @@ func (m *model) surfaceKey(k tea.Key) {
 	case tea.KeyLeft:
 		if p.Kind == PanelSlider {
 			sliderStep(st, p, -1)
+		} else {
+			m.surfacePage(p, st, -1)
 		}
 		return
 	case tea.KeyRight:
 		if p.Kind == PanelSlider {
 			sliderStep(st, p, 1)
+		} else {
+			m.surfacePage(p, st, 1)
 		}
 		return
 	case tea.KeySpace:
-		if p.Kind == PanelMulti {
+		switch p.Kind {
+		case PanelMulti:
 			st.checked[st.cursor] = !st.checked[st.cursor]
+		case PanelView:
+			m.surfacePage(p, st, 1) // v1: Space pages a view forward
 		}
+		st.copied = false
 		return
 	}
+	handled := true
 	switch k.Text {
 	case "c":
 		if p.Kind == PanelView {
 			st.copied = copyToClipboard(stripSGRText(strings.Join(st.items, "\n"))) == nil
-			return
+			return // keep the ✓ hint until another key
 		}
-		m.closeSurface(TabbedResult{Cancelled: true}) // any other key: fallthrough semantics below
-		return
 	case "q":
 		m.closeSurface(TabbedResult{Cancelled: true})
+		return
 	case " ":
-		if p.Kind == PanelMulti {
+		switch p.Kind {
+		case PanelMulti:
 			st.checked[st.cursor] = !st.checked[st.cursor]
+		case PanelView:
+			m.surfacePage(p, st, 1) // v1: Space pages a view forward
+		}
+	case "b":
+		if p.Kind == PanelView {
+			m.surfacePage(p, st, -1)
 		}
 	case "j":
 		m.surfaceNav(p, st, 1)
 	case "k":
 		m.surfaceNav(p, st, -1)
 	case "h":
-		if p.Kind == PanelSlider {
+		switch {
+		case p.Kind == PanelSlider:
 			sliderStep(st, p, -1)
+		case p.Kind == PanelView && !p.Wrap:
+			if st.hoff > 0 {
+				st.hoff--
+			}
+		default:
+			m.surfacePage(p, st, -1)
 		}
 	case "l":
-		if p.Kind == PanelSlider {
+		switch {
+		case p.Kind == PanelSlider:
 			sliderStep(st, p, 1)
+		case p.Kind == PanelView && !p.Wrap:
+			st.hoff++
+		default:
+			m.surfacePage(p, st, 1)
 		}
 	case "g":
 		if p.Kind == PanelSlider {
 			st.value = nil
 		} else {
-			st.cursor, st.offset = 0, 0
+			st.cursor, st.offset, st.hoff = 0, 0, 0
 		}
 	case "G":
 		switch p.Kind {
@@ -514,9 +553,32 @@ func (m *model) surfaceKey(k tea.Key) {
 			st.value = &v
 		case PanelBrowser:
 			st.cursor = maxInt(0, len(st.entries)-1)
+		case PanelView:
+			st.offset = 1 << 30 // render clamps to the last page
 		default:
 			st.cursor = maxInt(0, len(st.items)-1)
 		}
+	default:
+		handled = false
+	}
+	if handled {
+		st.copied = false // any other handled key clears the copy confirmation
+	}
+}
+
+// surfacePage moves by one visible page (v1 ←→ / Ctrl+B/F semantics).
+func (m *model) surfacePage(p Panel, st *panelState, dir int) {
+	step := st.rows
+	if step < 1 {
+		step = 1
+	}
+	switch p.Kind {
+	case PanelList, PanelMulti:
+		st.cursor = clampInt(st.cursor+dir*step, 0, maxInt(0, len(st.items)-1))
+	case PanelBrowser:
+		st.cursor = clampInt(st.cursor+dir*step, 0, maxInt(0, len(st.entries)-1))
+	case PanelView:
+		st.offset = maxInt(0, st.offset+dir*step) // upper bound clamped at render
 	}
 }
 

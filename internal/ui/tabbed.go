@@ -94,6 +94,8 @@ type panelState struct {
 	errmsg  string
 	copied  bool // View: last "c" copied to clipboard
 	wrapped int  // View(Wrap): wrapped row count from the last render
+	hoff    int  // View(!Wrap): horizontal pan offset (h/l)
+	rows    int  // last visible row budget, for paging
 }
 
 // surfaceState drives an open Tabbed surface.
@@ -259,6 +261,7 @@ func (m *model) renderSurface(b *strings.Builder) {
 	switch p.Kind {
 	case PanelList, PanelMulti:
 		h := panelHeight(p, len(st.items))
+		st.rows = h
 		st.scrollTo(h)
 		for i := st.offset; i < st.offset+h && i < len(st.items); i++ {
 			marker := "  "
@@ -290,15 +293,21 @@ func (m *model) renderSurface(b *strings.Builder) {
 		}
 		st.wrapped = len(lines)
 		h := panelHeight(p, len(lines))
+		st.rows = h
 		maxOff := len(lines) - h
 		if maxOff < 0 {
 			maxOff = 0
 		}
-		if st.offset > maxOff {
-			st.offset = maxOff
+		st.offset = clampInt(st.offset, 0, maxOff)
+		if st.hoff < 0 || p.Wrap {
+			st.hoff = 0
 		}
 		for _, l := range lines[st.offset : st.offset+h] {
-			b.WriteString("\n" + ansi.Truncate(l, w, "…"))
+			if st.hoff > 0 {
+				b.WriteString("\n" + clipLine(l, st.hoff, w))
+			} else {
+				b.WriteString("\n" + ansi.Truncate(l, w, "…"))
+			}
 		}
 	case PanelBrowser:
 		b.WriteString("\n" + faint + ansi.Truncate(st.dir, w, "…") + sgrReset)
@@ -306,6 +315,7 @@ func (m *model) renderSurface(b *strings.Builder) {
 			b.WriteString("\n" + ErrPrefix + st.errmsg)
 		}
 		h := panelHeight(p, len(st.entries))
+		st.rows = h
 		st.scrollToN(h, len(st.entries))
 		for i := st.offset; i < st.offset+h && i < len(st.entries); i++ {
 			marker := "  "
@@ -342,11 +352,14 @@ func surfaceHint(p Panel, st *panelState) string {
 		if st.copied {
 			return "✓ copied to clipboard"
 		}
-		return "↑↓ scroll · g/G top/bottom · c copy · q/Esc close"
+		if p.Wrap {
+			return "↑↓ scroll · ←→ page · g/G top/bottom · c copy · q/Esc close"
+		}
+		return "↑↓ scroll · ←→ page · h/l pan · g/G top/bottom · c copy · q/Esc close"
 	case PanelBrowser:
-		return "↑↓ move · Enter open/choose · g/G top/bottom · q/Esc cancel"
+		return "↑↓ move · ←→ page · Enter open/choose · g/G top/bottom · q/Esc cancel"
 	default:
-		return "↑↓ move · Space toggle · Enter confirm · q/Esc cancel"
+		return "↑↓ move · ←→ page · Space toggle · Enter confirm · q/Esc cancel"
 	}
 }
 

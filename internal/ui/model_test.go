@@ -607,3 +607,75 @@ func TestSurfaceLiveRefresh(t *testing.T) {
 		t.Fatal("stale tick refreshed the surface")
 	}
 }
+
+// TestViewKeysV1Parity: G jumps to the bottom (offset, not cursor), ←→ and
+// Ctrl+B/F page, Space pages forward, h/l pan a non-wrap view, and "c" on a
+// non-View panel must NOT cancel the surface (regression).
+func TestViewKeysV1Parity(t *testing.T) {
+	lines := make([]string, 40)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("row-%02d with some very long tail content %d", i, i)
+	}
+	m := newTestModel(t)
+	reply := make(chan TabbedResult, 1)
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{Panels: []Panel{{Title: "v", Kind: PanelView, Lines: lines, Height: 5}}}, reply: reply})
+
+	// G → bottom.
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: 'G', Text: "G", Mod: tea.ModShift}))
+	if c := content(m); !strings.Contains(c, "row-39") {
+		t.Fatalf("G did not reach the bottom:\n%s", c)
+	}
+	// g → top.
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: 'g', Text: "g"}))
+	if c := content(m); !strings.Contains(c, "row-00") {
+		t.Fatal("g did not return to the top")
+	}
+	// → pages forward; Ctrl+B pages back.
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyRight}))
+	if c := content(m); !strings.Contains(c, "row-05") || strings.Contains(c, "row-00") {
+		t.Fatalf("→ did not page forward:\n%s", c)
+	}
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: 'b', Mod: tea.ModCtrl}))
+	if c := content(m); !strings.Contains(c, "row-00") {
+		t.Fatal("Ctrl+B did not page back")
+	}
+	// Space pages forward (v1 view semantics).
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeySpace, Text: " "}))
+	if c := content(m); !strings.Contains(c, "row-05") {
+		t.Fatal("Space did not page forward")
+	}
+	// h/l pan a non-wrap view horizontally.
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: 'l', Text: "l"}))
+	if c := content(m); strings.Contains(c, "row-05 ") && !strings.Contains(c, "ow-05") {
+		t.Fatalf("l did not pan right:\n%s", c)
+	}
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: 'q', Text: "q"}))
+	<-reply
+
+	// Regression: "c" on a List panel must not cancel.
+	reply2 := make(chan TabbedResult, 1)
+	m = openList(t, m, "t", []string{"x", "y"}, reply2)
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: 'c', Text: "c"}))
+	if m.surf == nil {
+		t.Fatal("'c' on a list cancelled the surface")
+	}
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	<-reply2
+}
+
+// TestListPagingParity: ←→ page a list by its visible height.
+func TestListPagingParity(t *testing.T) {
+	items := make([]string, 30)
+	for i := range items {
+		items[i] = fmt.Sprintf("item-%02d", i)
+	}
+	m := newTestModel(t)
+	reply := make(chan TabbedResult, 1)
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{Panels: []Panel{{Title: "l", Kind: PanelList, Items: items, Height: 6}}}, reply: reply})
+	_ = content(m) // render once to record the page size
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyRight}))
+	m = enter(t, m)
+	if r := <-reply; r.Panels[0].Cursor != 6 {
+		t.Fatalf("cursor after → = %d, want 6 (one page)", r.Panels[0].Cursor)
+	}
+}
