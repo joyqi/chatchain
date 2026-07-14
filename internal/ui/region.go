@@ -78,9 +78,20 @@ func (r *region) publishLocked(over []string) {
 		return
 	}
 	if len(over) > 0 {
-		r.u.p.Println(strings.Join(over, "\n"))
+		r.u.p.Println(joinOverflow(over))
 	}
 	r.u.p.Send(r.snapshotLocked())
+}
+
+// joinOverflow joins overflow lines for one Println. bubbletea's insertAbove
+// drops empty strings, but a lone blank separator (markdown's block spacing)
+// must still land in scrollback — a single space renders identically.
+func joinOverflow(over []string) string {
+	s := strings.Join(over, "\n")
+	if s == "" {
+		return " "
+	}
+	return s
 }
 
 // commit flows lines through the window. With a (possibly deferred-closed)

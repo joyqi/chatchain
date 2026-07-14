@@ -363,3 +363,37 @@ func stripSGR(s string) string {
 	}
 	return b.String()
 }
+
+// TestRegionBlankLineSurvivesOverflow: markdown's block spacing is a lone ""
+// line; when it overflows the window by itself it must still land in
+// scrollback (bubbletea's insertAbove drops empty strings — the region
+// substitutes a single space).
+func TestRegionBlankLineSurvivesOverflow(t *testing.T) {
+	var overflows []string
+	r := &region{emit: func(over []string, snap regionMsg) {
+		overflows = append(overflows, over...)
+	}}
+	// Fill the window, then push a blank through it alone.
+	r.commit([]string{"a", "b", "c", "d"})
+	r.commit([]string{""}) // blank enters the window, "a" overflows
+	for _, l := range []string{"e", "f", "g", "h"} {
+		r.commit([]string{l}) // b, c, d overflow; then the blank ALONE
+	}
+	want := []string{"a", "b", "c", "d", ""}
+	if len(overflows) != len(want) {
+		t.Fatalf("overflows = %q, want %q", overflows, want)
+	}
+	for i, w := range want {
+		if overflows[i] != w {
+			t.Fatalf("overflow[%d] = %q, want %q (full: %q)", i, overflows[i], w, overflows)
+		}
+	}
+	// And the Println payload for a lone blank must not be the empty string
+	// (insertAbove would drop it) — a space stands in.
+	if got := joinOverflow([]string{""}); got != " " {
+		t.Fatalf("joinOverflow lone blank = %q, want a space", got)
+	}
+	if got := joinOverflow([]string{"", "x"}); got != "\nx" {
+		t.Fatalf("joinOverflow mixed = %q", got)
+	}
+}
