@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"charm.land/bubbles/v2/progress"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -254,7 +256,9 @@ func (m *model) renderSurface(b *strings.Builder) {
 		}
 		b.WriteString("\n" + ansi.Truncate(bar.String(), w, "…"))
 	} else {
-		b.WriteString("\n" + faint + "── " + s.spec.Panels[0].Title + " ──" + sgrReset)
+		// Single-panel surfaces reuse the focused-chip style so titles read
+		// the same with or without tabs.
+		b.WriteString("\n" + revOn + " " + s.spec.Panels[0].Title + " " + sgrReset)
 	}
 
 	p := s.spec.Panels[s.focus]
@@ -287,11 +291,23 @@ func (m *model) renderSurface(b *strings.Builder) {
 			b.WriteString("\n" + marker + box + item)
 		}
 	case PanelSlider:
-		val := faint + "default" + sgrReset
+		// Right-align the value label to "default"'s width so toggling
+		// between default and a number never shifts the bar's origin.
+		label := "default"
+		pct := 0.0
 		if st.value != nil {
-			val = fmt.Sprintf("%.1f", *st.value)
+			label = fmt.Sprintf("%.1f", *st.value)
+			if p.Max > p.Min {
+				pct = (*st.value - p.Min) / (p.Max - p.Min)
+			}
 		}
-		b.WriteString("\n  " + val + "  " + sliderBar(st.value, p, maxInt(10, w-16)))
+		val := fmt.Sprintf("%7s", label)
+		if st.value == nil {
+			val = faint + val + sgrReset
+		}
+		bar := progress.New(progress.WithoutPercentage(), progress.WithColors(lipgloss.Color("6")))
+		bar.SetWidth(clampInt(w-13, 10, 40))
+		b.WriteString("\n  " + val + "  " + bar.ViewAs(pct))
 	case PanelView:
 		lines := st.items
 		if p.Wrap {
@@ -400,25 +416,6 @@ func scrollPercent(p Panel, st *panelState) (int, bool) {
 		}
 	}
 	return 0, false
-}
-
-// sliderBar renders a coarse position bar.
-func sliderBar(v *float64, p Panel, width int) string {
-	pos := -1
-	if v != nil && p.Max > p.Min {
-		pos = int((*v - p.Min) / (p.Max - p.Min) * float64(width-1))
-	}
-	var bar strings.Builder
-	bar.WriteString(faint)
-	for i := 0; i < width; i++ {
-		if i == pos {
-			bar.WriteString(sgrReset + cyan + "●" + sgrReset + faint)
-		} else {
-			bar.WriteString("─")
-		}
-	}
-	bar.WriteString(sgrReset)
-	return bar.String()
 }
 
 // scrollTo keeps the cursor visible in an h-row window over items.

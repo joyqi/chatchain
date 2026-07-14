@@ -854,3 +854,51 @@ func TestCursorRowHighlight(t *testing.T) {
 	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
 	<-reply
 }
+
+// TestSliderProgressBarAndChipTitle pins the tabbed-surface restyle: a
+// single-panel surface titles with the focused-chip style (no faint dashes),
+// and the slider renders a native progress bar whose origin column does not
+// shift between the "default" and numeric-value states.
+func TestSliderProgressBarAndChipTitle(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan TabbedResult, 1)
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{Panels: []Panel{
+		{Title: "Temperature", Kind: PanelSlider, Min: 0, Max: 2, Step: 0.1},
+	}}, reply: reply})
+
+	c := content(m)
+	if strings.Contains(c, "── Temperature") {
+		t.Fatalf("single-panel title still uses faint dashes:\n%q", c)
+	}
+	if !strings.Contains(c, revOn+" Temperature "+sgrReset) {
+		t.Fatalf("single-panel title missing focused-chip style:\n%q", c)
+	}
+
+	barCol := func(s string) int {
+		for _, l := range strings.Split(stripSGR(s), "\n") {
+			if i := strings.IndexAny(l, "█▌░"); i >= 0 {
+				return i
+			}
+		}
+		return -1
+	}
+	col0 := barCol(c)
+	if col0 < 0 {
+		t.Fatalf("slider progress bar not rendered:\n%q", c)
+	}
+	if !strings.Contains(stripSGR(c), "default") {
+		t.Fatalf("default state label missing:\n%q", c)
+	}
+
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyRight})) // default → min
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyRight})) // step up
+	c = content(m)
+	if !strings.ContainsAny(c, "█▌") {
+		t.Fatalf("bar has no filled cells after stepping up:\n%q", c)
+	}
+	if got := barCol(c); got != col0 {
+		t.Fatalf("bar origin shifted between default and value states: %d → %d", col0, got)
+	}
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	<-reply
+}
