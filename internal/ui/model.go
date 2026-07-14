@@ -89,6 +89,12 @@ func newModel(widthO *atomic.Int64) *model {
 	ta := textarea.New()
 	ta.SetVirtualCursor(false) // REAL terminal cursor: IME preedit anchors here
 	ta.ShowLineNumbers = false
+	// Neutral styles: the default focused CursorLine carries a background
+	// tint — the composer should render on the terminal's own background.
+	styles := textarea.DefaultDarkStyles()
+	styles.Focused.CursorLine = styles.Focused.Text
+	styles.Blurred.CursorLine = styles.Blurred.Text
+	ta.SetStyles(styles)
 	ta.SetHeight(1)
 	ta.SetPromptFunc(2, func(pi textarea.PromptInfo) string {
 		if pi.LineNumber == 0 {
