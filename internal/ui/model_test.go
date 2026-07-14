@@ -397,3 +397,79 @@ func TestRegionBlankLineSurvivesOverflow(t *testing.T) {
 		t.Fatalf("joinOverflow mixed = %q", got)
 	}
 }
+
+// TestHistoryNavigation: ↑ recalls submitted inputs, ↓ walks back to the
+// saved draft; queued submits enter history too.
+func TestHistoryNavigation(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan inputResult, 1)
+	m = step(t, m, readReqMsg{reply: reply})
+	m = typeText(t, m, "one")
+	m = enter(t, m)
+	<-reply
+	m = typeText(t, m, "two")
+	m = enter(t, m) // no waiter → queued (history too)
+
+	m = typeText(t, m, "dra")
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	if got := m.ta.Value(); got != "two" {
+		t.Fatalf("↑ = %q, want two", got)
+	}
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	if got := m.ta.Value(); got != "one" {
+		t.Fatalf("↑↑ = %q, want one", got)
+	}
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	if got := m.ta.Value(); got != "dra" {
+		t.Fatalf("↓↓ = %q, want the saved draft", got)
+	}
+}
+
+// TestSlashTabCompletion: a "/" prefix shows suggestions; Tab cycles the
+// matches of the prefix captured at the first press.
+func TestSlashTabCompletion(t *testing.T) {
+	m := newTestModel(t)
+	m = step(t, m, setCommandsMsg([]string{"/file", "/session", "/status", "/model"}))
+	m = typeText(t, m, "/s")
+	if c := content(m); !strings.Contains(c, "/session") || !strings.Contains(c, "/status") {
+		t.Fatalf("suggestion row missing:\n%s", c)
+	}
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	if got := m.ta.Value(); got != "/session" {
+		t.Fatalf("tab = %q, want /session", got)
+	}
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	if got := m.ta.Value(); got != "/status" {
+		t.Fatalf("tab tab = %q, want /status (cycling the ORIGINAL prefix)", got)
+	}
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	if got := m.ta.Value(); got != "/session" {
+		t.Fatalf("cycle wrap = %q, want /session", got)
+	}
+}
+
+// TestPasteTags: a multi-line paste collapses to a [#N …] tag in the composer;
+// submit expands it in Text while Display keeps the tag.
+func TestPasteTags(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan inputResult, 1)
+	m = step(t, m, readReqMsg{reply: reply})
+	m = step(t, m, tea.PasteMsg{Content: "line1\nline2\nline3"})
+	if v := m.ta.Value(); !strings.HasPrefix(v, "[#1 line1… 3 lines]") {
+		t.Fatalf("composer = %q, want a paste tag", v)
+	}
+	m = enter(t, m)
+	r := <-reply
+	if r.in.Text != "line1\nline2\nline3" {
+		t.Fatalf("Text = %q, want expanded paste", r.in.Text)
+	}
+	if !strings.Contains(r.in.Display, "[#1") {
+		t.Fatalf("Display = %q, want the tag preserved", r.in.Display)
+	}
+	// Single-line pastes insert verbatim.
+	m = step(t, m, tea.PasteMsg{Content: "inline"})
+	if got := m.ta.Value(); got != "inline" {
+		t.Fatalf("single-line paste = %q", got)
+	}
+}

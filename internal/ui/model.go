@@ -3,6 +3,8 @@ package ui
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -77,6 +79,22 @@ type model struct {
 
 	cancels []context.CancelFunc // interrupt scope stack (bottom = turn)
 
+	// Input history (session-local, like the readline path): submitted and
+	// queued inputs, ↑/↓ navigable while the composer holds a single row.
+	history   []string
+	histIdx   int    // == len(history) when not navigating
+	histDraft string // draft saved when navigation starts
+
+	// Slash completion: commands installed via SetSlashCommands; Tab cycles
+	// the matches of the prefix captured at the first Tab press.
+	commands []string
+	sugBase  string // "" = not cycling
+	sugIdx   int
+
+	// Paste store: multi-line pastes collapse to "[#N …]" tags in the
+	// composer; Input.Text expands them on submit, Display keeps the tag.
+	pastes []string
+
 	spin        int
 	spinTicking bool
 }
@@ -126,6 +144,26 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.title = string(msg)
 		return m, nil
 
+	case setCommandsMsg:
+		m.commands = msg
+		return m, nil
+
+	case tea.PasteMsg:
+		if m.sel != nil || m.viewer != nil {
+			return m, nil
+		}
+		content := strings.ReplaceAll(msg.Content, "\r\n", "\n")
+		content = strings.ReplaceAll(content, "\r", "\n")
+		content = strings.TrimRight(content, "\n")
+		if strings.Contains(content, "\n") {
+			m.pastes = append(m.pastes, content)
+			m.ta.InsertString(pasteTag(len(m.pastes), content))
+		} else {
+			m.ta.InsertString(content)
+		}
+		m.resizeComposer()
+		return m, nil
+
 	case busyOnMsg:
 		m.busy = &busyState{label: msg.label, since: time.Now()}
 		return m, m.ensureSpin()
@@ -148,7 +186,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.queue) > 0 {
 			item := m.queue[0]
 			m.queue = m.queue[1:]
-			msg.reply <- inputResult{in: Input{Display: item, Text: item}}
+			msg.reply <- inputResult{in: m.makeInput(item)}
 			return m, nil
 		}
 		m.waiter = msg.reply
@@ -279,6 +317,47 @@ func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Tab cycles slash-command completions for the prefix captured at the
+	// first press; any other key ends the cycle.
+	if k.Code == tea.KeyTab {
+		base := m.sugBase
+		if base == "" {
+			base = m.ta.Value()
+		}
+		if ms := matchCommands(m.commands, base); len(ms) > 0 {
+			if m.sugBase == "" {
+				m.sugBase = base
+				m.sugIdx = -1
+			}
+			m.sugIdx = (m.sugIdx + 1) % len(ms)
+			m.setDraft(ms[m.sugIdx])
+		}
+		return m, nil
+	}
+	m.sugBase = ""
+
+	// ↑/↓ walk the input history while the composer holds a single row
+	// (multi-row drafts keep the arrows for cursor movement).
+	if k.Code == tea.KeyUp && m.historyNavigable() {
+		if m.histIdx == len(m.history) {
+			m.histDraft = m.ta.Value()
+		}
+		if m.histIdx > 0 {
+			m.histIdx--
+			m.setDraft(m.history[m.histIdx])
+		}
+		return m, nil
+	}
+	if k.Code == tea.KeyDown && m.historyNavigable() && m.histIdx < len(m.history) {
+		m.histIdx++
+		if m.histIdx == len(m.history) {
+			m.setDraft(m.histDraft)
+		} else {
+			m.setDraft(m.history[m.histIdx])
+		}
+		return m, nil
+	}
+
 	if k.Code == tea.KeyEnter {
 		text := strings.TrimSpace(m.ta.Value())
 		m.ta.Reset()
@@ -286,9 +365,9 @@ func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if text == "" {
 			return m, nil
 		}
-		in := Input{Display: text, Text: text}
+		m.pushHistory(text)
 		if m.waiter != nil {
-			m.waiter <- inputResult{in: in}
+			m.waiter <- inputResult{in: m.makeInput(text)}
 			m.waiter = nil
 		} else {
 			m.queue = append(m.queue, text) // type-ahead: queue until ReadInput
@@ -299,7 +378,36 @@ func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.ta, cmd = m.ta.Update(msg)
 	m.resizeComposer()
+	m.histIdx = len(m.history) // any edit leaves history navigation
 	return m, cmd
+}
+
+// pushHistory records a submitted/queued input and resets navigation.
+func (m *model) pushHistory(text string) {
+	if n := len(m.history); n > 0 && m.history[n-1] == text {
+		m.histIdx = len(m.history)
+		return // collapse immediate duplicates, like readline
+	}
+	m.history = append(m.history, text)
+	m.histIdx = len(m.history)
+}
+
+// makeInput builds the Display/Text pair: Display keeps paste tags, Text
+// expands them to the stored paste contents.
+func (m *model) makeInput(text string) Input {
+	return Input{Display: text, Text: expandPasteTags(text, m.pastes)}
+}
+
+// historyNavigable: single-row composer content only.
+func (m *model) historyNavigable() bool {
+	return m.ta.LineCount() <= 1 && m.ta.LineInfo().Height <= 1
+}
+
+// setDraft replaces the composer content (cursor at end, height adjusted).
+func (m *model) setDraft(s string) {
+	m.ta.SetValue(s)
+	m.ta.MoveToEnd()
+	m.resizeComposer()
 }
 
 // fireCancel invokes the cancel at stack index i (callers pass 0 for the turn,
@@ -440,6 +548,29 @@ func (m *model) View() tea.View {
 
 	b.WriteString(m.ta.View())
 
+	// Slash suggestions: a dim row of matching commands under the composer
+	// while a "/" prefix is being typed (Tab cycles them).
+	if m.sel == nil && m.viewer == nil {
+		base := m.sugBase
+		if base == "" {
+			base = m.ta.Value()
+		}
+		if ms := matchCommands(m.commands, base); len(ms) > 0 {
+			var row strings.Builder
+			for i, c := range ms {
+				if i > 0 {
+					row.WriteString("  ")
+				}
+				if m.sugBase != "" && i == m.sugIdx {
+					row.WriteString(cyan + c + sgrReset)
+				} else {
+					row.WriteString(faint + c + sgrReset)
+				}
+			}
+			b.WriteString("\n" + ansi.Truncate(row.String(), maxInt(4, m.width), "…"))
+		}
+	}
+
 	// Interaction surfaces BELOW the composer: the composer never moves when
 	// they close, and their vacated rows die at the screen bottom where output
 	// self-heals them (see docs/design/ui-architecture.md).
@@ -524,4 +655,45 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// matchCommands returns the commands matching a "/" prefix being typed (no
+// arguments yet); nil when the line isn't a bare command prefix.
+func matchCommands(commands []string, line string) []string {
+	if !strings.HasPrefix(line, "/") || strings.ContainsAny(line, " \n") {
+		return nil
+	}
+	var ms []string
+	for _, c := range commands {
+		if strings.HasPrefix(c, line) {
+			ms = append(ms, c)
+		}
+	}
+	return ms
+}
+
+// pasteTag renders the composer stand-in for a stored multi-line paste.
+func pasteTag(id int, content string) string {
+	lines := strings.Count(content, "\n") + 1
+	first := strings.TrimSpace(strings.SplitN(content, "\n", 2)[0])
+	r := []rune(first)
+	if len(r) > 20 {
+		first = string(r[:20])
+	}
+	return fmt.Sprintf("[#%d %s… %d lines]", id, first, lines)
+}
+
+// pasteTagRe matches the composer paste tags for expansion on submit.
+var pasteTagRe = regexp.MustCompile(`\[#(\d+)[^\]]*\]`)
+
+// expandPasteTags replaces every stored-paste tag with its full content.
+func expandPasteTags(text string, pastes []string) string {
+	return pasteTagRe.ReplaceAllStringFunc(text, func(tag string) string {
+		mm := pasteTagRe.FindStringSubmatch(tag)
+		idx, err := strconv.Atoi(mm[1])
+		if err != nil || idx < 1 || idx > len(pastes) {
+			return tag
+		}
+		return pastes[idx-1]
+	})
 }

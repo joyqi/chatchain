@@ -15,8 +15,9 @@ type (
 	readReqMsg    struct{ reply chan inputResult }
 	readCancelMsg struct{ reply chan inputResult } // revoke a waiter that gave up
 
-	statusMsg StatusData
-	titleMsg  string
+	statusMsg      StatusData
+	titleMsg       string
+	setCommandsMsg []string // slash command table for suggestions/completion
 
 	busyOnMsg  struct{ label string }
 	busyOffMsg struct{}

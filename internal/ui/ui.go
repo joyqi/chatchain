@@ -195,6 +195,10 @@ func (u *UI) SetStatus(s StatusData) { u.p.Send(statusMsg(s)) }
 // SetTitle sets the terminal window title.
 func (u *UI) SetTitle(title string) { u.p.Send(titleMsg(title)) }
 
+// SetSlashCommands installs the slash-command table backing the composer's
+// suggestion row and Tab completion.
+func (u *UI) SetSlashCommands(cmds []string) { u.p.Send(setCommandsMsg(append([]string{}, cmds...))) }
+
 // Select opens the single-select surface below the composer and blocks until
 // a choice or cancel.
 func (u *UI) Select(ctx context.Context, spec SelectSpec) (SelectResult, error) {

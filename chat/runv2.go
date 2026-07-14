@@ -89,6 +89,7 @@ func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.
 	defer u.Close()
 	defer func() { sw.Close() }() // sw may be swapped by /session
 	u.SetTitle(sw.Title())
+	u.SetSlashCommands(activeSlashCommands)
 
 	pushStatus := func() {
 		model := p.Model()
