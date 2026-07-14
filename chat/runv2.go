@@ -85,6 +85,11 @@ func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.
 	fmt.Println()
 
 	// ---- Program phase: the facade owns the terminal from here on.
+	// Mirror v1's title hygiene: push the terminal's title stack now (plain
+	// stdout, pre-Program) and pop it after the Program has released the
+	// terminal, so the original tab title is restored on exit.
+	os.Stdout.WriteString("\033[22;0t")
+	defer os.Stdout.WriteString("\033[23;0t")
 	u := ui.New()
 	defer u.Close()
 	defer func() { sw.Close() }() // sw may be swapped by /session
@@ -442,8 +447,15 @@ func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.
 		if input == "/export" || strings.HasPrefix(input, "/export ") {
 			arg := strings.TrimSpace(strings.TrimPrefix(input, "/export"))
 			if arg == "" {
-				printDim("v2: usage /export <file.html|file.md> (the format picker lands in P3)")
-				continue
+				r, serr := u.Select(ctx, ui.SelectSpec{Title: "Export format", Items: []string{"HTML", "Markdown"}})
+				if serr != nil || r.Cancelled {
+					continue
+				}
+				format := exportHTML
+				if r.Index == 1 {
+					format = exportMarkdown
+				}
+				arg = exportFileName(sw.Title(), sw.ID(), format, time.Now())
 			}
 			lc := &lineCommitter{commit: u.PrintLines}
 			exportChat(lc, arg, sw, history, p)
