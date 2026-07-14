@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"chatchain/internal/textwidth"
 )
 
 // step drives one Update and returns the (mutated) model.
@@ -898,6 +900,87 @@ func TestSliderProgressBarAndChipTitle(t *testing.T) {
 	}
 	if got := barCol(c); got != col0 {
 		t.Fatalf("bar origin shifted between default and value states: %d → %d", col0, got)
+	}
+	plain := stripSGR(c)
+	barRow := -1
+	rows := strings.Split(plain, "\n")
+	for i, l := range rows {
+		if strings.ContainsAny(l, "█▌░") {
+			barRow = i
+		}
+	}
+	if barRow < 1 || strings.TrimSpace(rows[barRow-1]) != "" || strings.TrimSpace(rows[barRow+1]) != "" {
+		t.Fatalf("bar row not padded by blank rows:\n%q", plain)
+	}
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	<-reply
+}
+
+// TestWrapANSICarriesStyle pins the styled-wrap contract: rows produced by
+// wrapANSI are self-contained — each continuation row re-opens the SGR state
+// its line had at the break, so a viewport clipped mid-line keeps the styling
+// (the /tools MCP tab bug: scrolling past a wrapped faint line's first row
+// dropped the faint on the rest).
+func TestWrapANSICarriesStyle(t *testing.T) {
+	rows := wrapANSI("\x1b[2mfaint methods list that wraps across rows\x1b[0m", 16)
+	if len(rows) < 3 {
+		t.Fatalf("expected ≥3 rows, got %d: %q", len(rows), rows)
+	}
+	for i, r := range rows[1:] {
+		if !strings.HasPrefix(r, "\x1b[2m") {
+			t.Fatalf("continuation row %d lost the faint state: %q", i+1, r)
+		}
+	}
+
+	// Reset mid-line stops the carry; combined params ("0;7") clear-then-set.
+	rows = wrapANSI("\x1b[7mrev\x1b[0m plain tail that wraps onward", 12)
+	for i, r := range rows[1:] {
+		if strings.Contains(r, "\x1b[7m") {
+			t.Fatalf("row %d re-opened style past its reset: %q", i+1, r)
+		}
+	}
+	if got := sgrCarry("", "\x1b[0;7mx"); got != "\x1b[7m" {
+		t.Fatalf("combined reset+set carry = %q, want \\x1b[7m", got)
+	}
+	if got := sgrCarry("\x1b[2m", "a\x1b[36mb"); got != "\x1b[2;36m" {
+		t.Fatalf("merged carry = %q, want \\x1b[2;36m", got)
+	}
+
+	// CJK-aware: no row exceeds the column budget.
+	for _, r := range wrapANSI("\x1b[2m方法 tools/list tools/call 中文继续中文继续\x1b[0m", 10) {
+		if w := textwidth.StringWidth(stripSGR(r)); w > 10 {
+			t.Fatalf("row overflows budget: %d cols %q", w, r)
+		}
+	}
+}
+
+// TestViewScrollKeepsWrappedStyle drives the real surface: a Wrap view whose
+// faint line wraps over several rows, scrolled so only continuation rows are
+// visible — they must still carry the faint SGR.
+func TestViewScrollKeepsWrappedStyle(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan TabbedResult, 1)
+	long := "\x1b[2m" + strings.Repeat("methods word ", 30) + "\x1b[0m"
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{Panels: []Panel{
+		{Title: "MCP", Kind: PanelView, Wrap: true, Height: 3, Lines: []string{long, "tail"}},
+	}}, reply: reply})
+
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	c := content(m)
+	var body []string
+	for _, l := range strings.Split(c, "\n") {
+		if strings.Contains(l, "methods word") {
+			body = append(body, l)
+		}
+	}
+	if len(body) == 0 {
+		t.Fatalf("no wrapped rows visible:\n%q", c)
+	}
+	for _, l := range body {
+		if !strings.Contains(l, "\x1b[2m") {
+			t.Fatalf("visible continuation row lost faint:\n%q", l)
+		}
 	}
 	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
 	<-reply

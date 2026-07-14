@@ -307,13 +307,14 @@ func (m *model) renderSurface(b *strings.Builder) {
 		}
 		bar := progress.New(progress.WithoutPercentage(), progress.WithColors(lipgloss.Color("6")))
 		bar.SetWidth(clampInt(w-13, 10, 40))
-		b.WriteString("\n  " + val + "  " + bar.ViewAs(pct))
+		// Blank rows above and below give the lone bar row some breathing room.
+		b.WriteString("\n\n  " + val + "  " + bar.ViewAs(pct) + "\n")
 	case PanelView:
 		lines := st.items
 		if p.Wrap {
 			lines = nil
 			for _, l := range st.items {
-				lines = append(lines, wrapByWidth(l, w)...)
+				lines = append(lines, wrapANSI(l, w)...)
 			}
 		}
 		st.wrapped = len(lines)

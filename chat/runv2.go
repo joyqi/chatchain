@@ -522,7 +522,7 @@ func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.
 		}
 		if overlay != nil && (input == "/skills" || strings.HasPrefix(input, "/skills ")) {
 			overlay.refresh()
-			_ = u.View(ctx, ui.ViewSpec{Title: "/skills", Lines: skillsStatusLines(overlay.skillList(), overlay.warnings(), agent.Root)})
+			_ = u.View(ctx, ui.ViewSpec{Title: "Skills", Lines: skillsStatusLines(overlay.skillList(), overlay.warnings(), agent.Root)})
 			continue
 		}
 		if input == "/status" || strings.HasPrefix(input, "/status ") {
@@ -531,7 +531,7 @@ func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.
 			for i, it := range items {
 				lines[i] = fmt.Sprintf("%s  %s", BoldStyle.Sprintf("%-12s", it.Name), it.Value)
 			}
-			_ = u.View(ctx, ui.ViewSpec{Title: "/status", Lines: lines})
+			_ = u.View(ctx, ui.ViewSpec{Title: "Status", Lines: lines})
 			continue
 		}
 
