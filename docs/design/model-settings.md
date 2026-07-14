@@ -32,13 +32,13 @@ Esc/q/Ctrl+C cancels everything.
 
 ## Pre-merge behavior being replaced
 
-- `/model` (chat.go): FetchModels (spinner) → SelectModel → `p.SetModel` +
+- `/model` (chat.go, since reimplemented in chat/run.go over internal/ui): FetchModels → SelectModel → `p.SetModel` +
   `sw.SetModel`. Aborts if the model list fetch fails — keep that.
 - `/context` (chat.go): presets `8k 32k 128k 200k 256k 1m` via
   `pickContextWindow`, or `/context <size>` parsed by `ParseWindowSize`;
   runtime-only `budget.setWindow`, never persisted.
 
-## New promptui pieces (`internal/promptui/tabbed.go`)
+## New promptui pieces (`internal/promptui/tabbed.go` — historical; the component now lives in `internal/ui/tabbed.go`)
 
 - **`ListPanel.SetCursor(i int)`** — pre-position the highlight (current model /
   current preset / current effort).

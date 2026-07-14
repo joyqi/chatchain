@@ -3,7 +3,6 @@ package chat
 import (
 	"fmt"
 
-	"chatchain/internal/promptui"
 	mcpmgr "chatchain/mcp"
 	"chatchain/provider"
 	"chatchain/tool"
@@ -89,15 +88,4 @@ func statusLines(p provider.Provider, b *contextBudget, history []provider.Messa
 		statusItem{"Session", session},
 	)
 	return items
-}
-
-// showStatus renders the status items as a read-only Viewer panel: each row is a
-// bold name + value, dismissed with Esc / q / Ctrl+C, leaving no residue.
-func showStatus(items []statusItem) {
-	lines := make([]string, len(items))
-	for i, it := range items {
-		lines[i] = fmt.Sprintf("%s  %s", BoldStyle.Sprintf("%-12s", it.Name), it.Value)
-	}
-	v := promptui.Viewer{Label: "Status", Lines: lines, Height: 15}
-	_ = v.Run()
 }

@@ -985,3 +985,25 @@ func TestViewScrollKeepsWrappedStyle(t *testing.T) {
 	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
 	<-reply
 }
+
+// TestStatusLineFieldHues pins the v1 composer-status color contract (ported
+// from chat/inputchrome_test.go, died with the old stack): the model and ctx
+// segments carry DIFFERENT hues (cyan vs green, both faint) so the fields
+// read as distinct at a glance, with faint separators between them.
+func TestStatusLineFieldHues(t *testing.T) {
+	m := newTestModel(t)
+	m = step(t, m, statusMsg(StatusData{Model: "gpt-4o", CtxUsed: 1000, CtxWindow: 128000, Estimated: true}))
+	line := m.statusLine()
+	if !strings.Contains(line, cyan+faint+"gpt-4o"+sgrReset) {
+		t.Fatalf("model segment not cyan+faint:\n%q", line)
+	}
+	if !strings.Contains(line, green+faint+"ctx ≈1k / 128k (0%)"+sgrReset) {
+		t.Fatalf("ctx segment not green+faint (or format drifted):\n%q", line)
+	}
+
+	// No model yet: an em-dash placeholder keeps the field visible.
+	m = step(t, m, statusMsg(StatusData{}))
+	if !strings.Contains(stripSGR(m.statusLine()), "—") {
+		t.Fatalf("missing em-dash placeholder:\n%q", m.statusLine())
+	}
+}

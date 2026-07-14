@@ -32,7 +32,7 @@ func TestToolLoopCap(t *testing.T) {
 	tp := &loopingToolProvider{}
 	history := []provider.Message{{Role: "user", Content: "go"}}
 
-	_, _, err := executeWithTools(context.Background(), tp, noopDispatcher{}, &history, noopDispatcher{}.Tools(), "", io.Discard, true)
+	_, _, err := executeWithTools(context.Background(), tp, noopDispatcher{}, &history, noopDispatcher{}.Tools(), "")
 	if !errors.Is(err, errToolRoundsExceeded) {
 		t.Fatalf("err = %v, want errToolRoundsExceeded", err)
 	}

@@ -72,7 +72,6 @@ chatchain <provider> -M <model> -m "<message>"
 | `-k, --key <key>` | API key (overrides env var) |
 | `-u, --url <url>` | Custom API base URL |
 | `-c, --config <path>` | Path to config file (default: `~/.chatchain.yaml`) |
-| `-v, --verbose` | Show raw API responses |
 
 ## Providers and Environment Variables
 

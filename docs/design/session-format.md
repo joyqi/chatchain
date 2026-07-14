@@ -203,14 +203,14 @@ func ListSessions() ([]SessionInfo, error)
 
 A flag on each provider subcommand, using cobra's `NoOptDefVal` to support both forms:
 
-- `chatchain openai --resume` (no value) → at startup, pop the `ListSessions` picker; load the selection and enter chat.
+- `chatchain openai --resume` (no value) → at startup, pop the `ListSessions` picker (`chat.PickSession`: a one-shot, surface-only list rendered via `ui.RunSurface` before the chat Program starts — arrow keys to move, Enter picks, Esc cancels); load the selection and enter chat.
 - `chatchain openai --resume=<id>` → load that id directly. **Must use `=`** — with `NoOptDefVal` set, the space form `--resume <id>` would treat `<id>` as the provider positional arg, not the flag value.
 
 Model selection: if `-M` is also given, use it; otherwise **default to the session's `meta.model`** and skip the picker (no need to re-pick a model on resume).
 
 ### 8.2 `/session` — in-chat entry
 
-For switching/resuming mid-conversation. A `promptui.Select` lists all sessions (`title · model · relative time · N messages`); the selection's `LoadSession` **replaces the in-memory history** and continues. Switching away from the current session is safe — it's already auto-persisted.
+For switching/resuming mid-conversation. `/session` opens a tabbed ui surface with two tabs: **Resume** — a single-select list of all sessions (`title · model · relative time · N messages`) — and **Delete** — multi-select checkboxes (Space toggles; the current session is not listed). Enter commits the focused tab: on Resume, the selection is loaded and **replaces the in-memory history**, continuing the chat; on Delete, the checked session bundles are removed. Switching away from the current session is safe — it's already auto-persisted.
 
 ### 8.3 Shared rules
 
@@ -242,17 +242,17 @@ Unchanged commands: `/file`, `/files`, `/clear`, `/mcp`, `/exit`. Old `.md` tran
 
 ### 10.1 `/model` — runtime model switching
 
-Today the model is baked into the provider struct at construction with no runtime setter. `/model` needs the `Provider` interface to gain `Model() string` and `SetModel(model string)` (each provider just reads/writes its own model field — trivial). The command reuses `FetchModels` + `promptui.Select`, then calls `p.SetModel(selected)`.
+Today the model is baked into the provider struct at construction with no runtime setter. `/model` needs the `Provider` interface to gain `Model() string` and `SetModel(model string)` (each provider just reads/writes its own model field — trivial). The command opens a four-tab ui surface — **Model / Context / Effort / Temperature** (the last a slider) — listing the provider's models in the Model tab; Enter commits **all tabs at once**, and a changed model selection is applied via `p.SetModel(selected)`.
 
 - **Same provider, different model**: `RawContent` stays valid (the §5/§8 invariant keys on `provider.Type()`, not the model), so the reasoning chain is unaffected.
 - After switching, update the session's `meta.model` — its meaning is "last-used model", which is exactly the `--resume` default when `-M` is omitted (§8.1).
 - Different messages in one session may be produced by different models; that's allowed (`messages.jsonl` is provider-format and model-agnostic).
 
-### 10.2 Selector ESC-cancel behavior
+### 10.2 Surface cancel behavior
 
-All promptui selectors (`/model`, `/session`, startup model selection) support **ESC to cancel**. (See the implementation notes — promptui has no native ESC binding, so a lightweight stdin wrapper handles it.)
+All interactive surfaces (`/model`, `/session`, the startup pickers) support **cancel**: `q`/`Esc` or `Ctrl+C` closes the surface with **no changes applied**. Keys are handled by the bubbletea event loop — there is no custom ESC stdin wrapper.
 
-- `SelectModel` / `PickSession` return an **empty value, not an error**, on cancel, so callers distinguish "cancelled" from "real error".
+- `PickSession` returns an **empty value, not an error**, on cancel, so callers distinguish "cancelled" from "real error".
 - **In-chat `/model` `/session`**: cancel → back to the prompt, no side effects.
 - **Startup model selection (no `-M`)**: cancel = **lazy selection** — enter chat without a model; the first real message re-opens the picker (`ensureModel`); cancelling again skips the turn.
 

@@ -1,6 +1,6 @@
 # UI Architecture: bubbletea v2 inline migration
 
-Status: accepted (2026-07-13) · Branch: `streaming-typeahead` · Brain: `ui-bubbletea-v2`
+Status: shipped through P5 (2026-07-14) — the bubbletea UI is the only interactive path; P6 (lipgloss major convergence) remains · Brain: `ui-bubbletea-v2`
 
 ## Decision
 
@@ -206,9 +206,19 @@ shared turn-state races. Adopted instead:
 
 `chat.Once` (-m) never constructs the ui facade — plain fmt output, as today.
 The markdown renderer's no-preview sink + NoColor keeps piped output clean.
-`--ui=v2` on a non-terminal falls back to the plain path.
+Interactive mode on a non-terminal exits with an error pointing at
+-m/--message (the readline path that used to serve pipes is gone).
 
-## Migration phases (amended)
+## Migration phases (amended; P0–P5 done, P6 open)
+
+P5 landed 2026-07-14: the default flipped, `--ui` was removed, and the old
+stack was deleted (`internal/readline`, `internal/promptui`, the readline Run
+loop, composer chrome, paste filter, cancel watch, spinner). Pre-REPL
+interactions moved into the Program: the startup model pick and the -S
+system-prompt read run as pre-loop interactions in chat/run.go; the --resume
+picker is a one-shot surface-only Program (`ui.RunSurface`). Ported contracts:
+window-title sanitize/truncate lives in ui.SetTitle (the renderer emits raw
+OSC); title/status fallbacks and status-field hues re-pinned in tests.
 
 - **P0**: add a CI test workflow (`go vet && go test -race ./...`) — the
   whole plan leans on "tests stay green" and nothing enforces it today.
@@ -241,7 +251,13 @@ The markdown renderer's no-preview sink + NoColor keeps piped output clean.
   exactly the two-rulers trap recorded in the terminal-emoji-width lesson.
   Until P6, the dual majors cost only binary size — functionally inert.
 
-## Parity checklist (P5 gate, ranked)
+## Parity checklist (P5 gate, ranked) — PASSED 2026-07-14
+
+Signed off through dogfooding (one report → one fix, until dry). Notes:
+Terminal.app bottom-row CJK IME resolved by construction — the wrapped-composer
+layout keeps the composer off the physical bottom row (the status line pads
+it); interrupt matrix and queue-restore are pinned in internal/ui/model_test.go;
+resize reflow orphans remain an accepted cost (below). Original ranking:
 
 Tier 1 (crash/corruption): Terminal.app bottom-row CJK IME (the old
 reserveBottomLines protection is gone — must retest composer-at-bottom with a

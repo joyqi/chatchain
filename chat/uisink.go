@@ -7,7 +7,7 @@ import (
 	"chatchain/internal/ui"
 )
 
-// uiMDSink adapts a ui.StreamSink to markdown.Sink for the --ui=v2 path: the
+// uiMDSink adapts a ui.StreamSink to markdown.Sink for the interactive loop: the
 // renderer's committed output is line-buffered and lands in scrollback via
 // CommitLines; block previews pass straight through; the layout width is the
 // ui's live width. flush commits any final partial line (call it after

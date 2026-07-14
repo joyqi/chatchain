@@ -531,16 +531,9 @@ func exportChat(w io.Writer, arg string, sw *SessionWriter, history []provider.M
 	var path string
 	var format exportFormat
 	if arg == "" {
-		idx, ok := runSelect("Export format", []string{"HTML", "Markdown"}, 2)
-		if !ok {
-			return // cancelled
-		}
-		format = exportHTML
-		if idx == 1 {
-			format = exportMarkdown
-		}
-		path = exportFileName(sw.Title(), sw.ID(), format, time.Now())
-	} else {
+		return // the format prompt lives in the UI loop (see /export in runv2)
+	}
+	{
 		expanded := expandHome(arg)
 		if verr := validateExportTarget(expanded); verr != nil {
 			ErrorStyle.Fprintf(w, "Error: %v\n", verr)

@@ -17,15 +17,13 @@ import (
 	"chatchain/tool"
 )
 
-// RunV2 is the --ui=v2 interactive loop: the same turn engine and session
-// semantics as Run, rendered through the bubbletea facade (internal/ui)
-// instead of the readline REPL. It is a deliberate FORK of Run for the
-// migration window (docs/design/ui-architecture.md P2): pure logic helpers are
-// shared, the ~duplicated loop shape dies with the old stack at P5.
+// Run is the interactive chat loop, rendered through the bubbletea facade
+// (internal/ui): a synchronous turn engine over ReadInput with type-ahead
+// queued inside the ui (docs/design/ui-architecture.md).
 //
-// v2-path invariants: after ui.New() nothing may write to the terminal except
-// through the facade — no promptui, no spinner, no raw OSC/ANSI, no readline.
-func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, contextWindow int, agent AgentOptions, reqLog *RequestLog) error {
+// Invariant: after ui.New() nothing may write to the terminal except through
+// the facade — no spinner, no raw OSC/ANSI escapes, no direct stdout.
+func Run(p provider.Provider, systemPrompt string, systemInteractive bool, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, contextWindow int, agent AgentOptions, reqLog *RequestLog) error {
 	// ---- pre-Program phase: plain stdout, the Program hasn't claimed the
 	// terminal yet. The OSC background query MUST happen here (during the
 	// Program it would race the event loop's stdin ownership).
@@ -62,7 +60,7 @@ func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.
 		sw.SetContextWindow(budget.window)
 	}
 
-	DimStyle.Println("Chat started (--ui=v2 preview). Press Ctrl+C to exit.")
+	DimStyle.Println("Chat started. Press Ctrl+C to exit.")
 	DimStyle.Println("Commands: /file [path], /session, /model, /compact, /export, /status, /tools, /debug" + agentCommandHint(overlay))
 	if id := sw.ID(); id != "" {
 		DimStyle.Printf("Session: %s\n", id)
@@ -93,20 +91,16 @@ func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.
 	u := ui.New()
 	defer u.Close()
 	defer func() { sw.Close() }() // sw may be swapped by /session
-	u.SetTitle(sw.Title())
+	u.SetTitle(windowTitle(sw.Title()))
 	u.SetSlashCommands(activeSlashCommands)
 
 	pushStatus := func() {
-		model := p.Model()
-		if model == "" {
-			model = p.Type()
-		}
-		u.SetStatus(ui.StatusData{Model: model, CtxUsed: budget.used, CtxWindow: budget.window, Estimated: !budget.haveUsage})
+		u.SetStatus(ui.StatusData{Model: statusModelLabel(p.Model(), p.Type()), CtxUsed: budget.used, CtxWindow: budget.window, Estimated: !budget.haveUsage})
 	}
 	pushStatus()
 
 	if mgr != nil {
-		go reportMCPFailuresV2(mgr, u)
+		go reportMCPFailures(mgr, u)
 	}
 
 	ctx := context.Background()
@@ -201,9 +195,9 @@ func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.
 		pushStatus()
 	}
 
-	// retryV2 mirrors retryWithCountdown without the \r countdown (the frame
+	// retry mirrors retryWithCountdown without the \r countdown (the frame
 	// spinner shows the wait instead).
-	retryV2 := func(fn func() error) error {
+	retry := func(fn func() error) error {
 		err := fn()
 		if err == nil || !isRetryable(err) {
 			return err
@@ -219,6 +213,30 @@ func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.
 			}
 		}
 		return err
+	}
+
+	// ---- pre-loop interactions (formerly pre-REPL on the old stack): the -S
+	// system-prompt read and the startup model pick run inside the Program.
+	if systemInteractive && len(importedHistory) == 0 {
+		printDim("Enter a system prompt (Enter to skip):")
+		if in, rerr := u.ReadInput(ctx); rerr == nil {
+			if sp := strings.TrimSpace(in.Text); sp != "" {
+				printDim("System prompt: %s", truncateRunes(sp, 80))
+				if len(history) > 0 && history[0].Role == "system" {
+					history[0].Content = sp
+				} else {
+					history = append([]provider.Message{{Role: "system", Content: sp}}, history...)
+				}
+				budget.update(p, history)
+				pushStatus()
+			}
+		}
+	}
+	if p.Model() == "" {
+		// v1 offered the pick at startup; ESC defers — the first message
+		// re-prompts lazily (ensureModel).
+		ensureModel(ctx, u, p, sw)
+		pushStatus()
 	}
 
 	for {
@@ -416,7 +434,7 @@ func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.
 			}
 			sw.Close()
 			sw = newSW
-			u.SetTitle(sw.Title())
+			u.SetTitle(windowTitle(sw.Title()))
 			history = sess.Messages
 			persisted = len(history)
 			budget.reseed(history)
@@ -538,7 +556,7 @@ func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.
 		// ---- message path ----
 		u.UserBlock(in.Display)
 
-		if p.Model() == "" && !ensureModelV2(ctx, u, p, sw) {
+		if p.Model() == "" && !ensureModel(ctx, u, p, sw) {
 			continue
 		}
 
@@ -578,13 +596,13 @@ func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.
 		turnCtx, cancelTurn := context.WithCancel(ctx)
 		sink := u.StartStream(cancelTurn)
 		var reply, thinking string
-		retryErr := retryV2(func() error {
+		retryErr := retry(func() error {
 			history = history[:hist0] // tool rounds append; reset per attempt
 			var err error
 			if isToolProvider && len(tools) > 0 {
-				reply, thinking, err = toolLoopV2(turnCtx, u, sink, tp, dispatch, &history, tools, sendOverlay)
+				reply, thinking, err = toolLoop(turnCtx, u, sink, tp, dispatch, &history, tools, sendOverlay)
 			} else {
-				reply, thinking, err = streamTurnV2(turnCtx, u, sink, func(w io.Writer, r io.WriteCloser) (string, string, error) {
+				reply, thinking, err = streamTurn(turnCtx, u, sink, func(w io.Writer, r io.WriteCloser) (string, string, error) {
 					return p.StreamChat(turnCtx, composeSendHistory(history, sendOverlay), w, r)
 				})
 			}
@@ -613,8 +631,8 @@ func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.
 	}
 }
 
-// ensureModelV2 is the lazy model picker for the v2 path.
-func ensureModelV2(ctx context.Context, u *ui.UI, p provider.Provider, sw *SessionWriter) bool {
+// ensureModel is the lazy model picker for the v2 path.
+func ensureModel(ctx context.Context, u *ui.UI, p provider.Provider, sw *SessionWriter) bool {
 	stop := u.Busy("Fetching available models...")
 	models, err := p.ListModels(ctx)
 	stop()
@@ -636,9 +654,9 @@ func ensureModelV2(ctx context.Context, u *ui.UI, p provider.Provider, sw *Sessi
 	return true
 }
 
-// reportMCPFailuresV2 relays background MCP connect failures into scrollback,
+// reportMCPFailures relays background MCP connect failures into scrollback,
 // stopping when the Program exits.
-func reportMCPFailuresV2(mgr *mcpmgr.Manager, u *ui.UI) {
+func reportMCPFailures(mgr *mcpmgr.Manager, u *ui.UI) {
 	events := mgr.Events()
 	for {
 		select {
@@ -656,28 +674,28 @@ func reportMCPFailuresV2(mgr *mcpmgr.Manager, u *ui.UI) {
 	}
 }
 
-// reasoningV2 renders streaming reasoning as a frame preview (rolling window)
+// reasoningPreview renders streaming reasoning as a frame preview (rolling window)
 // collapsing to a "◇ thought for Ns" marker in scrollback — the v2 twin of
 // reasoningStream.
-type reasoningV2 struct {
+type reasoningPreview struct {
 	pw    io.WriteCloser
 	sink  ui.StreamSink
 	start time.Time
 	done  bool
 }
 
-func newReasoningV2(sink ui.StreamSink) *reasoningV2 {
-	return &reasoningV2{pw: sink.BlockPreview("Thinking"), sink: sink, start: time.Now()}
+func newReasoningPreview(sink ui.StreamSink) *reasoningPreview {
+	return &reasoningPreview{pw: sink.BlockPreview("Thinking"), sink: sink, start: time.Now()}
 }
 
-func (r *reasoningV2) Write(p []byte) (int, error) {
+func (r *reasoningPreview) Write(p []byte) (int, error) {
 	if r.pw == nil {
 		return len(p), nil
 	}
 	return r.pw.Write(p)
 }
 
-func (r *reasoningV2) finish() {
+func (r *reasoningPreview) finish() {
 	if r.done {
 		return
 	}
@@ -688,13 +706,13 @@ func (r *reasoningV2) finish() {
 	r.sink.CommitLines(dim(fmt.Sprintf("%s thought for %s", reasoningSymbol, reasoningElapsed(r.start))))
 }
 
-// streamTurnV2 renders one provider stream through the ui sink: busy spinner
+// streamTurn renders one provider stream through the ui sink: busy spinner
 // until the first token, the reasoning rolling window, then markdown-rendered
 // content committed line by line. call runs the provider against the given
 // content/reasoning writers and returns its final (reply, thinking, err).
 // A ctx cancel (ESC/Ctrl+C via the ui scope) maps to errInterrupted with the
 // partials the user actually saw — same contract as streamResponse.
-func streamTurnV2(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w io.Writer, r io.WriteCloser) (string, string, error)) (string, string, error) {
+func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w io.Writer, r io.WriteCloser) (string, string, error)) (string, string, error) {
 	reasonPr, reasonPw := io.Pipe()
 	contentPr, contentPw := io.Pipe()
 	var reply, thinking string
@@ -750,7 +768,7 @@ func streamTurnV2(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w
 	}
 
 	if hasReasoning {
-		rv := newReasoningV2(sink)
+		rv := newReasoningPreview(sink)
 		finishRV := func() { rv.finish() } // done-guarded inside
 		defer finishRV()
 		rv.Write(firstChunk[:firstN])
@@ -787,15 +805,15 @@ func streamTurnV2(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w
 	return reply, thinking, nil
 }
 
-// toolLoopV2 is the v2 twin of executeWithTools: rounds of streaming +
+// toolLoop is the v2 twin of executeWithTools: rounds of streaming +
 // tool execution rendered through the ui frame (Busy labels instead of the
 // stderr spinner; per-tool cancel scopes instead of raw-mode watches).
-func toolLoopV2(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string) (string, string, error) {
+func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string) (string, string, error) {
 	for rounds := 0; ; rounds++ {
 		if rounds == maxToolRounds {
 			return "", "", errToolRoundsExceeded
 		}
-		content, reasoning, toolCalls, err := streamToolRoundV2(ctx, u, sink, tp, composeSendHistory(*history, overlay), tools)
+		content, reasoning, toolCalls, err := streamToolRound(ctx, u, sink, tp, composeSendHistory(*history, overlay), tools)
 		if err != nil {
 			return content, reasoning, err
 		}
@@ -843,9 +861,9 @@ func toolLoopV2(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.T
 	}
 }
 
-// streamToolRoundV2 is the v2 twin of streamToolRound (interactive only —
+// streamToolRound is the v2 twin of streamToolRound (interactive only —
 // Once keeps the v1 quiet path).
-func streamToolRoundV2(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.ToolProvider, history []provider.Message, tools []provider.ToolDef) (string, string, []provider.ToolCall, error) {
+func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.ToolProvider, history []provider.Message, tools []provider.ToolDef) (string, string, []provider.ToolCall, error) {
 	reasonPr, reasonPw := io.Pipe()
 	contentPr, contentPw := io.Pipe()
 	var content, reasoning string
@@ -905,7 +923,7 @@ func streamToolRoundV2(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp pro
 	}
 
 	if hasReasoning {
-		rv := newReasoningV2(sink)
+		rv := newReasoningPreview(sink)
 		finishRV := func() { rv.finish() }
 		defer finishRV()
 		rv.Write(firstChunk[:firstN])
@@ -947,4 +965,23 @@ func streamToolRoundV2(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp pro
 		return fail(streamErr)
 	}
 	return content, reasoning, toolCalls, nil
+}
+
+// windowTitle is the terminal-tab title for a session: its own title, or the
+// app name before one exists (whitespace-only counts as none, mirroring the
+// v1 terminalTitleSeq fallback).
+func windowTitle(title string) string {
+	if strings.TrimSpace(title) == "" {
+		return appTitle
+	}
+	return title
+}
+
+// statusModelLabel is the status line's model field: the provider type stands
+// in until a model is chosen (v1 composer-status contract).
+func statusModelLabel(model, providerType string) string {
+	if model != "" {
+		return model
+	}
+	return providerType
 }

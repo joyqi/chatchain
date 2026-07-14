@@ -6,44 +6,61 @@ While the assistant is streaming (thinking or emitting text), ESC — or Ctrl+C 
 interrupts the turn immediately, leaves the terminal clean, and the session
 bundle records exactly what the user actually saw.
 
-Scope: interactive `Run` only. `Once` (non-interactive) and Windows keep
-today's behavior (the cancel watch is already a no-op on Windows, matching
-tool cancellation).
+Scope: interactive `Run` only. `Once` (non-interactive, `chat.Once` →
+`executeWithTools`) keeps its uncancellable behavior — no interrupt handling.
+The old Windows caveat is gone: cancellation is now key routing inside the
+bubbletea Program, which is platform-neutral (no raw-mode watcher, no build
+tags).
 
 ## Mechanism
 
-- Each streaming section — `streamResponse`, and the streaming part of each
-  `executeWithTools` round — wraps its provider call in
-  `context.WithCancel` and runs `startCancelWatch(cancel)`
-  (chat/cancelwatch_unix.go) for its duration, stopped via defer. The watch's
-  raw mode is input-only — it keeps OPOST, like the vendored readline term
-  package — so streamed output renders normally while the watch is active.
-- ESC (0x1b) or Ctrl+C (0x03) → `cancel()` → the SDK stream returns a
-  context-cancellation error → mapped to the `errInterrupted` sentinel
-  (detected via `errors.Is(err, context.Canceled)` when our cancel fired), so
-  the caller can distinguish "user stopped it" from a real failure (no retry,
-  no error styling).
-- The **tool-execution phase keeps its existing behavior**: `callTool` runs its
-  own watch; ESC there cancels only the running tool and feeds the error back
-  to the model. The streaming watch is never active at the same time (scoped
-  per section), so two watchers never fight over stdin.
-- Keystrokes other than a lone ESC / Ctrl+C are consumed and dropped while a
-  watch is active (decided trade-off: blind type-ahead during streaming is
-  lost, same as during tool execution today). Escape sequences — arrow keys,
-  paste markers, terminal replies — also start with 0x1b and are recognized
-  and dropped, not misread as ESC (a trailing 0x1b is disambiguated by a short
-  peek for its continuation).
-- Terminal cleanup is deferred, not success-path-only: the reasoning
-  viewport's `finish()` and the spinner's stop run on the interrupt path too
-  (this also fixes the pre-existing leak where a mid-stream error left the
-  ticker running). After cleanup, print a dim `Interrupted.` line.
+The bubbletea Program (`internal/ui`) owns stdin for the whole session, so
+there is no separate raw-mode watcher — ESC and Ctrl+C are ordinary key events
+routed by the ui model (`internal/ui/model.go`, `updateKey`). The model keeps a
+**cancel-scope stack**:
+
+- `chat/run.go` wraps each turn in `context.WithCancel` and registers the
+  turn's cancel as the bottom scope via `u.StartStream(cancelTurn)` (which also
+  opens the turn's output sink); `sink.Done()` pops it when the turn ends.
+- During tool execution, `toolLoop` wraps each tool call in its own
+  `context.WithCancel` (a child of the turn context) and pushes it as an inner
+  scope via `u.PushCancelScope(cancel)`, popped right after the call returns.
+- **ESC fires the innermost (top) scope**: while a tool runs, it cancels only
+  that tool — the tool's error result is fed back to the model and the loop
+  continues; while only the turn scope is on the stack (streaming), it cancels
+  the turn.
+- **Ctrl+C fires the bottom (turn) scope**: the turn context is cancelled, and
+  any running tool's child context with it — `toolLoop` sees the turn context
+  cancelled and returns `errInterrupted`.
+- At idle (empty stack), Ctrl+C/Ctrl+D end the session (`ErrInterrupted` from
+  `ReadInput`); ESC does nothing.
+
+A fired cancel reaches the provider as a context cancellation. The streaming
+sections (`streamTurn`, `streamToolRound` in chat/run.go) map any stream error
+observed after our context was cancelled to the `errInterrupted` sentinel
+(chat/interrupt.go), so the caller can distinguish "user stopped it" from a
+real failure (no retry — `isRetryable` excludes it — no error styling).
+
+Type-ahead is not dropped: the composer stays live during a turn, and Enter
+queues submits inside the ui (drained in order by `ReadInput`). On any fired
+cancel, `fireCancel` atomically folds the queued submits back into the
+composer draft — an interrupt means "the situation changed", so nothing
+auto-sends.
+
+Cleanup is owned by the Program, not the success path: the reasoning rolling
+window's `finish()` is deferred and done-guarded, the `Busy` spinner's stop
+runs on all paths, and `sink.Done()` closes any leaked preview when it pops
+the turn scope. After cleanup, `interruptTurn` prints a dim `Interrupted.`
+line into scrollback.
 
 ## Capturing the partial reply
 
-`streamResponse` returns the text from `StreamChat`'s completion value, so an
-interrupted stream previously yielded nothing. Both pipes are now teed into
-buffers (`io.MultiWriter`) as they are rendered; on interruption the buffered
-partial content/reasoning is returned alongside `errInterrupted`.
+`streamTurn` / `streamToolRound` return the text from the provider call's
+completion value, so an interrupted stream would yield nothing on its own.
+Both pipes are teed into buffers (`io.MultiWriter`; `teeWriteCloser` preserves
+`Close` on the reasoning pipe) as they are rendered; on interruption the
+buffered partial content/reasoning is returned alongside `errInterrupted` and
+handed to `interruptTurn`.
 
 ## Persistence rules (the design decision)
 
@@ -83,13 +100,14 @@ disk plus the not-yet-persisted nothing).
 
 - No partial raw-content persistence.
 - No resume-time "regenerate the interrupted reply" affordance.
-- No signal (SIGINT) handler outside the watched sections; at the readline
-  prompt Ctrl+C keeps its readline meaning.
+- No SIGINT handler: the Program keeps the terminal in raw mode, so Ctrl+C is
+  a key event, routed by scope state — cancel mid-turn, end the session at
+  idle.
 
 ## Testing
 
 - The persist/rollback decision is factored into a pure function
-  (history + watermark + partials in → new history + to-persist out) and unit
-  tested for all three table rows.
+  (`finalizeInterrupt`: history + watermark + partials in → new history +
+  to-persist out) and unit tested for all three table rows.
 - Session round-trip test: `interrupted` flag survives append → load.
 - No terminal emulation (project decision).

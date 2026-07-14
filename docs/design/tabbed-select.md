@@ -1,5 +1,17 @@
 # Tabbed Select — a tabbed selector component
 
+> **Superseded (implementation only).** The readline/promptui implementation
+> this document designed (`internal/promptui/tabbed.go`) was deleted together
+> with the rest of the readline UI stack; the component now lives at
+> `internal/ui/tabbed.go` as a surface engine inside the bubbletea inline
+> Program (panel kinds `PanelList` / `PanelMulti` / `PanelSlider` /
+> `PanelBrowser` / `PanelView`, opened via `UI.Tabbed` in-REPL or
+> `ui.RunSurface` one-shot). The **UX contract is unchanged**: Tab switches
+> focus, Enter commits all tabs, q/Esc cancels, same key map. The goal,
+> requirements, and UX sections below remain the live spec; the
+> implementation-mechanics sections are kept as a historical record and are
+> marked as such.
+
 ## Goal
 
 Merge paired commands into single commands, carried by a tabbed selector: once
@@ -17,22 +29,37 @@ questions at once" flow (AskUserQuestion-style — multiple questions, each with
 set of options) reuses the same component; only the caller's interpretation of
 the result differs.
 
-## Current behavior (being replaced)
+## Behavior before the merge (historical)
 
-| Command | Behavior | Impl |
+The paired commands this design replaced, as they existed on the readline
+stack. These pickers are gone (`PickSession` survives as a function, but its
+promptui select was replaced by a one-shot ui surface — see Command migration):
+
+| Command | Behavior | Impl (replaced) |
 |---|---|---|
 | `/file` | no arg → directory browser to attach a file; `/file <path>` → direct attach | `pickFile()` `chat/file.go` |
 | `/files` | multi-select removal of attached files | `cleanAttachments()` `chat/file.go` |
 | `/session` | single-select resume | `PickSession()` `chat/session.go` |
 | `/sessions` | multi-select deletion of non-current sessions | `cleanSessions()` `chat/sessions_clean.go` |
 
-## Component design (`internal/promptui/tabbed.go`)
+## Original component design (`internal/promptui/tabbed.go` — deleted; historical)
 
-Reuse existing infrastructure, **no reinvention**: readline `Listener` +
-`screenbuf` in-place repaint, `FuncGetSize` for the terminal size, an injected
-`RuneWidth` for CJK width. The container owns a single readline loop; panels are
-passive "render + handle key" objects (unlike `Select`, where each instance runs
-its own `rl.Readline()`).
+> **Historical.** Everything in this section describes the deleted
+> readline/promptui implementation. The current implementation is
+> `internal/ui/tabbed.go`: panels are declarative `Panel` specs (`Title` +
+> `PanelKind` + kind-specific fields) in a `TabbedSpec`; the ui model routes
+> keys into the open surface (`surfaceKey`) and the bubbletea renderer paints
+> it below the composer — no readline loop, no `screenbuf`, no injected
+> `RuneWidth` (width comes from `internal/textwidth`). Enter commits **all**
+> tabs: `TabbedResult` carries every panel's `PanelResult` plus the focused
+> index. The panel semantics, key map, and render layout designed below carried
+> over as-is.
+
+The original plan reused the readline infrastructure, **no reinvention**:
+readline `Listener` + `screenbuf` in-place repaint, `FuncGetSize` for the
+terminal size, an injected `RuneWidth` for CJK width. The container owned a
+single readline loop; panels were passive "render + handle key" objects
+(unlike `Select`, where each instance ran its own `rl.Readline()`).
 
 ### Panel interface
 
@@ -126,43 +153,55 @@ Tab-bar widths and row truncation all use the injected `RuneWidth`.
 
 ## Command migration
 
-- **`/file`** (`chat/chat.go`): no arg →
+Executed as planned; the command dispatch now lives in `chat/run.go` and opens
+the surfaces via `u.Tabbed(...)` with `ui.Panel` specs, but the shape of each
+command is as designed here.
+
+- **`/file`** (now `chat/run.go`): no arg →
   `Tabbed{ ListPanel("Attached", attachmentLabels, Multi:true), BrowserPanel("Add", cwd) }`.
   On submit: `focused==0` → remove the checked items from `pendingAttachments`;
   `focused==1` → attach `BrowserPanel.Chosen()`. `/file <path>` direct attach is
   unchanged.
-- **`/session`** (`chat/chat.go`):
+- **`/session`** (now `chat/run.go`):
   `Tabbed{ ListPanel("Resume", sessionLabels, Multi:false), ListPanel("Delete", deletableLabels, Multi:true) }`.
   The Delete tab excludes the current session. On submit: `focused==0` →
   `ResumeSession(cursor)`; `focused==1` → delete the checked ones (reuse the
   `cleanSessions` deletion logic).
-- **`/tools`** (`chat/chat.go`): opens a read-only
+- **`/tools`** (now `chat/run.go`): opens a read-only
   `Tabbed{ ViewPanel("Tools", toolStatusLines), ViewPanel("MCP", mcpStatusLines) }`.
   `printToolStatus`/`printMCPStatus` were refactored into `toolStatusLines` /
-  `mcpStatusLines` (which return `[]string`) plus `showCapabilities`. `/mcp` is
+  `mcpStatusLines` (which return `[]string` and now double as `Refresh`
+  callbacks, live-updating the open surface as MCP servers connect). `/mcp` is
   removed from `slashCommands` and folded into the MCP tab. The Tools tab clips +
   pans (like the old `/tools`); the MCP tab sets `Wrap` (like the old `/mcp`).
 - **`/files`, `/sessions`** removed from `slashCommands` (`chat/completion.go`)
   and from the `Run()` dispatch.
 - Fold now-dead wrappers into panel construction and delete them (avoid dead
-  code). `PickSession` and `runSelect` are retained because other call sites
-  (`--resume` at launch, `SelectModel`) still use them; the old context-window
-  picker is gone with `/context` (folded into `/model`'s Context tab).
+  code). `runSelect` and `SelectModel` are gone with the readline stack (the
+  in-REPL model pick is a plain `u.Select`, a one-panel Tabbed).
+  `PickSession` survives for `--resume` at launch, backed by a one-shot ui
+  surface (`ui.RunSurface`, a surface-only Program that releases the terminal
+  before the REPL starts); the old context-window picker is gone with
+  `/context` (folded into `/model`'s Context tab).
 - Update `/help`, the `slashCommands` table, and the docs.
 
 ## Future reuse: several questions at once
 
-N `ListPanel`s (each = one question). After `Tabbed.Run()`, read **every**
-panel's `Selected()` — the same component, the caller reads all tabs instead of
-the focused tab. No mode flag needed.
+N list panels (each = one question). The current API already commits all tabs:
+`TabbedResult.Panels` carries every panel's state, so a questionnaire caller
+reads all of them instead of just `Focused` — the same component, no mode flag
+needed (`/model`'s four-tab questionnaire works exactly this way).
 
 ## Testing
 
 Avoid repeating the abandoned custom-terminal-renderer rabbit hole: **no full
 terminal emulation**.
-- Panel-level logic tests: feed `HandleKey` sequences and assert
-  `Selected()`/`Cursor()`/`Chosen()`, directory-descend vs file-choose.
-- Container-level: inject `Stdin`/`Stdout` for a few key-dispatch / tab-switch
-  assertions.
-- CJK width: assert the tab bar and row truncation stay aligned using an injected
-  `RuneWidth`.
+- Panel-level logic tests: feed key sequences and assert cursor/checked/chosen
+  state, directory-descend vs file-choose.
+- Container-level: a few key-dispatch / tab-switch assertions.
+- CJK width: assert the tab bar and row truncation stay aligned.
+
+(The mechanics moved with the port: the promptui plan injected
+`Stdin`/`Stdout` and `RuneWidth`; the bubbletea implementation feeds `tea.Key`
+events to the ui model and asserts on the rendered view instead. The testing
+principles are unchanged.)

@@ -70,8 +70,8 @@ We can't reliably maintain a "model → window" table, so use a **default + laye
 - A conservative default constant (e.g. `128000`).
 - CLI: `--context-window N`.
 - Config: per-provider `context_window:` (aliases are basically fixed-model, so the provider section fits).
-- In-chat: `/context <N>` at runtime.
-- **Precedence**: `/context` runtime > flag > config > default.
+- In-chat: the `/model` **Context** tab at runtime (§7).
+- **Precedence**: runtime (`/model` Context tab) > flag > config > default.
 - The trigger `threshold` (fraction of window, default `0.8`) and the post-compaction target (default ~`0.5`, so we don't compact every turn) could be exposed as config; hard-coded for v1.
 
 ## 5. Compaction strategy: LLM summarization (the model decides what to keep)
@@ -122,18 +122,18 @@ Before sending the next request:
 
 ## 7. Command surface
 
-Clear separation of duties: **`/context` manages the window size, `/compact` manages compaction.**
+Clear separation of duties: **the `/model` Context tab manages the window size, `/compact` manages compaction.** (The standalone `/context` command was removed; the window picker is now a tab of the tabbed `/model` surface.)
 
 | Command | Behavior |
 |---|---|
-| `/context <N>` | Set the window directly, **with units** `b`/`k`/`m` (case-insensitive): `/context 200k`, `/context 1m`, `/context 128000`. The industry already has **1M** windows (Gemini 2.5, Claude 1M beta), so parsing allows 1M+. |
-| `/context` | No argument → pop a **picker** (promptui, like `/model`, ESC to cancel) of common windows `8k / 32k / 128k / 200k / 256k / 1m`, with current usage shown for reference. |
+| `/model` → **Context** tab | Pick the window from the preset list `8k / 32k / 128k / 200k / 256k / 1m` (a non-preset current value is inserted, sorted, and marked). Enter commits all `/model` tabs at once; `q`/Esc or Ctrl+C cancels with no changes. |
 | `/compact [hint]` | **Immediately** compact; an optional hint guides this summarization (appended to the §5.3 prompt). |
 
-- Unit parsing: `k=1_000`, `m=1_000_000` (token sizes are conventionally decimal, not 1024).
+- Unit parsing: `k=1_000`, `m=1_000_000` (token sizes are conventionally decimal, not 1024). Units apply to `--context-window` and the config key; industry windows already reach **1M** (Gemini 2.5, Claude 1M beta), so parsing allows 1M+.
 - The command word is **`compact`** — the industry-standard term (Claude Code, Codex CLI, etc. all use `/compact`), zero learning cost.
-- Status can show `used / window` (e.g. `12.4k / 128k (9%)`) in the picker header or its own line.
-- The non-interactive window entry remains `--context-window` (same units) + config `context_window` (§4); `/context` is the runtime override.
+- `/status` shows `used / window` (e.g. `12.4k / 128k (9%)`) on its own line.
+- The non-interactive window entry remains `--context-window` (same units) + config `context_window` (§4); the `/model` Context tab is the runtime override.
+- Besides manual `/compact`, crossing the threshold before a send pops a **Confirm** surface (`Context <used / window (pct)> — compact before sending?` with `Compact now` / `Not now`); declining snoozes the offer until usage grows further.
 
 ## 8. Relationship to persistence: Event Store derived view (don't delete from disk)
 
@@ -157,7 +157,7 @@ Approach:
 - `chat/tokens.go` (new): token counting (real usage first + `tiktoken-go` fallback / new-delta count), window size + unit parsing (b/k/m).
 - `chat/compact.go` (new): threshold check, `compact()` (optional microcompact + summarization call + injection-hardened prompt), compaction-marker generation.
 - `chat/session.go`: add the `compaction` marker record type to `messages.jsonl`; `LoadSession` rebuilds the **derived view** (latest marker's summary + messages after it), with the full log still on disk.
-- `chat/chat.go`: record usage each turn; run the trigger check + auto-compact before sending; `/context` (window, with units + no-arg picker), `/compact [hint]` commands; update `chatCompleter`.
+- `chat/run.go`: record usage each turn; run the trigger check before sending (auto-compact behind a Confirm prompt); `/compact [hint]` command; window picking lives in the `/model` Context tab; update the slash-command table.
 - `cmd/root.go`: `--context-window` (with units) flag; read config `context_window`.
 - `config/config.go`: add `context_window` to the provider section.
 - `go.mod`: add `github.com/pkoukk/tiktoken-go` (+ `tiktoken-go-loader` for the offline vocab).
@@ -167,7 +167,7 @@ Approach:
 
 **Decided:**
 - **Counting**: real usage first, `tiktoken-go` fallback / new-delta count; no estimation.
-- **Window**: default + `--context-window` + config + `/context` (with units / no-arg picker), up to 1M+.
+- **Window**: default + `--context-window` + config + the `/model` Context tab picker, up to 1M+.
 - **Command word**: `/compact` (industry-standard).
 - **Retention**: no hard K; the model decides in-prompt and writes it into the summary; fallback keeps the last turn verbatim.
 - **Persistence**: Event Store derived view — write a compaction marker + cache the summary, **don't delete from disk**, reuse the summary on resume.

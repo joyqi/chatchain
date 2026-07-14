@@ -194,7 +194,25 @@ func (u *UI) Width() int { return int(u.width.Load()) }
 func (u *UI) SetStatus(s StatusData) { u.p.Send(statusMsg(s)) }
 
 // SetTitle sets the terminal window title.
-func (u *UI) SetTitle(title string) { u.p.Send(titleMsg(title)) }
+func (u *UI) SetTitle(title string) { u.p.Send(titleMsg(sanitizeWindowTitle(title))) }
+
+// sanitizeWindowTitle strips control characters and bounds the length for a
+// tab label. The renderer emits the title as a raw OSC sequence
+// (ansi.SetWindowTitle does no escaping), so a crafted session title carrying
+// ESC/BEL bytes could otherwise terminate or escape the sequence.
+func sanitizeWindowTitle(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+	s = strings.TrimSpace(s)
+	if r := []rune(s); len(r) > 60 {
+		s = string(r[:60]) + "…"
+	}
+	return s
+}
 
 // SetSlashCommands installs the slash-command table backing the composer's
 // suggestion row and Tab completion.
@@ -235,6 +253,24 @@ func (u *UI) View(ctx context.Context, spec ViewSpec) error {
 		Title: spec.Title, Kind: PanelView, Lines: spec.Lines, Height: spec.Height,
 	}}})
 	return err
+}
+
+// RunSurface runs a one-shot, surface-only Program: it renders just the
+// tabbed surface (no composer chrome), blocks until the user commits or
+// cancels, and releases the terminal. Pre-REPL interactions (--resume
+// session picker) use it; in-REPL surfaces go through UI.Tabbed.
+func RunSurface(spec TabbedSpec) (TabbedResult, error) {
+	m := newModel(nil)
+	m.oneShot = true
+	reply := make(chan TabbedResult, 1)
+	m.surf = newSurface(spec, reply, 1)
+	_, err := tea.NewProgram(m).Run()
+	select {
+	case r := <-reply:
+		return r, err
+	default:
+		return TabbedResult{Cancelled: true}, err
+	}
 }
 
 // Confirm is a two-item Select returning true for the first (yes) item.

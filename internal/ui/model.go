@@ -85,6 +85,10 @@ type model struct {
 
 	spin        int
 	spinTicking bool
+
+	// oneShot: the model renders ONLY its surface (no composer chrome) and
+	// quits when the surface closes — the RunSurface pre-REPL mode.
+	oneShot bool
 }
 
 func newModel(widthO *atomic.Int64) *model {
@@ -109,7 +113,14 @@ func newModel(widthO *atomic.Int64) *model {
 	return &model{ta: ta, width: 80, widthO: widthO}
 }
 
-func (m *model) Init() tea.Cmd { return nil }
+func (m *model) Init() tea.Cmd {
+	if m.oneShot && m.surf != nil && m.surf.spec.RefreshEvery > 0 {
+		gen := m.surf.gen
+		return tea.Tick(time.Duration(m.surf.spec.RefreshEvery)*time.Millisecond,
+			func(time.Time) tea.Msg { return surfTickMsg{gen: gen} })
+	}
+	return nil
+}
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -268,6 +279,9 @@ func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.surf != nil {
 		tab := k.Code == tea.KeyTab
 		m.surfaceKey(k)
+		if m.oneShot && m.surf == nil {
+			return m, tea.Quit // one-shot: the surface WAS the program
+		}
 		if tab && m.surf != nil {
 			// Force a full-frame repaint on tab switches: replacing one
 			// panel's rows with another's exercises the renderer's cell diff
@@ -634,6 +648,14 @@ func clampInt(v, lo, hi int) int {
 }
 
 func (m *model) View() tea.View {
+	if m.oneShot {
+		var b strings.Builder
+		if m.surf != nil {
+			m.renderSurface(&b)
+		}
+		return tea.NewView(strings.TrimPrefix(b.String(), "\n"))
+	}
+
 	var b strings.Builder
 	rowsAbove := 0 // frame rows above the textarea, to offset the real cursor
 

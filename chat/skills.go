@@ -10,8 +10,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"chatchain/internal/promptui"
-
 	"gopkg.in/yaml.v3"
 )
 
@@ -257,19 +255,4 @@ func skillsStatusLines(skills []agentSkill, warnings []string, root string) []st
 		}
 	}
 	return lines
-}
-
-// showSkills opens a read-only viewer over the discovered skills — the user
-// side of the level-1 catalog the model sees. Refreshes discovery first so
-// the view matches the next send.
-func showSkills(overlay *systemOverlay, root string) {
-	overlay.refresh()
-	skills := overlay.skillList()
-	v := promptui.Viewer{
-		Label:  fmt.Sprintf("Skills (%d)", len(skills)),
-		Lines:  skillsStatusLines(skills, overlay.warnings(), root),
-		Wrap:   true,
-		Height: 15,
-	}
-	_ = v.Run()
 }

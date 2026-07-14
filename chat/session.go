@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"chatchain/internal/ui"
 	"chatchain/provider"
 
 	gonanoid "github.com/matoous/go-nanoid/v2"
@@ -909,11 +910,13 @@ func PickSession(projectRoot string) (string, error) {
 	for i, s := range infos {
 		labels[i] = sessionLabel(s)
 	}
-	idx, ok := runSelect("Select a session to resume", labels, 15)
-	if !ok {
-		return "", nil // cancelled — caller stays put
+	r, rerr := ui.RunSurface(ui.TabbedSpec{Panels: []ui.Panel{{
+		Title: "Select a session to resume", Kind: ui.PanelList, Items: labels, Height: 15,
+	}}})
+	if rerr != nil || r.Cancelled {
+		return "", rerr // cancelled — caller stays put
 	}
-	return infos[idx].ID, nil
+	return infos[r.Panels[0].Cursor].ID, nil
 }
 
 func humanizeTime(t time.Time) string {

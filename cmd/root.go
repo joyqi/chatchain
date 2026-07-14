@@ -20,7 +20,6 @@ import (
 
 var (
 	apiKey            string
-	uiMode            string
 	baseURL           string
 	model             string
 	temperature       float64
@@ -213,36 +212,10 @@ var rootCmd = &cobra.Command{
 			fmt.Printf("Resumed session %s (%d messages)\n\n", id, len(importedHistory))
 		}
 
-		// If no model is set yet, offer interactive selection. Cancelling
-		// (ESC) is allowed: we enter the chat without a model and pick one
-		// lazily on the first message (see ensureModel in chat.Run).
-		if p.Model() == "" {
-			models, fetchErr := chat.FetchModels(context.Background(), p)
-			if fetchErr != nil {
-				return fmt.Errorf("failed to list models: %w", fetchErr)
-			}
-			if len(models) == 0 {
-				return fmt.Errorf("no models available")
-			}
-
-			selected, serr := chat.SelectModel(models)
-			if serr != nil {
-				return fmt.Errorf("model selection failed: %w", serr)
-			}
-			if selected != "" {
-				fmt.Printf("Using model: %s\n\n", chat.BoldStyle.Sprint(selected))
-				p.SetModel(selected)
-			}
-		}
-
+		// Startup model selection (when -M is omitted and the session supplies
+		// none) and the -S system-prompt read both run inside the chat UI's
+		// Program now — see Run's pre-loop interactions.
 		systemPrompt = strings.TrimSpace(systemPrompt)
-		if systemInteractive {
-			sp, sperr := chat.ReadSystemPrompt(os.Stdout)
-			if sperr != nil {
-				return sperr
-			}
-			systemPrompt = sp
-		}
 
 		// Create a fresh session writer unless resuming or ephemeral (--no-save).
 		// Agent-mode sessions land in the project's bucket keyed by its root;
@@ -281,19 +254,17 @@ var rootCmd = &cobra.Command{
 		// prompt and reports each server as it resolves); the dispatcher reads the
 		// manager's tool set live, so late-arriving tools appear without a rebuild.
 		dispatch := buildDispatcher(pc, mgr, agentMode)
-		// --ui=v2: the bubbletea inline UI (experimental preview during the
-		// migration; docs/design/ui-architecture.md). Requires a terminal —
-		// piped sessions keep the classic path.
-		if uiMode == "v2" && term.IsTerminal(int(os.Stdout.Fd())) {
-			return chat.RunV2(p, systemPrompt, importedHistory, dispatch, mgr, sw, contextWindow, agentOpts, reqLog)
+		// The interactive UI requires a terminal (docs/design/ui-architecture.md);
+		// piped input goes through -m/--message.
+		if !term.IsTerminal(int(os.Stdout.Fd())) {
+			return fmt.Errorf("interactive mode requires a terminal; use -m/--message for piped input")
 		}
-		return chat.Run(p, systemPrompt, importedHistory, dispatch, mgr, sw, contextWindow, agentOpts, reqLog, os.Stdout)
+		return chat.Run(p, systemPrompt, systemInteractive, importedHistory, dispatch, mgr, sw, contextWindow, agentOpts, reqLog)
 	},
 }
 
 func init() {
 	rootCmd.Flags().StringVarP(&apiKey, "key", "k", "", "API key (required)")
-	rootCmd.Flags().StringVar(&uiMode, "ui", "", `interactive UI variant ("v2" = bubbletea preview)`)
 	rootCmd.Flags().StringVarP(&baseURL, "url", "u", "", "Base URL (optional)")
 	rootCmd.Flags().StringVarP(&model, "model", "M", "", "Model name (optional, interactive selection if omitted)")
 	rootCmd.Flags().Float64VarP(&temperature, "temperature", "t", 0, "Sampling temperature (0.0-2.0)")

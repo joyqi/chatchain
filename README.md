@@ -6,11 +6,11 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 
 - **Multi-provider** — OpenAI, OpenAI Responses API, Anthropic, Gemini, and Vertex AI, with custom base URL support
 - **MCP tool support** — connect external MCP tool servers (filesystem, GitHub, databases, etc.) and let AI providers use them during chat, with tool names namespaced per server (`mcp__<server>__<tool>`) so same-named tools never collide
-- **Interactive model selection** — arrow-key navigation with filtering
-- **Slash-command completion** — type `/` and the command menu pops up and live-filters as you type; the command is highlighted inline (no manual Tab needed)
-- **Streaming responses** — real-time token output with loading spinner; press **Esc** (or Ctrl+C) during a streaming reply to interrupt it — the partial reply is kept in history and marked interrupted
+- **Interactive model selection** — arrow-key list at startup
+- **Slash-command completion** — a suggestion row appears when the line starts with `/` and narrows as you type; press Tab to cycle through the completions
+- **Streaming responses** — real-time token output with a busy spinner in the status line; keep typing while a reply streams (type-ahead — queued submits are sent in order); press **Esc** (cancels the innermost running scope) or **Ctrl+C** (cancels the turn) to interrupt a streaming reply — the partial reply is kept in history and marked interrupted
 - **Markdown highlighting** — inline ANSI styling for headings, bold, italic, code, tables, and code blocks in streaming output; inline LaTeX math (`$...$`, `\(...\)`) is approximated in Unicode, and display math (`$$...$$`, `\[...\]`) renders as a 2D block — stacked fractions, roots with a drawn vinculum, matrices, aligned environments, sums/integrals with limits, drawn accents (`\hat`/`\vec`/`\bar`), and math fonts (`\mathbb`/`\mathcal`); anything unsupported falls back to a readable single-line approximation, never raw LaTeX
-- **File attachments** — send images, PDFs, and text files alongside messages with Tab-completion for file paths
+- **File attachments** — send images, PDFs, and text files alongside messages; `/file` opens a tabbed surface with the attached list and a directory browser
 - **Non-interactive mode** — single message in, response out, pipe-friendly
 - **Conversation history** — full context maintained within a session
 - **Session persistence** — every interactive session is auto-saved (losslessly: messages, tool calls, attachments, reasoning) to `~/.chatchain/sessions/`. Resume with `/session` in chat or `--resume[=<id>]` at launch (any unique id prefix works), and resuming echoes the last few exchanges back to the terminal; auto-titled by the model after the first reply; `--no-save` runs ephemerally
@@ -232,8 +232,8 @@ Safety model:
   `log;`, `rm`, … and never invokes `rm`).
 - The allow list is your trust boundary: listing an interpreter (`bash`, `sh`,
   `python`, …) effectively grants broad execution — that is your choice.
-- Each call is capped at **10 minutes**. While a command runs, the spinner shows
-  the elapsed time; press **ESC** (or Ctrl+C) to terminate it.
+- Each call is capped at **10 minutes**. While a command runs, the status-line
+  spinner shows the elapsed time; press **ESC** (or Ctrl+C) to terminate it.
 
 ### Agent Mode
 
@@ -298,13 +298,13 @@ nothing is ever invisible.
 
 ### Chat Commands
 
-In interactive mode, the following commands are available. Typing `/` on an empty
-line opens the command menu automatically — it live-filters as you keep typing, and
-the command is colorized inline (green once complete, cyan while a valid prefix):
+In interactive mode, the following commands are available. When the line starts
+with `/`, a suggestion row appears below the input and narrows as you keep typing;
+press Tab to cycle through the completions:
 
 | Command | Description |
 |---------|-------------|
-| `/file [path]` | Attach a file (image, PDF, or text). With a path (Tab completion supported), attaches directly. With no path, opens a tabbed selector: "Attached" to remove attachments, "Add" to browse and add one. |
+| `/file [path]` | Attach a file (image, PDF, or text). With a path, attaches directly. With no path, opens a tabbed selector: "Attached" to remove attachments, "Add" to pick one from a directory browser. |
 | `/session` | Tabbed selector over saved sessions: "Resume" to resume one, "Delete" to multi-select and delete others. |
 | `/model` | Tabbed settings for the current session: "Model" picks the model, "Context" the context window, "Effort" the reasoning effort (`default`, `low`, `medium`, `high`, `xhigh`, `max` — passed to the provider verbatim, so a level the model doesn't support surfaces as an API error and you pick another), "Temperature" a slider (`default` omits the parameter). Enter applies all four tabs; only changed values are announced. |
 | `/compact [hint]` | Summarize older history to free context; optional hint guides what to keep |
@@ -347,7 +347,7 @@ chatchain openresponses -M gpt-4o -m "Hello"
 # With system prompt
 chatchain openai -M gpt-4o -s 'You are a helpful translator' -m "Translate to French: hello"
 
-# Interactive system prompt input (prompts System> after model selection)
+# Interactive system prompt input (prompts inside the chat UI before the first message)
 chatchain openai -M gpt-4o -S
 
 # Non-interactive mode (requires -M)
@@ -406,10 +406,15 @@ chatchain/
 ├── config/
 │   └── config.go        # Config file loading and merging
 ├── chat/
-│   ├── chat.go          # Chat loop, model selection, tool-call loop, spinner
+│   ├── run.go           # Interactive chat loop, rendered via the internal/ui facade
+│   ├── chat.go          # Non-interactive Once path (-m), tool-call loop, shared helpers
 │   ├── file.go          # File attachment reading and MIME detection
-│   ├── markdown.go      # Streaming markdown highlighter (ANSI)
 │   └── styles.go        # Terminal style definitions
+├── internal/
+│   ├── ui/              # Bubbletea inline UI (composer, status line, tabbed surfaces)
+│   ├── markdown/        # Streaming markdown renderer (ANSI, chroma code blocks)
+│   ├── mathtext/        # LaTeX math → terminal text rendering
+│   └── textwidth/       # Terminal display-width measurement
 ├── mcp/
 │   └── manager.go       # MCP client manager (stdio + HTTP transports)
 └── provider/
@@ -425,9 +430,10 @@ chatchain/
 
 - [cobra](https://github.com/spf13/cobra) — CLI framework
 - [fatih/color](https://github.com/fatih/color) — Terminal styling
-- [promptui](https://github.com/manifoldco/promptui) — Interactive prompts
-- [readline](https://github.com/ergochat/readline) — Line editing with tab completion (CJK-aware)
-- [spinner](https://github.com/briandowns/spinner) — Loading spinners
+- [bubbletea/v2](https://github.com/charmbracelet/bubbletea) — Terminal UI framework (inline mode)
+- [bubbles/v2](https://github.com/charmbracelet/bubbles) — UI components (textarea, progress)
+- [lipgloss/v2](https://github.com/charmbracelet/lipgloss) — Style and layout for terminal output (v1 still used by the markdown renderer)
+- [x/ansi](https://github.com/charmbracelet/x) — ANSI escape sequence handling
 - [openai-go](https://github.com/openai/openai-go) — OpenAI SDK
 - [anthropic-sdk-go](https://github.com/anthropics/anthropic-sdk-go) — Anthropic SDK
 - [go-genai](https://github.com/googleapis/go-genai) — Google Gemini SDK

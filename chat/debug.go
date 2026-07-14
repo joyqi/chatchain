@@ -8,64 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"chatchain/internal/promptui"
 )
 
-// manageDebug opens the /debug console: a "Requests" tab that browses the most
-// recent HTTP round-trips (newest first; Enter inspects one) and a "Verbose" tab
-// that toggles recording on/off (off by default — nothing is captured until it
-// is on). Nothing is ever written to the terminal. It loops — drilling into a
-// request and closing its detail re-opens the console — until Esc/Ctrl+C.
-func manageDebug(reqLog *RequestLog) {
-	if reqLog == nil {
-		return
-	}
-	for {
-		// entries tracks the current snapshot; RefreshFunc re-reads it on every
-		// render (and the LiveRefresh ticker repaints while idle), so a request
-		// that lands while /debug is open — e.g. the async title-generation call —
-		// appears without closing and reopening.
-		var entries []*RequestEntry
-		reqPanel := promptui.NewListPanel("Messages", nil, false)
-		reqPanel.RuneWidth = runeWidth
-		reqPanel.RefreshFunc = func() []string {
-			entries = reqLog.Entries()
-			return requestRows(entries)
-		}
-
-		verbPanel := promptui.NewListPanel("Verbose", []string{"On", "Off"}, false)
-		verbPanel.RuneWidth = runeWidth
-		if reqLog.Verbose() {
-			verbPanel.SetCursor(0)
-		} else {
-			verbPanel.SetCursor(1)
-		}
-
-		tb := &promptui.Tabbed{
-			Panels:      []promptui.Panel{reqPanel, verbPanel},
-			RuneWidth:   runeWidth,
-			LiveRefresh: 500 * time.Millisecond,
-		}
-		focused, err := tb.Run()
-		if err != nil {
-			return // Esc / Ctrl+C closes the console
-		}
-		switch focused {
-		case 0: // Messages: inspect the highlighted round-trip
-			if sel := reqPanel.Selected(); len(sel) > 0 && sel[0] < len(entries) {
-				showRequestDetail(entries[sel[0]])
-			}
-		case 1: // Verbose: apply the toggle ("On" is index 0)
-			if sel := verbPanel.Selected(); len(sel) > 0 {
-				reqLog.SetVerbose(sel[0] == 0)
-			}
-		}
-	}
-}
-
-// summaryColWidth is the fixed visible width of the summary column, so the
-// status/duration columns line up across rows.
 const summaryColWidth = 30
 
 // requestRows renders each captured round-trip as one styled list row — columns
@@ -240,22 +184,6 @@ func contentText(v any) string {
 		}
 	}
 	return ""
-}
-
-// showRequestDetail opens a read-only two-tab viewer over one round-trip: an
-// "↑ Request" tab (method/URL + body) and a "↓ Response" tab (status/duration +
-// body), each pretty-printed and soft-wrapped. The arrows mark direction —
-// outgoing request vs incoming response.
-func showRequestDetail(e *RequestEntry) {
-	reqPanel := promptui.NewViewPanel("↑ Request", requestDetailLines(e))
-	reqPanel.Wrap = true
-	respPanel := promptui.NewViewPanel("↓ Response", responseDetailLines(e))
-	respPanel.Wrap = true
-	tb := &promptui.Tabbed{
-		Panels:    []promptui.Panel{reqPanel, respPanel},
-		RuneWidth: runeWidth,
-	}
-	_, _ = tb.Run()
 }
 
 func requestDetailLines(e *RequestEntry) []string {
