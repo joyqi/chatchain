@@ -55,6 +55,8 @@ type model struct {
 	status StatusData
 	title  string
 
+	flushTail func() // region.flushTail, run via cmd on width changes
+
 	queue  []string
 	waiter chan inputResult // pending ReadInput; nil when logic is processing
 
@@ -112,11 +114,21 @@ func (m *model) Init() tea.Cmd { return nil }
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		widthChanged := msg.Width != m.width
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ta.SetWidth(msg.Width)
 		if m.widthO != nil {
 			m.widthO.Store(int64(msg.Width))
+		}
+		if widthChanged && m.flushTail != nil {
+			// A width change reflows the screen and the renderer's relative
+			// repaint ghosts the frame's TOP rows. Flush the staging tail
+			// (content!) into scrollback first so the ghost surface is just
+			// the separator. Run as a cmd: region locks + sends into the
+			// mailbox, which must not happen from inside Update.
+			flush := m.flushTail
+			return m, func() tea.Msg { flush(); return nil }
 		}
 		return m, nil
 

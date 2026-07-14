@@ -775,3 +775,43 @@ func TestWrappedComposerLayout(t *testing.T) {
 		t.Fatalf("suggestions should replace the status row:\n%s", c)
 	}
 }
+
+// TestResizeFlushesStagingTail: a width change must flush the staged tail
+// into scrollback (reflow ghosts duplicate the frame's top rows — content —
+// once per resize event; an empty tail shrinks the ghost surface to the
+// separator). Height-only changes don't reflow and must not flush.
+func TestResizeFlushesStagingTail(t *testing.T) {
+	var overflows []string
+	r := &region{emit: func(over []string, snap regionMsg) {
+		overflows = append(overflows, over...)
+	}}
+	r.commit([]string{"a", "b"})
+	r.openPreview("rendering…")
+
+	var w atomic.Int64
+	m := newModel(&w)
+	m.flushTail = r.flushTail
+	m = step(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// Width change → the returned cmd flushes the tail (preview survives).
+	nm, cmd := m.Update(tea.WindowSizeMsg{Width: 70, Height: 24})
+	m = nm.(*model)
+	if cmd == nil {
+		t.Fatal("width change did not schedule a tail flush")
+	}
+	cmd()
+	if strings.Join(overflows, ",") != "a,b" {
+		t.Fatalf("tail not flushed on resize: %q", overflows)
+	}
+	r.mu.Lock()
+	if len(r.tail) != 0 || r.label == "" {
+		t.Fatalf("tail=%v label=%q — want empty tail, preview kept", r.tail, r.label)
+	}
+	r.mu.Unlock()
+
+	// Height-only change → no flush cmd.
+	_, cmd = m.Update(tea.WindowSizeMsg{Width: 70, Height: 20})
+	if cmd != nil {
+		t.Fatal("height-only change scheduled a flush")
+	}
+}

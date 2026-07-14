@@ -92,6 +92,7 @@ func New() *UI {
 	u.region.u = u
 	u.width.Store(80)
 	m := newModel(&u.width)
+	m.flushTail = u.region.flushTail
 	u.p = tea.NewProgram(m)
 	go func() {
 		_, err := u.p.Run()

@@ -163,6 +163,22 @@ func (r *region) dropPreview() {
 	r.publishLocked(nil)
 }
 
+// flushTail commits the staged tail into scrollback while keeping an open
+// preview. Called on terminal resize: reflow ghosts duplicate the frame's TOP
+// rows once per resize event, and with the staging window those rows are
+// conversation content — flushing first shrinks the ghost surface to the
+// separator. The tail refills from subsequent output.
+func (r *region) flushTail() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.tail) == 0 {
+		return
+	}
+	over := r.tail
+	r.tail = nil
+	r.publishLocked(over)
+}
+
 // flush commits everything still staged (shutdown: scrollback must hold the
 // full transcript).
 func (r *region) flush() {
