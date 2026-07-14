@@ -2,6 +2,9 @@ package ui
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -42,6 +45,12 @@ func ctrlC(t *testing.T, m *model) *model {
 }
 
 func content(m *model) string { return m.View().Content }
+
+// openList opens a one-panel list surface (the Select shape).
+func openList(t *testing.T, m *model, title string, items []string, reply chan TabbedResult) *model {
+	t.Helper()
+	return step(t, m, tabbedOpenMsg{spec: TabbedSpec{Panels: []Panel{{Title: title, Kind: PanelList, Items: items}}}, reply: reply})
+}
 
 // TestSubmitDeliversToWaiter: with a pending ReadInput, Enter delivers the
 // input directly (no queueing).
@@ -98,8 +107,8 @@ func TestQueueThenDrain(t *testing.T) {
 // arrow+Enter resolve the reply; the composer cursor is hidden meanwhile.
 func TestSelectBelowComposer(t *testing.T) {
 	m := newTestModel(t)
-	reply := make(chan SelectResult, 1)
-	m = step(t, m, selectOpenMsg{spec: SelectSpec{Title: "/model", Items: []string{"a", "b", "c"}}, reply: reply})
+	reply := make(chan TabbedResult, 1)
+	m = openList(t, m, "/model", []string{"a", "b", "c"}, reply)
 
 	c := content(m)
 	if strings.Index(c, "❯") > strings.Index(c, "/model") {
@@ -111,11 +120,11 @@ func TestSelectBelowComposer(t *testing.T) {
 
 	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
 	m = enter(t, m)
-	if r := <-reply; r.Cancelled || r.Index != 1 {
+	if r := <-reply; r.Cancelled || r.Panels[0].Cursor != 1 {
 		t.Fatalf("select result %+v", r)
 	}
-	if m.sel != nil {
-		t.Fatal("selector not closed")
+	if m.surf != nil {
+		t.Fatal("surface not closed")
 	}
 }
 
@@ -124,8 +133,8 @@ func TestSelectEscCancels(t *testing.T) {
 	m := newTestModel(t)
 	var cancelled atomic.Bool
 	m = step(t, m, scopePushMsg{cancel: func() { cancelled.Store(true) }})
-	reply := make(chan SelectResult, 1)
-	m = step(t, m, selectOpenMsg{spec: SelectSpec{Title: "t", Items: []string{"x"}}, reply: reply})
+	reply := make(chan TabbedResult, 1)
+	m = openList(t, m, "t", []string{"x"}, reply)
 	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
 	if r := <-reply; !r.Cancelled {
 		t.Fatal("esc should cancel the select")
@@ -317,8 +326,8 @@ func TestViewerScrolls(t *testing.T) {
 	for i := range lines {
 		lines[i] = strings.Repeat("x", 3) + string(rune('A'+i%26))
 	}
-	reply := make(chan struct{}, 1)
-	m = step(t, m, viewOpenMsg{spec: ViewSpec{Title: "/status", Lines: lines, Height: 5}, reply: reply})
+	reply := make(chan TabbedResult, 1)
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{Panels: []Panel{{Title: "/status", Kind: PanelView, Lines: lines, Height: 5}}}, reply: reply})
 	if !strings.Contains(content(m), lines[0]) || strings.Contains(content(m), lines[6]) {
 		t.Fatalf("viewer window wrong:\n%s", content(m))
 	}
@@ -471,5 +480,118 @@ func TestPasteTags(t *testing.T) {
 	m = step(t, m, tea.PasteMsg{Content: "inline"})
 	if got := m.ta.Value(); got != "inline" {
 		t.Fatalf("single-line paste = %q", got)
+	}
+}
+
+// TestTabbedCommitAll: Tab switches panels; Enter commits EVERY panel's state
+// (the /model questionnaire semantics) — list cursor, multi checks, slider.
+func TestTabbedCommitAll(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan TabbedResult, 1)
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{Panels: []Panel{
+		{Title: "Model", Kind: PanelList, Items: []string{"a", "b"}},
+		{Title: "Flags", Kind: PanelMulti, Items: []string{"x", "y", "z"}},
+		{Title: "Temp", Kind: PanelSlider, Min: 0, Max: 2, Step: 0.1},
+	}}, reply: reply})
+
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown})) // Model → b
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))  // → Flags
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown})) // cursor y
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeySpace, Text: " "}))
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))   // → Temp
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyRight})) // default → 0.0
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyRight})) // 0.1
+	m = enter(t, m)
+
+	r := <-reply
+	if r.Cancelled || r.Focused != 2 {
+		t.Fatalf("result %+v", r)
+	}
+	if r.Panels[0].Cursor != 1 {
+		t.Fatalf("list cursor = %d, want 1", r.Panels[0].Cursor)
+	}
+	if len(r.Panels[1].Checked) != 1 || r.Panels[1].Checked[0] != 1 {
+		t.Fatalf("multi checked = %v, want [1]", r.Panels[1].Checked)
+	}
+	if r.Panels[2].Value == nil || *r.Panels[2].Value != 0.1 {
+		t.Fatalf("slider = %v, want 0.1", r.Panels[2].Value)
+	}
+}
+
+// TestSliderDefaultTransitions: below Min falls back to default; g resets.
+func TestSliderDefaultTransitions(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan TabbedResult, 1)
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{Panels: []Panel{
+		{Title: "T", Kind: PanelSlider, Min: 0, Max: 1, Step: 0.5},
+	}}, reply: reply})
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyRight})) // default → 0
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyLeft}))  // 0 → default
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: 'G', Text: "G"}))
+	m = enter(t, m)
+	r := <-reply
+	if r.Panels[0].Value == nil || *r.Panels[0].Value != 1 {
+		t.Fatalf("slider = %v, want Max after G", r.Panels[0].Value)
+	}
+}
+
+// TestBrowserDescendAndChoose: Enter on a directory descends (no commit);
+// Enter on a file commits with the chosen path.
+func TestBrowserDescendAndChoose(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "pick.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := newTestModel(t)
+	reply := make(chan TabbedResult, 1)
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{Panels: []Panel{
+		{Title: "Add", Kind: PanelBrowser, Dir: root},
+	}}, reply: reply})
+
+	// entries: ../, sub/ — move to sub/ and descend.
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m = enter(t, m)
+	if m.surf == nil {
+		t.Fatal("descend must not commit")
+	}
+	// entries now: ../, pick.txt — choose the file.
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m = enter(t, m)
+	r := <-reply
+	if r.Cancelled || r.Panels[0].Path != filepath.Join(sub, "pick.txt") {
+		t.Fatalf("chosen = %+v", r)
+	}
+}
+
+// TestSurfaceLiveRefresh: panels with Refresh update their items on the tick.
+func TestSurfaceLiveRefresh(t *testing.T) {
+	m := newTestModel(t)
+	n := 0
+	reply := make(chan TabbedResult, 1)
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{
+		RefreshEvery: 100,
+		Panels: []Panel{{Title: "Live", Kind: PanelView, Refresh: func() []string {
+			n++
+			return []string{fmt.Sprintf("tick %d", n)}
+		}}},
+	}, reply: reply})
+	m = step(t, m, surfTickMsg{gen: m.surfGen})
+	if !strings.Contains(content(m), "tick 1") {
+		t.Fatalf("refresh not applied:\n%s", content(m))
+	}
+	m = step(t, m, surfTickMsg{gen: m.surfGen})
+	if !strings.Contains(content(m), "tick 2") {
+		t.Fatal("second refresh not applied")
+	}
+	// A stale generation must not refresh.
+	before := n
+	m = step(t, m, surfTickMsg{gen: m.surfGen - 1})
+	if n != before {
+		t.Fatal("stale tick refreshed the surface")
 	}
 }

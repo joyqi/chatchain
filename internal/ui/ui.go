@@ -199,35 +199,41 @@ func (u *UI) SetTitle(title string) { u.p.Send(titleMsg(title)) }
 // suggestion row and Tab completion.
 func (u *UI) SetSlashCommands(cmds []string) { u.p.Send(setCommandsMsg(append([]string{}, cmds...))) }
 
-// Select opens the single-select surface below the composer and blocks until
-// a choice or cancel.
-func (u *UI) Select(ctx context.Context, spec SelectSpec) (SelectResult, error) {
-	reply := make(chan SelectResult, 1)
-	u.p.Send(selectOpenMsg{spec: spec, reply: reply})
+// Tabbed opens a multi-tab surface below the composer (Tab switches panels,
+// Enter commits ALL tabs, ESC/q cancels) and blocks until it resolves.
+func (u *UI) Tabbed(ctx context.Context, spec TabbedSpec) (TabbedResult, error) {
+	reply := make(chan TabbedResult, 1)
+	u.p.Send(tabbedOpenMsg{spec: spec, reply: reply})
 	select {
 	case r := <-reply:
 		return r, nil
 	case <-ctx.Done():
 		u.p.Send(surfaceCancelMsg{})
-		return SelectResult{Cancelled: true}, ctx.Err()
+		return TabbedResult{Cancelled: true}, ctx.Err()
 	case <-u.done:
-		return SelectResult{Cancelled: true}, ErrClosed
+		return TabbedResult{Cancelled: true}, ErrClosed
 	}
 }
 
-// View opens the read-only viewer below the composer and blocks until closed.
-func (u *UI) View(ctx context.Context, spec ViewSpec) error {
-	reply := make(chan struct{}, 1)
-	u.p.Send(viewOpenMsg{spec: spec, reply: reply})
-	select {
-	case <-reply:
-		return nil
-	case <-ctx.Done():
-		u.p.Send(surfaceCancelMsg{})
-		return ctx.Err()
-	case <-u.done:
-		return ErrClosed
+// Select opens the single-select surface below the composer and blocks until
+// a choice or cancel (a one-panel Tabbed).
+func (u *UI) Select(ctx context.Context, spec SelectSpec) (SelectResult, error) {
+	r, err := u.Tabbed(ctx, TabbedSpec{Panels: []Panel{{
+		Title: spec.Title, Kind: PanelList, Items: spec.Items, Cursor: spec.Cursor,
+	}}})
+	if err != nil || r.Cancelled {
+		return SelectResult{Cancelled: true}, err
 	}
+	return SelectResult{Index: r.Panels[0].Cursor}, nil
+}
+
+// View opens the read-only viewer below the composer and blocks until closed
+// (a one-panel Tabbed).
+func (u *UI) View(ctx context.Context, spec ViewSpec) error {
+	_, err := u.Tabbed(ctx, TabbedSpec{Panels: []Panel{{
+		Title: spec.Title, Kind: PanelView, Lines: spec.Lines, Height: spec.Height,
+	}}})
+	return err
 }
 
 // Confirm is a two-item Select returning true for the first (yes) item.

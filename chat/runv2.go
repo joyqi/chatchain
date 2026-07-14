@@ -233,14 +233,58 @@ func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.
 		// ---- commands (minimal v2 surfaces; fidelity lands in P3) ----
 		if input == "/file" || strings.HasPrefix(input, "/file ") {
 			path := strings.TrimSpace(strings.TrimPrefix(input, "/file"))
-			if path == "" {
-				printDim("v2: usage /file <path> (the browser/removal picker lands in P3)")
+			if path != "" {
+				att, aerr := ReadAttachment(path)
+				if aerr != nil {
+					printErr("Error: %v", aerr)
+				} else {
+					pendingAttachments = append(pendingAttachments, att)
+					printDim("Attached: %s (%s, %d bytes)", att.Filename, att.MimeType, len(att.Data))
+				}
 				continue
 			}
-			att, aerr := ReadAttachment(path)
-			if aerr != nil {
-				printErr("Error: %v", aerr)
-			} else {
+			rows := make([]string, len(pendingAttachments))
+			for i, a := range pendingAttachments {
+				rows[i] = attachmentLabel(a)
+			}
+			cwd, cerr := os.Getwd()
+			if cerr != nil {
+				cwd, _ = os.UserHomeDir()
+			}
+			r, serr := u.Tabbed(ctx, ui.TabbedSpec{Panels: []ui.Panel{
+				{Title: "Attached", Kind: ui.PanelMulti, Items: rows},
+				{Title: "Add", Kind: ui.PanelBrowser, Dir: cwd},
+			}})
+			if serr != nil || r.Cancelled {
+				continue
+			}
+			switch r.Focused {
+			case 0: // remove the checked attachments
+				if len(r.Panels[0].Checked) == 0 {
+					continue
+				}
+				remove := map[int]bool{}
+				for _, i := range r.Panels[0].Checked {
+					remove[i] = true
+				}
+				var kept []provider.Attachment
+				for i, a := range pendingAttachments {
+					if !remove[i] {
+						kept = append(kept, a)
+					}
+				}
+				printDim("Removed %d attachment(s).", len(pendingAttachments)-len(kept))
+				pendingAttachments = kept
+			case 1: // attach the browsed file
+				fp := r.Panels[1].Path
+				if fp == "" {
+					continue
+				}
+				att, aerr := ReadAttachment(fp)
+				if aerr != nil {
+					printErr("Error: %v", aerr)
+					continue
+				}
 				pendingAttachments = append(pendingAttachments, att)
 				printDim("Attached: %s (%s, %d bytes)", att.Filename, att.MimeType, len(att.Data))
 			}
@@ -254,19 +298,59 @@ func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.
 				printErr("Error: %v", ferr)
 				continue
 			}
-			cursor := 0
-			for i, m := range models {
-				if m == p.Model() {
-					cursor = i
-				}
+			modelValues, modelLabels, modelIdx := modelRows(p.Model(), models)
+			windows, windowLabels, windowIdx := contextWindowRows(budget.window)
+			tun, tunable := p.(provider.Tunable)
+			curEffort := ""
+			var curTemp *float64
+			if tunable {
+				curEffort = tun.Effort()
+				curTemp = tun.Temperature()
 			}
-			r, serr := u.Select(ctx, ui.SelectSpec{Title: "/model", Items: models, Cursor: cursor})
+			levels, levelLabels, levelIdx := effortRows(curEffort)
+			maxTemp := 2.0
+			if p.Type() == "anthropic" {
+				maxTemp = 1.0
+			}
+			r, serr := u.Tabbed(ctx, ui.TabbedSpec{Panels: []ui.Panel{
+				{Title: "Model", Kind: ui.PanelList, Items: modelLabels, Cursor: modelIdx},
+				{Title: "Context", Kind: ui.PanelList, Items: windowLabels, Cursor: windowIdx},
+				{Title: "Effort", Kind: ui.PanelList, Items: levelLabels, Cursor: levelIdx},
+				{Title: "Temperature", Kind: ui.PanelSlider, Min: 0, Max: maxTemp, Step: 0.1, Value: curTemp},
+			}})
 			if serr != nil || r.Cancelled {
 				continue
 			}
-			p.SetModel(models[r.Index])
-			sw.SetModel(models[r.Index])
-			printDim("Model switched to %s", models[r.Index])
+			changed := false
+			if v := modelValues[r.Panels[0].Cursor]; v != "" && v != p.Model() {
+				p.SetModel(v)
+				sw.SetModel(v)
+				printDim("Model switched to %s", v)
+				changed = true
+			}
+			if v := windows[r.Panels[1].Cursor]; v != budget.window {
+				budget.setWindow(v)
+				sw.SetContextWindow(v)
+				printDim("Context window: %s", budget.status())
+				changed = true
+			}
+			if tunable {
+				if v := levels[r.Panels[2].Cursor]; v != tun.Effort() {
+					tun.SetEffort(v)
+					sw.SetEffort(v)
+					printDim("Effort: %s", effortLabel(v))
+					changed = true
+				}
+				if v := r.Panels[3].Value; !floatPtrEqual(v, tun.Temperature()) {
+					tun.SetTemperature(v)
+					sw.SetTemperature(v)
+					printDim("Temperature: %s", formatTemperature(v))
+					changed = true
+				}
+			}
+			if !changed {
+				printDim("No changes.")
+			}
 			pushStatus()
 			continue
 		}
@@ -280,15 +364,42 @@ func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.
 				printDim("No sessions yet.")
 				continue
 			}
-			items := make([]string, len(infos))
+			resumeRows := make([]string, len(infos))
 			for i, s := range infos {
-				items[i] = sessionLabel(s)
+				resumeRows[i] = sessionLabel(s)
 			}
-			r, serr := u.Select(ctx, ui.SelectSpec{Title: "/session — resume", Items: items})
+			var deletable []SessionInfo
+			for _, s := range infos {
+				if s.ID != sw.ID() {
+					deletable = append(deletable, s)
+				}
+			}
+			deleteRows := make([]string, len(deletable))
+			for i, s := range deletable {
+				deleteRows[i] = sessionLabel(s)
+			}
+			r, serr := u.Tabbed(ctx, ui.TabbedSpec{Panels: []ui.Panel{
+				{Title: "Resume", Kind: ui.PanelList, Items: resumeRows},
+				{Title: "Delete", Kind: ui.PanelMulti, Items: deleteRows},
+			}})
 			if serr != nil || r.Cancelled {
 				continue
 			}
-			id := infos[r.Index].ID
+			if r.Focused == 1 { // delete the checked sessions
+				deleted := 0
+				for _, i := range r.Panels[1].Checked {
+					if derr := DeleteSession(deletable[i].ID); derr != nil {
+						printErr("Failed to delete %s: %v", deletable[i].ID, derr)
+					} else {
+						deleted++
+					}
+				}
+				if deleted > 0 {
+					printDim("Deleted %d session(s).", deleted)
+				}
+				continue
+			}
+			id := infos[r.Panels[0].Cursor].ID
 			if id == sw.ID() {
 				printDim("Already in this session.")
 				continue
@@ -340,10 +451,15 @@ func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.
 			continue
 		}
 		if input == "/tools" || strings.HasPrefix(input, "/tools ") {
-			lines := toolStatusLines(dispatch, mgr)
-			lines = append(lines, "")
-			lines = append(lines, mcpStatusLines(mgr)...)
-			_ = u.View(ctx, ui.ViewSpec{Title: "/tools", Lines: lines})
+			_, _ = u.Tabbed(ctx, ui.TabbedSpec{
+				RefreshEvery: 500,
+				Panels: []ui.Panel{
+					{Title: "Tools", Kind: ui.PanelView, Lines: toolStatusLines(dispatch, mgr),
+						Refresh: func() []string { return toolStatusLines(dispatch, mgr) }},
+					{Title: "MCP", Kind: ui.PanelView, Wrap: true, Lines: mcpStatusLines(mgr),
+						Refresh: func() []string { return mcpStatusLines(mgr) }},
+				},
+			})
 			continue
 		}
 		if input == "/debug" || strings.HasPrefix(input, "/debug ") {
@@ -358,12 +474,38 @@ func RunV2(p provider.Provider, systemPrompt string, importedHistory []provider.
 				printDim("Request recording OFF")
 				continue
 			}
-			state := "off"
-			if reqLog.Verbose() {
-				state = "on"
+			for {
+				verboseIdx := 1
+				if reqLog.Verbose() {
+					verboseIdx = 0
+				}
+				r, serr := u.Tabbed(ctx, ui.TabbedSpec{
+					RefreshEvery: 500,
+					Panels: []ui.Panel{
+						{Title: "Messages", Kind: ui.PanelList, Items: requestRows(reqLog.Entries()),
+							Refresh: func() []string { return requestRows(reqLog.Entries()) }},
+						{Title: "Verbose", Kind: ui.PanelList, Items: []string{"On", "Off"}, Cursor: verboseIdx},
+					},
+				})
+				if serr != nil || r.Cancelled {
+					break
+				}
+				if r.Focused == 1 { // verbose toggle
+					reqLog.SetVerbose(r.Panels[1].Cursor == 0)
+					printDim("Request recording %s", map[bool]string{true: "ON", false: "OFF"}[reqLog.Verbose()])
+					break
+				}
+				entries := reqLog.Entries()
+				i := r.Panels[0].Cursor
+				if i < 0 || i >= len(entries) {
+					break
+				}
+				// Drill into the entry, then reopen the list (v1 loop shape).
+				_, _ = u.Tabbed(ctx, ui.TabbedSpec{Panels: []ui.Panel{
+					{Title: "↑ Request", Kind: ui.PanelView, Wrap: true, Lines: requestDetailLines(entries[i])},
+					{Title: "↓ Response", Kind: ui.PanelView, Wrap: true, Lines: responseDetailLines(entries[i])},
+				}})
 			}
-			lines := append([]string{DimStyle.Sprintf("recording: %s (/debug on|off)", state), ""}, requestRows(reqLog.Entries())...)
-			_ = u.View(ctx, ui.ViewSpec{Title: "/debug", Lines: lines})
 			continue
 		}
 		if overlay != nil && (input == "/skills" || strings.HasPrefix(input, "/skills ")) {

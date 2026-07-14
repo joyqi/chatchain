@@ -25,15 +25,12 @@ type (
 	scopePushMsg struct{ cancel context.CancelFunc } // a turn/tool cancel scope
 	scopePopMsg  struct{}
 
-	selectOpenMsg struct {
-		spec  SelectSpec
-		reply chan SelectResult
-	}
-	viewOpenMsg struct {
-		spec  ViewSpec
-		reply chan struct{}
+	tabbedOpenMsg struct {
+		spec  TabbedSpec
+		reply chan TabbedResult
 	}
 	surfaceCancelMsg struct{} // caller ctx died: close whatever surface is open
+	surfTickMsg      struct{ gen int }
 
 	spinTickMsg struct{}
 )

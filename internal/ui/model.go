@@ -44,19 +44,6 @@ type busyState struct {
 	since time.Time
 }
 
-type selectState struct {
-	spec  SelectSpec
-	idx   int
-	reply chan SelectResult
-}
-
-type viewState struct {
-	spec   ViewSpec
-	offset int
-	height int
-	reply  chan struct{}
-}
-
 // model is the tea.Model behind the facade. All state mutation happens inside
 // Update (single-threaded); the facade reaches in only via messages.
 type model struct {
@@ -72,10 +59,10 @@ type model struct {
 	queue  []string
 	waiter chan inputResult // pending ReadInput; nil when logic is processing
 
-	busy   *busyState
-	region regionMsg // staging window snapshot (tail + preview), see region.go
-	sel    *selectState
-	viewer *viewState
+	busy    *busyState
+	region  regionMsg // staging window snapshot (tail + preview), see region.go
+	surf    *surfaceState
+	surfGen int
 
 	cancels []context.CancelFunc // interrupt scope stack (bottom = turn)
 
@@ -149,7 +136,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.PasteMsg:
-		if m.sel != nil || m.viewer != nil {
+		if m.surf != nil {
 			return m, nil
 		}
 		content := strings.ReplaceAll(msg.Content, "\r\n", "\n")
@@ -198,27 +185,35 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case selectOpenMsg:
-		m.sel = &selectState{spec: msg.spec, idx: msg.spec.Cursor, reply: msg.reply}
-		if m.sel.idx < 0 || m.sel.idx >= len(msg.spec.Items) {
-			m.sel.idx = 0
+	case tabbedOpenMsg:
+		m.surfGen++
+		m.surf = newSurface(msg.spec, msg.reply, m.surfGen)
+		if msg.spec.RefreshEvery > 0 {
+			gen := m.surfGen
+			return m, tea.Tick(time.Duration(msg.spec.RefreshEvery)*time.Millisecond,
+				func(time.Time) tea.Msg { return surfTickMsg{gen: gen} })
 		}
 		return m, nil
 
-	case viewOpenMsg:
-		h := msg.spec.Height
-		if h <= 0 || h > 15 {
-			h = 15
+	case surfTickMsg:
+		if m.surf == nil || m.surf.gen != msg.gen {
+			return m, nil // stale tick from a closed surface
 		}
-		if n := len(msg.spec.Lines); n < h {
-			h = n
+		for i, p := range m.surf.spec.Panels {
+			if p.Refresh != nil {
+				st := &m.surf.ps[i]
+				st.items = p.Refresh()
+				if st.cursor >= len(st.items) {
+					st.cursor = maxInt(0, len(st.items)-1)
+				}
+			}
 		}
-		m.viewer = &viewState{spec: msg.spec, height: h, reply: msg.reply}
-		return m, nil
+		gen := msg.gen
+		return m, tea.Tick(time.Duration(m.surf.spec.RefreshEvery)*time.Millisecond,
+			func(time.Time) tea.Msg { return surfTickMsg{gen: gen} })
 
 	case surfaceCancelMsg:
-		m.closeSelect(SelectResult{Cancelled: true})
-		m.closeViewer()
+		m.closeSurface(TabbedResult{Cancelled: true})
 		return m, nil
 
 	case spinTickMsg:
@@ -250,50 +245,9 @@ func (m *model) ensureSpin() tea.Cmd {
 func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := msg.Key()
 
-	// Surfaces own the keys while open (rendered below the composer).
-	if m.sel != nil {
-		switch k.Code {
-		case tea.KeyUp:
-			if m.sel.idx > 0 {
-				m.sel.idx--
-			}
-		case tea.KeyDown:
-			if m.sel.idx < len(m.sel.spec.Items)-1 {
-				m.sel.idx++
-			}
-		case tea.KeyEnter:
-			m.closeSelect(SelectResult{Index: m.sel.idx})
-		case tea.KeyEscape:
-			m.closeSelect(SelectResult{Cancelled: true})
-		default:
-			if k.Text == "q" || (k.Mod == tea.ModCtrl && k.Code == 'c') {
-				m.closeSelect(SelectResult{Cancelled: true})
-			}
-		}
-		return m, nil
-	}
-	if m.viewer != nil {
-		v := m.viewer
-		maxOff := len(v.spec.Lines) - v.height
-		if maxOff < 0 {
-			maxOff = 0
-		}
-		switch k.Code {
-		case tea.KeyUp:
-			if v.offset > 0 {
-				v.offset--
-			}
-		case tea.KeyDown:
-			if v.offset < maxOff {
-				v.offset++
-			}
-		case tea.KeyEscape, tea.KeyEnter:
-			m.closeViewer()
-		default:
-			if k.Text == "q" || (k.Mod == tea.ModCtrl && k.Code == 'c') {
-				m.closeViewer()
-			}
-		}
+	// The surface owns the keys while open (rendered below the composer).
+	if m.surf != nil {
+		m.surfaceKey(k)
 		return m, nil
 	}
 
@@ -462,20 +416,122 @@ func (m *model) resizeComposer() {
 	}
 }
 
-func (m *model) closeSelect(r SelectResult) {
-	if m.sel == nil {
+func (m *model) closeSurface(r TabbedResult) {
+	if m.surf == nil {
 		return
 	}
-	m.sel.reply <- r
-	m.sel = nil
+	m.surf.reply <- r
+	m.surf = nil
 }
 
-func (m *model) closeViewer() {
-	if m.viewer == nil {
+// surfaceKey routes a keypress into the open surface (v1 panel semantics).
+func (m *model) surfaceKey(k tea.Key) {
+	s := m.surf
+	p := s.spec.Panels[s.focus]
+	st := &s.ps[s.focus]
+
+	if k.Mod == tea.ModCtrl && k.Code == 'c' {
+		m.closeSurface(TabbedResult{Cancelled: true})
 		return
 	}
-	m.viewer.reply <- struct{}{}
-	m.viewer = nil
+	switch k.Code {
+	case tea.KeyTab:
+		s.focus = (s.focus + 1) % len(s.spec.Panels)
+		return
+	case tea.KeyEscape:
+		m.closeSurface(TabbedResult{Cancelled: true})
+		return
+	case tea.KeyEnter:
+		if p.Kind == PanelBrowser && st.cursor >= 0 && st.cursor < len(st.entries) {
+			e := st.entries[st.cursor]
+			if e.isDir {
+				st.setDir(e.path) // descend; do not submit
+				return
+			}
+			st.chosen = e.path // file chosen; fall through to commit
+		}
+		m.closeSurface(s.result())
+		return
+	case tea.KeyUp:
+		m.surfaceNav(p, st, -1)
+		return
+	case tea.KeyDown:
+		m.surfaceNav(p, st, 1)
+		return
+	case tea.KeyLeft:
+		if p.Kind == PanelSlider {
+			sliderStep(st, p, -1)
+		}
+		return
+	case tea.KeyRight:
+		if p.Kind == PanelSlider {
+			sliderStep(st, p, 1)
+		}
+		return
+	case tea.KeySpace:
+		if p.Kind == PanelMulti {
+			st.checked[st.cursor] = !st.checked[st.cursor]
+		}
+		return
+	}
+	switch k.Text {
+	case "q":
+		m.closeSurface(TabbedResult{Cancelled: true})
+	case " ":
+		if p.Kind == PanelMulti {
+			st.checked[st.cursor] = !st.checked[st.cursor]
+		}
+	case "j":
+		m.surfaceNav(p, st, 1)
+	case "k":
+		m.surfaceNav(p, st, -1)
+	case "h":
+		if p.Kind == PanelSlider {
+			sliderStep(st, p, -1)
+		}
+	case "l":
+		if p.Kind == PanelSlider {
+			sliderStep(st, p, 1)
+		}
+	case "g":
+		if p.Kind == PanelSlider {
+			st.value = nil
+		} else {
+			st.cursor, st.offset = 0, 0
+		}
+	case "G":
+		switch p.Kind {
+		case PanelSlider:
+			v := p.Max
+			st.value = &v
+		case PanelBrowser:
+			st.cursor = maxInt(0, len(st.entries)-1)
+		default:
+			st.cursor = maxInt(0, len(st.items)-1)
+		}
+	}
+}
+
+// surfaceNav moves the cursor / scroll of the focused panel.
+func (m *model) surfaceNav(p Panel, st *panelState, dir int) {
+	switch p.Kind {
+	case PanelList, PanelMulti:
+		st.cursor = clampInt(st.cursor+dir, 0, maxInt(0, len(st.items)-1))
+	case PanelBrowser:
+		st.cursor = clampInt(st.cursor+dir, 0, maxInt(0, len(st.entries)-1))
+	case PanelView:
+		st.offset = maxInt(0, st.offset+dir) // upper bound clamped at render
+	}
+}
+
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 func (m *model) View() tea.View {
@@ -550,7 +606,7 @@ func (m *model) View() tea.View {
 
 	// Slash suggestions: a dim row of matching commands under the composer
 	// while a "/" prefix is being typed (Tab cycles them).
-	if m.sel == nil && m.viewer == nil {
+	if m.surf == nil {
 		base := m.sugBase
 		if base == "" {
 			base = m.ta.Value()
@@ -574,31 +630,13 @@ func (m *model) View() tea.View {
 	// Interaction surfaces BELOW the composer: the composer never moves when
 	// they close, and their vacated rows die at the screen bottom where output
 	// self-heals them (see docs/design/ui-architecture.md).
-	if m.sel != nil {
-		b.WriteString("\n" + faint + "── " + m.sel.spec.Title + "(↑↓ Enter · ESC 取消)──" + sgrReset)
-		for i, it := range m.sel.spec.Items {
-			if i == m.sel.idx {
-				b.WriteString("\n" + cyan + "▸ " + it + sgrReset)
-			} else {
-				b.WriteString("\n  " + it)
-			}
-		}
-	}
-	if m.viewer != nil {
-		v := m.viewer
-		b.WriteString("\n" + faint + "── " + v.spec.Title + "(↑↓ 滚动 · q 关闭)──" + sgrReset)
-		end := v.offset + v.height
-		if end > len(v.spec.Lines) {
-			end = len(v.spec.Lines)
-		}
-		for _, line := range v.spec.Lines[v.offset:end] {
-			b.WriteString("\n" + ansi.Truncate(line, maxInt(4, m.width), "…"))
-		}
+	if m.surf != nil {
+		m.renderSurface(&b)
 	}
 
 	view := tea.NewView(b.String())
 	view.WindowTitle = m.title
-	if m.sel == nil && m.viewer == nil {
+	if m.surf == nil {
 		if c := m.ta.Cursor(); c != nil {
 			c.Y += rowsAbove
 			view.Cursor = c
