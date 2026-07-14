@@ -16,26 +16,10 @@ type uiMDSink struct {
 	sink  ui.StreamSink
 	width func() int
 	buf   []byte
-	// pendingClose holds a closed-but-not-yet-cleared block preview. The
-	// preview lives ABOVE the composer, so clearing it shrinks the frame and
-	// pops the composer up until the block's commit pushes it back; markdown
-	// closes the preview BEFORE rendering the block, which would expose that
-	// pop for the whole render time. Deferring the clear until the rendered
-	// block arrives makes shrink and push adjacent messages — the bounce
-	// window collapses to at most one render frame.
-	pendingClose io.Closer
 }
 
 func newUIMDSink(sink ui.StreamSink, width func() int) *uiMDSink {
 	return &uiMDSink{sink: sink, width: width}
-}
-
-// settleClose clears a deferred preview right before the next output lands.
-func (s *uiMDSink) settleClose() {
-	if s.pendingClose != nil {
-		s.pendingClose.Close()
-		s.pendingClose = nil
-	}
 }
 
 // Write commits every complete line in the chunk as ONE CommitLines batch —
@@ -62,7 +46,6 @@ func (s *uiMDSink) Write(p []byte) (int, error) {
 		s.buf = s.buf[i+1:]
 	}
 	if len(lines) > 0 {
-		s.settleClose() // clear a deferred preview right before its block lands
 		s.sink.CommitLines(lines...)
 	}
 	return len(p), nil
@@ -70,7 +53,6 @@ func (s *uiMDSink) Write(p []byte) (int, error) {
 
 // flush commits a trailing partial line left in the buffer.
 func (s *uiMDSink) flush() {
-	s.settleClose()
 	if len(s.buf) > 0 {
 		s.sink.CommitLines(string(s.buf))
 		s.buf = nil
@@ -80,30 +62,10 @@ func (s *uiMDSink) flush() {
 func (s *uiMDSink) Width() int { return s.width() }
 
 func (s *uiMDSink) BlockPreview(label string) io.WriteCloser {
-	s.settleClose() // back-to-back blocks: clear the previous preview first
-	return &deferredPreview{inner: s.sink.BlockPreview(label), owner: s}
-}
-
-// deferredPreview passes writes through to the ui preview but hands its Close
-// to the owner as a pendingClose, settled just before the next output.
-type deferredPreview struct {
-	inner io.WriteCloser
-	owner *uiMDSink
-}
-
-func (d *deferredPreview) Write(p []byte) (int, error) {
-	if d.inner == nil {
-		return len(p), nil
-	}
-	return d.inner.Write(p)
-}
-
-func (d *deferredPreview) Close() error {
-	if d.inner != nil {
-		d.owner.pendingClose = d.inner
-		d.inner = nil
-	}
-	return nil
+	// No deferral needed here: the ui's staging window (internal/ui/region.go)
+	// keeps a closed preview on screen until the rendered block replaces it in
+	// place — the close is visually free by construction.
+	return s.sink.BlockPreview(label)
 }
 
 // lineCommitter is an io.Writer that buffers formatted output and commits it

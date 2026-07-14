@@ -42,11 +42,6 @@ type busyState struct {
 	since time.Time
 }
 
-type previewState struct {
-	label string
-	tail  []string // last previewWindow raw source lines
-}
-
 type selectState struct {
 	spec  SelectSpec
 	idx   int
@@ -75,10 +70,10 @@ type model struct {
 	queue  []string
 	waiter chan inputResult // pending ReadInput; nil when logic is processing
 
-	busy    *busyState
-	preview *previewState
-	sel     *selectState
-	viewer  *viewState
+	busy   *busyState
+	region regionMsg // staging window snapshot (tail + preview), see region.go
+	sel    *selectState
+	viewer *viewState
 
 	cancels []context.CancelFunc // interrupt scope stack (bottom = turn)
 
@@ -115,8 +110,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case printedMsg:
-		m.glyph++ // view changes → flush runs → real cursor restored post-insert
+	case regionMsg:
+		m.region = msg
+		m.glyph++ // every snapshot changes the view → flush runs → cursor restored
+		if msg.label != "" {
+			return m, m.ensureSpin()
+		}
 		return m, nil
 
 	case statusMsg:
@@ -184,25 +183,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.closeViewer()
 		return m, nil
 
-	case previewOpenMsg:
-		m.preview = &previewState{label: msg.label}
-		return m, m.ensureSpin()
-
-	case previewLineMsg:
-		if m.preview != nil {
-			m.preview.tail = append(m.preview.tail, msg.line)
-			if len(m.preview.tail) > previewWindow {
-				m.preview.tail = m.preview.tail[len(m.preview.tail)-previewWindow:]
-			}
-		}
-		return m, nil
-
-	case previewCloseMsg:
-		m.preview = nil
-		return m, nil
-
 	case spinTickMsg:
-		if m.busy == nil && m.preview == nil {
+		if m.busy == nil && m.region.label == "" {
 			m.spinTicking = false
 			return m, nil
 		}
@@ -392,11 +374,24 @@ func (m *model) View() tea.View {
 	var b strings.Builder
 	rowsAbove := 0 // frame rows above the textarea, to offset the real cursor
 
-	// Busy spinner and the block preview render on the CONTENT side (above the
-	// separator): they are content-in-progress, not interaction (unlike the
-	// surfaces below the composer). The close-shrink bounce this position
-	// implies is minimized by the adapter deferring the preview close until
-	// the rendered block arrives (adjacent messages — at most one frame).
+	// The staging window (region.go): the last tailKeep output lines live here,
+	// directly above the separator, and block previews morph into their
+	// rendered blocks IN PLACE — the window's height never shrinks, so the
+	// composer never pops. Rendered as-is (committed content), preview rows dim.
+	for _, line := range m.region.tail {
+		b.WriteString(line + "\n")
+		rowsAbove++
+	}
+	if m.region.label != "" {
+		b.WriteString(cyan + spinnerFrames[m.spin%len(spinnerFrames)] + sgrReset +
+			faint + " " + m.region.label + sgrReset + "\n")
+		for _, line := range m.region.ptail {
+			b.WriteString(faint + "  " + ansi.Truncate(line, maxInt(4, m.width-4), "…") + sgrReset + "\n")
+		}
+		rowsAbove += 1 + len(m.region.ptail)
+	}
+
+	// Busy spinner (content side; transient single row).
 	if m.busy != nil {
 		elapsed := int(time.Since(m.busy.since).Seconds())
 		b.WriteString(cyan + spinnerFrames[m.spin%len(spinnerFrames)] + sgrReset +
@@ -409,14 +404,6 @@ func (m *model) View() tea.View {
 		}
 		b.WriteString(sgrReset + "\n")
 		rowsAbove++
-	}
-	if m.preview != nil {
-		b.WriteString(cyan + spinnerFrames[m.spin%len(spinnerFrames)] + sgrReset +
-			faint + " " + m.preview.label + sgrReset + "\n")
-		for _, line := range m.preview.tail {
-			b.WriteString(faint + "  " + ansi.Truncate(line, maxInt(4, m.width-4), "…") + sgrReset + "\n")
-		}
-		rowsAbove += 1 + len(m.preview.tail)
 	}
 
 	// Type-ahead queue: dim "»" lines above the separator (content side).

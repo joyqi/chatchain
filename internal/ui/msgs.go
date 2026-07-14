@@ -15,8 +15,6 @@ type (
 	readReqMsg    struct{ reply chan inputResult }
 	readCancelMsg struct{ reply chan inputResult } // revoke a waiter that gave up
 
-	printedMsg struct{} // an insert landed: advance the glyph (view change → cursor restore)
-
 	statusMsg StatusData
 	titleMsg  string
 
@@ -35,10 +33,6 @@ type (
 		reply chan struct{}
 	}
 	surfaceCancelMsg struct{} // caller ctx died: close whatever surface is open
-
-	previewOpenMsg  struct{ label string }
-	previewLineMsg  struct{ line string }
-	previewCloseMsg struct{}
 
 	spinTickMsg struct{}
 )

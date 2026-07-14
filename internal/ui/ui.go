@@ -78,16 +78,18 @@ type StreamSink interface {
 
 // UI is the facade handle. Safe for concurrent use.
 type UI struct {
-	p     *tea.Program
-	done  chan struct{}
-	err   error // Program.Run result; read after done closes
-	width atomic.Int64
+	p      *tea.Program
+	done   chan struct{}
+	err    error // Program.Run result; read after done closes
+	width  atomic.Int64
+	region region // the output staging window (see region.go)
 }
 
 // New starts the inline Program and returns the facade. Close releases the
 // terminal.
 func New() *UI {
 	u := &UI{done: make(chan struct{})}
+	u.region.u = u
 	u.width.Store(80)
 	m := newModel(&u.width)
 	u.p = tea.NewProgram(m)
@@ -99,8 +101,10 @@ func New() *UI {
 	return u
 }
 
-// Close shuts the Program down and waits for the terminal to be released.
+// Close flushes the staging window into scrollback (the transcript must be
+// complete), shuts the Program down, and waits for the terminal release.
 func (u *UI) Close() error {
+	u.region.flush()
 	u.p.Quit()
 	<-u.done
 	return u.err
@@ -132,7 +136,7 @@ func (u *UI) PrintLines(lines ...string) {
 	if len(lines) == 0 {
 		return
 	}
-	u.insert(strings.Join(lines, "\n"))
+	u.region.commit(lines)
 }
 
 // UserBlock commits a sent message as full-width reversed rows with a "❯ "
@@ -156,7 +160,7 @@ func (u *UI) UserBlock(display string) {
 		}
 		styled[i] = revOn + g + row + strings.Repeat(" ", pad) + sgrReset
 	}
-	u.insert(strings.Join(styled, "\n"))
+	u.region.commit(styled)
 }
 
 // StartStream opens a turn's output sink and registers its cancel on the
@@ -229,15 +233,6 @@ func (u *UI) Confirm(ctx context.Context, title, yes, no string) (bool, error) {
 		return false, err
 	}
 	return !r.Cancelled && r.Index == 0, nil
-}
-
-// insert commits text above the frame and bumps the model: the follow-up
-// printedMsg advances the activity glyph, changing the view so the renderer's
-// viewEquals early-return cannot skip the flush that restores the real cursor
-// after insertAbove (the v2.0.8 wart the spike found).
-func (u *UI) insert(s string) {
-	u.p.Println(s)
-	u.p.Send(printedMsg{})
 }
 
 // wrapByWidth hard-wraps plain text to rows of at most width columns,

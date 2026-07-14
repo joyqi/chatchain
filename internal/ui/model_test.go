@@ -193,42 +193,99 @@ func TestEscCancelsInnermostScope(t *testing.T) {
 	}
 }
 
-// TestPreviewRollingTail: the block preview keeps only the last 3 raw source
-// lines, rendered under a spinner header, and clears on close.
-func TestPreviewRollingTail(t *testing.T) {
+// TestRegionMorph pins the staging-window contract (the answer to "why can't
+// the preview be overwritten in place?" — it is): preview growth STEALS tail
+// rows (commits, never shrinks); the block's rendered lines REPLACE the
+// preview in place; total height never exceeds tailKeep and never shrinks
+// across the flush.
+func TestRegionMorph(t *testing.T) {
+	var overflows [][]string
+	var snaps []regionMsg
+	r := &region{emit: func(over []string, snap regionMsg) {
+		if len(over) > 0 {
+			overflows = append(overflows, append([]string{}, over...))
+		}
+		snaps = append(snaps, snap)
+	}}
+	rows := func(s regionMsg) int {
+		n := len(s.tail)
+		if s.label != "" {
+			n += 1 + len(s.ptail)
+		}
+		return n
+	}
+
+	// Warm the window with committed lines.
+	r.commit([]string{"p1", "p2", "p3", "p4"})
+	if got := rows(snaps[len(snaps)-1]); got != tailKeep {
+		t.Fatalf("warm rows = %d, want %d", got, tailKeep)
+	}
+
+	// Preview opens and grows: tail rows are stolen (committed), height stays.
+	r.openPreview("rendering table…")
+	for _, l := range []string{"|a|", "|b|", "|c|", "|d|"} {
+		r.previewLine(l)
+	}
+	last := snaps[len(snaps)-1]
+	if got := rows(last); got != tailKeep {
+		t.Fatalf("rows during preview = %d, want constant %d", got, tailKeep)
+	}
+	if len(last.ptail) != previewWindow || last.ptail[0] != "|b|" {
+		t.Fatalf("preview tail = %v, want last %d source lines", last.ptail, previewWindow)
+	}
+	var flat []string
+	for _, o := range overflows {
+		flat = append(flat, o...)
+	}
+	if strings.Join(flat, ",") != "p1,p2,p3,p4" {
+		t.Fatalf("stolen tail commits = %v, want p1..p4 in order", flat)
+	}
+
+	// Deferred close + the rendered block: replaced IN PLACE, height constant,
+	// head rows overflow above.
+	r.closePreview()
+	overflows = nil
+	r.commit([]string{"t1", "t2", "t3", "t4", "t5", "t6"})
+	last = snaps[len(snaps)-1]
+	if last.label != "" {
+		t.Fatal("preview not replaced by the block")
+	}
+	if strings.Join(last.tail, ",") != "t3,t4,t5,t6" {
+		t.Fatalf("window after morph = %v, want t3..t6", last.tail)
+	}
+	if len(overflows) != 1 || strings.Join(overflows[0], ",") != "t1,t2" {
+		t.Fatalf("overflow = %v, want [t1 t2]", overflows)
+	}
+	if got := rows(last); got != tailKeep {
+		t.Fatalf("rows after morph = %d, want %d (no shrink across flush)", got, tailKeep)
+	}
+}
+
+// TestRegionRendering: the model renders the staging window above the
+// separator — tail as-is, preview dim under a spinner header.
+func TestRegionRendering(t *testing.T) {
 	m := newTestModel(t)
-	m = step(t, m, previewOpenMsg{label: "rendering table…"})
-	for _, l := range []string{"r1", "r2", "r3", "r4", "r5"} {
-		m = step(t, m, previewLineMsg{line: l})
-	}
+	m = step(t, m, regionMsg{tail: []string{"line-A"}, label: "rendering table…", ptail: []string{"|src|"}})
 	c := content(m)
-	if strings.Contains(c, "r1") || strings.Contains(c, "r2") {
-		t.Fatalf("old lines not rolled out:\n%s", c)
-	}
-	for _, want := range []string{"rendering table…", "r3", "r4", "r5"} {
+	for _, want := range []string{"line-A", "rendering table…", "|src|"} {
 		if !strings.Contains(c, want) {
 			t.Fatalf("missing %q:\n%s", want, c)
 		}
 	}
-	// The preview is content-in-progress: it renders on the CONTENT side,
-	// above the separator (unlike interaction surfaces, which sit below the
-	// composer). The close-shrink bounce is minimized adapter-side by
-	// deferring the close until the rendered block arrives.
-	if strings.Index(c, "rendering table…") > strings.Index(c, "───") {
-		t.Fatalf("preview not above the separator:\n%s", c)
+	if strings.Index(c, "line-A") > strings.Index(c, "rendering table…") {
+		t.Fatal("tail must render above the preview")
 	}
-	m = step(t, m, previewCloseMsg{})
-	if strings.Contains(content(m), "r5") {
-		t.Fatal("preview not cleared on close")
+	if strings.Index(c, "rendering table…") > strings.Index(c, "───") {
+		t.Fatalf("staging window not above the separator:\n%s", c)
 	}
 }
 
-// TestGlyphAdvancesPerInsert: printedMsg must change the view (the renderer
-// skips flush on identical views, which would strand the real cursor).
+// TestGlyphAdvancesPerInsert: every region snapshot must change the view (the
+// renderer skips flush on identical views, which would strand the real cursor).
 func TestGlyphAdvancesPerInsert(t *testing.T) {
 	m := newTestModel(t)
 	before := content(m)
-	m = step(t, m, printedMsg{})
+	m = step(t, m, regionMsg{})
 	if content(m) == before {
 		t.Fatal("view unchanged after insert — cursor restore would be skipped")
 	}

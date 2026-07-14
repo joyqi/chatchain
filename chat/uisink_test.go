@@ -60,33 +60,3 @@ func TestUIMDSinkBatchesLines(t *testing.T) {
 		t.Fatalf("flush did not commit the tail: %v", rec.batches)
 	}
 }
-
-// TestUIMDSinkDefersPreviewClose pins the anti-bounce contract: markdown
-// closes a block preview BEFORE rendering the block, but the ui must not see
-// the close until the rendered block arrives — shrink and push have to be
-// adjacent messages, not separated by the render gap.
-func TestUIMDSinkDefersPreviewClose(t *testing.T) {
-	rec := &recordingSink{}
-	s := newUIMDSink(rec, func() int { return 80 })
-
-	pw := s.BlockPreview("rendering table…")
-	pw.Write([]byte("| a | b |\n"))
-	pw.Close() // markdown closes, then spends time rendering…
-	if len(rec.events) == 0 || rec.events[len(rec.events)-1] == "close" {
-		t.Fatalf("close reached the ui before the block: %v", rec.events)
-	}
-	s.Write([]byte("┌───┐\n│ t │\n└───┘\n")) // …then the rendered block lands
-	want := []string{"open:rendering table…", "close", "commit"}
-	if len(rec.events) != 3 || rec.events[0] != want[0] || rec.events[1] != want[1] || rec.events[2] != want[2] {
-		t.Fatalf("events = %v, want %v (close adjacent to commit)", rec.events, want)
-	}
-
-	// Back-to-back blocks: opening the next preview settles the previous close.
-	rec.events = nil
-	pw = s.BlockPreview("rendering list…")
-	pw.Close()
-	s.BlockPreview("rendering quote…")
-	if len(rec.events) != 3 || rec.events[1] != "close" {
-		t.Fatalf("next preview did not settle the pending close: %v", rec.events)
-	}
-}
