@@ -289,14 +289,26 @@ func TestRegionRendering(t *testing.T) {
 	}
 }
 
-// TestGlyphAdvancesPerInsert: every region snapshot must change the view (the
-// renderer skips flush on identical views, which would strand the real cursor).
-func TestGlyphAdvancesPerInsert(t *testing.T) {
+// TestRegionSnapshotChangesView: a commit's region snapshot must change the
+// rendered view (the renderer skips flush on identical views, which would
+// strand the real cursor after insertAbove). The staged tail rotation IS the
+// view change — no artificial glyph needed.
+func TestRegionSnapshotChangesView(t *testing.T) {
 	m := newTestModel(t)
 	before := content(m)
-	m = step(t, m, regionMsg{})
-	if content(m) == before {
+	m = step(t, m, regionMsg{tail: []string{"committed line"}})
+	after := content(m)
+	if after == before {
 		t.Fatal("view unchanged after insert — cursor restore would be skipped")
+	}
+	// The next commit rotates the tail → changes the view again.
+	m = step(t, m, regionMsg{tail: []string{"committed line", "next"}})
+	if content(m) == after {
+		t.Fatal("second insert did not change the view")
+	}
+	// And the idle status line carries no spinner glyph.
+	if strings.ContainsAny(stripSGR(content(m)), "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏") {
+		t.Fatalf("idle frame should have no spinner glyph:\n%s", content(m))
 	}
 }
 

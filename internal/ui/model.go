@@ -53,7 +53,6 @@ type model struct {
 	widthO *atomic.Int64 // shared with UI for facade-side wrapping
 
 	status StatusData
-	glyph  int // advances per insert: the view change that defeats viewEquals
 	title  string
 
 	queue  []string
@@ -116,8 +115,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case regionMsg:
+		// Every snapshot changes the rendered staging window, which is the
+		// view change that defeats the renderer's viewEquals early-return and
+		// restores the real cursor after each insert (no extra glyph needed).
 		m.region = msg
-		m.glyph++ // every snapshot changes the view → flush runs → cursor restored
 		if msg.label != "" {
 			return m, m.ensureSpin()
 		}
@@ -475,6 +476,13 @@ func (m *model) surfaceKey(k tea.Key) {
 		return
 	}
 	switch k.Text {
+	case "c":
+		if p.Kind == PanelView {
+			st.copied = copyToClipboard(stripSGRText(strings.Join(st.items, "\n"))) == nil
+			return
+		}
+		m.closeSurface(TabbedResult{Cancelled: true}) // any other key: fallthrough semantics below
+		return
 	case "q":
 		m.closeSurface(TabbedResult{Cancelled: true})
 	case " ":
@@ -645,9 +653,7 @@ func (m *model) View() tea.View {
 	return view
 }
 
-// statusLine renders " model · ctx used/window (pct) ⠋" — the trailing glyph
-// advances on every insert, which is load-bearing: it keeps the view changing
-// per committed line so the renderer's flush (and its cursor MoveTo) runs.
+// statusLine renders " model · ctx used/window (pct)".
 func (m *model) statusLine() string {
 	model := m.status.Model
 	if model == "" {
@@ -661,14 +667,13 @@ func (m *model) statusLine() string {
 	if m.status.CtxWindow > 0 {
 		ctx += fmt.Sprintf(" (%d%%)", m.status.CtxUsed*100/m.status.CtxWindow)
 	}
-	glyph := spinnerFrames[m.glyph%len(spinnerFrames)]
 
-	plain := "  " + model + " · " + ctx + " " + glyph
+	plain := "  " + model + " · " + ctx
 	if textwidth.StringWidth(plain) > m.width {
 		return faint + ansi.Truncate(plain, maxInt(4, m.width), "…") + sgrReset
 	}
 	return "  " + cyan + faint + model + sgrReset + faint + " · " + sgrReset +
-		green + faint + ctx + sgrReset + " " + faint + glyph + sgrReset
+		green + faint + ctx + sgrReset
 }
 
 // formatTokens renders a token count compactly: 128000 → "128k".

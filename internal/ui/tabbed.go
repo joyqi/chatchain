@@ -92,6 +92,8 @@ type panelState struct {
 	entries []browseEntry
 	chosen  string
 	errmsg  string
+	copied  bool // View: last "c" copied to clipboard
+	wrapped int  // View(Wrap): wrapped row count from the last render
 }
 
 // surfaceState drives an open Tabbed surface.
@@ -286,6 +288,7 @@ func (m *model) renderSurface(b *strings.Builder) {
 				lines = append(lines, wrapByWidth(l, w)...)
 			}
 		}
+		st.wrapped = len(lines)
 		h := panelHeight(p, len(lines))
 		maxOff := len(lines) - h
 		if maxOff < 0 {
@@ -317,29 +320,61 @@ func (m *model) renderSurface(b *strings.Builder) {
 		}
 	}
 
-	b.WriteString("\n" + faint + surfaceHint(p.Kind, len(s.spec.Panels) > 1) + sgrReset)
+	hint := surfaceHint(p, st)
+	if len(s.spec.Panels) > 1 {
+		hint = "Tab switch · " + hint
+	}
+	if pct, ok := scrollPercent(p, st); ok {
+		hint = fmt.Sprintf("%s · %d%%", hint, pct)
+	}
+	b.WriteString("\n" + faint + ansi.Truncate(hint, maxInt(4, m.width), "…") + sgrReset)
 }
 
 // ErrPrefix styles surface-level error rows.
 const ErrPrefix = "\x1b[31m⚠ \x1b[0m"
 
-func surfaceHint(k PanelKind, multi bool) string {
-	h := ""
-	if multi {
-		h = "Tab 切换 · "
-	}
-	switch k {
-	case PanelMulti:
-		return h + "Space 勾选 · Enter 提交 · ESC 取消"
+// surfaceHint mirrors the v1 promptui help lines exactly.
+func surfaceHint(p Panel, st *panelState) string {
+	switch p.Kind {
 	case PanelSlider:
-		return h + "←→ 调整 · g 默认 · Enter 提交 · ESC 取消"
-	case PanelBrowser:
-		return h + "Enter 进入/选择 · ESC 取消"
+		return "←→ adjust · g default · G max · Enter confirm · q/Esc cancel"
 	case PanelView:
-		return h + "↑↓ 滚动 · q 关闭"
+		if st.copied {
+			return "✓ copied to clipboard"
+		}
+		return "↑↓ scroll · g/G top/bottom · c copy · q/Esc close"
+	case PanelBrowser:
+		return "↑↓ move · Enter open/choose · g/G top/bottom · q/Esc cancel"
 	default:
-		return h + "↑↓ · Enter 提交 · ESC 取消"
+		return "↑↓ move · Space toggle · Enter confirm · q/Esc cancel"
 	}
+}
+
+// scrollPercent mirrors v1: how far through a scrollable panel we are.
+func scrollPercent(p Panel, st *panelState) (int, bool) {
+	switch p.Kind {
+	case PanelList, PanelMulti:
+		n := len(st.items)
+		if h := panelHeight(p, n); n > h && n > 1 {
+			return int(float64(st.cursor)/float64(n-1)*100 + 0.5), true
+		}
+	case PanelBrowser:
+		n := len(st.entries)
+		if h := panelHeight(p, n); n > h && n > 1 {
+			return int(float64(st.cursor)/float64(n-1)*100 + 0.5), true
+		}
+	case PanelView:
+		n := len(st.items)
+		if p.Wrap {
+			n = st.wrapped // set at render
+		}
+		h := panelHeight(p, n)
+		if maxOff := n - h; maxOff > 0 {
+			off := clampInt(st.offset, 0, maxOff)
+			return int(float64(off)/float64(maxOff)*100 + 0.5), true
+		}
+	}
+	return 0, false
 }
 
 // sliderBar renders a coarse position bar.
