@@ -266,7 +266,18 @@ func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// The surface owns the keys while open (rendered below the composer).
 	if m.surf != nil {
+		tab := k.Code == tea.KeyTab
 		m.surfaceKey(k)
+		if tab && m.surf != nil {
+			// Force a full-frame repaint on tab switches: replacing one
+			// panel's rows with another's exercises the renderer's cell diff
+			// across CJK boundaries, which drops a wide rune's first cell on
+			// some terminals (user-reported on Ghostty: the first CJK char of
+			// the first row vanished after Delete→Resume until the cursor
+			// moved). A sequential full redraw sidesteps the diff entirely,
+			// and tab switches are rare, user-paced events.
+			return m, tea.ClearScreen
+		}
 		return m, nil
 	}
 
