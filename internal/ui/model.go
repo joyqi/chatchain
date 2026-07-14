@@ -647,46 +647,31 @@ func (m *model) View() tea.View {
 		}
 	}
 
-	// Separator + status.
+	// The composer is wrapped by TWO separators; the bottom zone (below the
+	// lower separator) holds exactly one of: an open interaction surface, the
+	// slash-suggestion row, or the status line (surface > suggestions >
+	// status). Swapping them is a content change on existing rows plus
+	// below-composer growth/shrink — never a composer move.
 	w := m.width
 	if w < 1 {
 		w = 80
 	}
 	b.WriteString(faint + strings.Repeat("─", w) + sgrReset + "\n")
-	b.WriteString(m.statusLine())
-	b.WriteString("\n")
-	rowsAbove += 2
+	rowsAbove++
 
 	b.WriteString(m.ta.View())
 
-	// Slash suggestions: a dim row of matching commands under the composer
-	// while a "/" prefix is being typed (Tab cycles them).
-	if m.surf == nil {
-		base := m.sugBase
-		if base == "" {
-			base = m.ta.Value()
-		}
-		if ms := matchCommands(m.commands, base); len(ms) > 0 {
-			var row strings.Builder
-			for i, c := range ms {
-				if i > 0 {
-					row.WriteString("  ")
-				}
-				if m.sugBase != "" && i == m.sugIdx {
-					row.WriteString(cyan + c + sgrReset)
-				} else {
-					row.WriteString(faint + c + sgrReset)
-				}
-			}
-			b.WriteString("\n" + ansi.Truncate(row.String(), maxInt(4, m.width), "…"))
-		}
-	}
+	b.WriteString("\n" + faint + strings.Repeat("─", w) + sgrReset)
 
-	// Interaction surfaces BELOW the composer: the composer never moves when
-	// they close, and their vacated rows die at the screen bottom where output
-	// self-heals them (see docs/design/ui-architecture.md).
-	if m.surf != nil {
+	switch {
+	case m.surf != nil:
+		// Interaction surface: replaces the status row; its vacated rows on
+		// close die at the screen bottom where output self-heals them.
 		m.renderSurface(&b)
+	case m.suggestionRow() != "":
+		b.WriteString("\n" + m.suggestionRow())
+	default:
+		b.WriteString("\n" + m.statusLine())
 	}
 
 	view := tea.NewView(b.String())
@@ -698,6 +683,31 @@ func (m *model) View() tea.View {
 		}
 	}
 	return view
+}
+
+// suggestionRow renders the slash-completion candidates while a bare "/"
+// prefix is typed ("" when inactive). It occupies the status row's slot.
+func (m *model) suggestionRow() string {
+	base := m.sugBase
+	if base == "" {
+		base = m.ta.Value()
+	}
+	ms := matchCommands(m.commands, base)
+	if len(ms) == 0 {
+		return ""
+	}
+	var row strings.Builder
+	for i, c := range ms {
+		if i > 0 {
+			row.WriteString("  ")
+		}
+		if m.sugBase != "" && i == m.sugIdx {
+			row.WriteString(cyan + c + sgrReset)
+		} else {
+			row.WriteString(faint + c + sgrReset)
+		}
+	}
+	return ansi.Truncate(row.String(), maxInt(4, m.width), "…")
 }
 
 // statusLine renders " model · ctx used/window (pct)", with the busy

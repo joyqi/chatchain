@@ -111,18 +111,21 @@ Facade shape decisions from the adversarial review:
   that owns the 3-line window + spinner. Close = Done/clear, and the caller's
   flush ordering (close preview BEFORE committing the rendered block) is
   preserved by construction.
-- **Frame stacking order is fixed and ui-owned**:
-  `[busy] [stream preview] [queue] [separator] [status] [composer]
-  [selector/viewer/confirm]` — each slot optional; logic never reasons about
-  composition. INTERACTION surfaces render below the composer (shell
-  convention; their close-shrink dies at the screen bottom and self-heals —
-  no re-anchor machinery). Busy and the stream preview are
-  content-in-progress and stay on the CONTENT side, above the separator
-  (user decision: a rendering preview belongs with the output, not the
-  input). The close-shrink bounce this implies is inherent to the renderer's
-  top-anchored shrink; it is minimized adapter-side: uiMDSink DEFERS the
-  preview close until the rendered block arrives, so shrink and push are
-  adjacent messages (at most a one-frame blip instead of a render-time gap).
+- **Frame stacking order is fixed and ui-owned** (user-confirmed final):
+  `[staging tail] [stream preview] [queue] ─sep─ [composer] ─sep─
+  [status | suggestions | surface]`. The composer is wrapped by two
+  separators; the bottom zone below the lower separator holds exactly one
+  of the status line, the slash-suggestion row, or an open interaction
+  surface (surface > suggestions > status) — swapping them is a content
+  change plus below-composer growth, never a composer move. Content-side
+  transients (stream preview) morph in place through the staging window;
+  the busy indicator is a status-line segment. Layout laws: above the
+  composer the frame only grows (staging window + queue; shrink happens by
+  in-place morph); the status row is the permanent carrier for transient
+  indicators; below-composer shrink dies at the screen bottom and
+  self-heals from subsequent output. A side benefit: the composer never
+  sits on the physical bottom row (status pads it), removing the
+  Terminal.app bottom-row CJK crash surface.
 
 ## internal/markdown (P1)
 

@@ -712,3 +712,66 @@ func TestBusyInStatusLine(t *testing.T) {
 		t.Fatal("busy label not cleared")
 	}
 }
+
+// TestWrappedComposerLayout pins the user-confirmed frame layout: the
+// composer sits between TWO separators; the status line lives below the
+// bottom one (frame bottom); an open surface or the slash-suggestion row
+// replaces the status row (surface > suggestions > status); the queue stays
+// above the TOP separator.
+func TestWrappedComposerLayout(t *testing.T) {
+	m := newTestModel(t)
+	m = step(t, m, statusMsg(StatusData{Model: "gpt-4o", CtxUsed: 1, CtxWindow: 100}))
+	m = typeText(t, m, "queued")
+	m = enter(t, m) // no waiter → queue row above the top separator
+
+	c := stripSGR(content(m))
+	lines := strings.Split(c, "\n")
+	var sepIdx []int
+	composerIdx, statusIdx, queueIdx := -1, -1, -1
+	for i, l := range lines {
+		switch {
+		case strings.HasPrefix(l, "───"):
+			sepIdx = append(sepIdx, i)
+		case strings.Contains(l, "❯"):
+			composerIdx = i
+		case strings.Contains(l, "gpt-4o · ctx"):
+			statusIdx = i
+		case strings.Contains(l, "» queued"):
+			queueIdx = i
+		}
+	}
+	if len(sepIdx) != 2 {
+		t.Fatalf("want exactly 2 separators, got %d:\n%s", len(sepIdx), c)
+	}
+	if !(queueIdx < sepIdx[0] && sepIdx[0] < composerIdx && composerIdx < sepIdx[1] && sepIdx[1] < statusIdx) {
+		t.Fatalf("layout order wrong (queue=%d sep=%v composer=%d status=%d):\n%s",
+			queueIdx, sepIdx, composerIdx, statusIdx, c)
+	}
+	if statusIdx != len(lines)-1 {
+		t.Fatalf("status not the frame's last row:\n%s", c)
+	}
+
+	// A surface replaces the status row.
+	reply := make(chan TabbedResult, 1)
+	m = openList(t, m, "/model", []string{"a"}, reply)
+	c = stripSGR(content(m))
+	if strings.Contains(c, "gpt-4o · ctx") {
+		t.Fatalf("status visible while a surface is open:\n%s", c)
+	}
+	if strings.Index(c, "❯") > strings.Index(c, "/model") {
+		t.Fatal("surface not below the composer")
+	}
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	<-reply
+	if !strings.Contains(stripSGR(content(m)), "gpt-4o · ctx") {
+		t.Fatal("status not restored after the surface closed")
+	}
+
+	// The slash-suggestion row replaces the status row too.
+	m = step(t, m, setCommandsMsg([]string{"/model"}))
+	m = typeText(t, m, "/m")
+	c = stripSGR(content(m))
+	if strings.Contains(c, "gpt-4o · ctx") || !strings.Contains(c, "/model") {
+		t.Fatalf("suggestions should replace the status row:\n%s", c)
+	}
+}
