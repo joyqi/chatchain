@@ -815,3 +815,42 @@ func TestResizeFlushesStagingTail(t *testing.T) {
 		t.Fatal("height-only change scheduled a flush")
 	}
 }
+
+// TestCursorRowHighlight: v1 semantics — a plain cursor row's text renders
+// cyan; a row carrying its own ANSI keeps it (marker only); the tab bar keeps
+// identical padding across focus states so switching never changes its width.
+func TestCursorRowHighlight(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan TabbedResult, 1)
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{Panels: []Panel{
+		{Title: "A", Kind: PanelList, Items: []string{"plain-row", "\x1b[32mstyled\x1b[0m-row"}},
+		{Title: "B", Kind: PanelView, Lines: []string{"x"}},
+	}}, reply: reply})
+
+	c := content(m)
+	if !strings.Contains(c, cyan+"plain-row"+sgrReset) {
+		t.Fatalf("plain cursor row not highlighted:\n%q", c)
+	}
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	if c := content(m); strings.Contains(c, cyan+"\x1b[32mstyled") {
+		t.Fatalf("styled row must keep its own colors, marker only:\n%q", c)
+	}
+
+	// Tab bar width is focus-invariant.
+	barWidth := func(s string) int {
+		for _, l := range strings.Split(stripSGR(s), "\n") {
+			if strings.Contains(l, " A ") || strings.Contains(l, " B ") {
+				return len([]rune(l))
+			}
+		}
+		return -1
+	}
+	w1 := barWidth(content(m))
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	w2 := barWidth(content(m))
+	if w1 != w2 || w1 <= 0 {
+		t.Fatalf("tab bar width changed on focus switch: %d → %d", w1, w2)
+	}
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	<-reply
+}

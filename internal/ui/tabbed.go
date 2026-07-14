@@ -244,10 +244,12 @@ func (m *model) renderSurface(b *strings.Builder) {
 			if i > 0 {
 				bar.WriteString(faint + " │ " + sgrReset)
 			}
+			// Both states carry identical " title " padding so switching
+			// focus never changes the bar width (only the styling swaps).
 			if i == s.focus {
 				bar.WriteString(revOn + " " + p.Title + " " + sgrReset)
 			} else {
-				bar.WriteString(faint + p.Title + sgrReset)
+				bar.WriteString(faint + " " + p.Title + " " + sgrReset)
 			}
 		}
 		b.WriteString("\n" + ansi.Truncate(bar.String(), w, "…"))
@@ -275,7 +277,14 @@ func (m *model) renderSurface(b *strings.Builder) {
 					box = green + "[x] " + sgrReset
 				}
 			}
-			b.WriteString("\n" + marker + box + ansi.Truncate(st.items[i], maxInt(4, w-6), "…"))
+			item := ansi.Truncate(st.items[i], maxInt(4, w-6), "…")
+			// v1 highlight semantics: the cursor row's TEXT goes cyan when the
+			// row is plain; rows carrying their own ANSI styling (e.g. /debug
+			// request rows) keep it, with just the cyan marker.
+			if i == st.cursor && !strings.Contains(item, "\x1b[") {
+				item = cyan + item + sgrReset
+			}
+			b.WriteString("\n" + marker + box + item)
 		}
 	case PanelSlider:
 		val := faint + "default" + sgrReset
@@ -322,11 +331,14 @@ func (m *model) renderSurface(b *strings.Builder) {
 			if i == st.cursor {
 				marker = cyan + "▸ " + sgrReset
 			}
-			name := st.entries[i].name
-			if st.entries[i].isDir {
+			name := ansi.Truncate(st.entries[i].name, maxInt(4, w-4), "…")
+			switch {
+			case i == st.cursor:
+				name = cyan + name + sgrReset
+			case st.entries[i].isDir:
 				name = faint + name + sgrReset
 			}
-			b.WriteString("\n" + marker + ansi.Truncate(name, maxInt(4, w-4), "…"))
+			b.WriteString("\n" + marker + name)
 		}
 	}
 
