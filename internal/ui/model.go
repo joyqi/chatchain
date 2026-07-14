@@ -625,21 +625,6 @@ func (m *model) View() tea.View {
 		rowsAbove += 1 + len(m.region.ptail)
 	}
 
-	// Busy spinner (content side; transient single row).
-	if m.busy != nil {
-		elapsed := int(time.Since(m.busy.since).Seconds())
-		b.WriteString(cyan + spinnerFrames[m.spin%len(spinnerFrames)] + sgrReset +
-			faint + " " + m.busy.label)
-		if elapsed >= 2 {
-			fmt.Fprintf(&b, "  %ds", elapsed)
-		}
-		if len(m.cancels) > 0 {
-			b.WriteString(" (ESC to cancel)")
-		}
-		b.WriteString(sgrReset + "\n")
-		rowsAbove++
-	}
-
 	// Type-ahead queue: dim "»" lines above the separator (content side).
 	if n := len(m.queue); n > 0 {
 		shown := n
@@ -715,7 +700,11 @@ func (m *model) View() tea.View {
 	return view
 }
 
-// statusLine renders " model · ctx used/window (pct)".
+// statusLine renders " model · ctx used/window (pct)", with the busy
+// indicator appended while a turn is working. The busy state lives HERE — on
+// a permanent frame row — precisely so its appearance/disappearance never
+// changes the frame height (a transient busy row above the separator was the
+// last remaining composer bounce).
 func (m *model) statusLine() string {
 	model := m.status.Model
 	if model == "" {
@@ -730,12 +719,31 @@ func (m *model) statusLine() string {
 		ctx += fmt.Sprintf(" (%d%%)", m.status.CtxUsed*100/m.status.CtxWindow)
 	}
 
+	frame, tail := "", ""
+	if m.busy != nil {
+		frame = spinnerFrames[m.spin%len(spinnerFrames)]
+		tail = " " + m.busy.label
+		if elapsed := int(time.Since(m.busy.since).Seconds()); elapsed >= 2 {
+			tail += fmt.Sprintf("  %ds", elapsed)
+		}
+		if len(m.cancels) > 0 {
+			tail += " (ESC to cancel)"
+		}
+	}
+
 	plain := "  " + model + " · " + ctx
+	if m.busy != nil {
+		plain += " · " + frame + tail
+	}
 	if textwidth.StringWidth(plain) > m.width {
 		return faint + ansi.Truncate(plain, maxInt(4, m.width), "…") + sgrReset
 	}
-	return "  " + cyan + faint + model + sgrReset + faint + " · " + sgrReset +
+	out := "  " + cyan + faint + model + sgrReset + faint + " · " + sgrReset +
 		green + faint + ctx + sgrReset
+	if m.busy != nil {
+		out += faint + " · " + sgrReset + cyan + frame + sgrReset + faint + tail + sgrReset
+	}
+	return out
 }
 
 // formatTokens renders a token count compactly: 128000 → "128k".

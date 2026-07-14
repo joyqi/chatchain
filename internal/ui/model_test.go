@@ -679,3 +679,36 @@ func TestListPagingParity(t *testing.T) {
 		t.Fatalf("cursor after → = %d, want 6 (one page)", r.Panels[0].Cursor)
 	}
 }
+
+// TestBusyInStatusLine: the busy indicator lives on the (permanent) status
+// row — toggling it must not change the frame's line count, which was the
+// last remaining composer bounce.
+func TestBusyInStatusLine(t *testing.T) {
+	m := newTestModel(t)
+	before := content(m)
+	rowsBefore := strings.Count(before, "\n")
+
+	m = step(t, m, busyOnMsg{label: "Thinking..."})
+	during := content(m)
+	if strings.Count(during, "\n") != rowsBefore {
+		t.Fatalf("busy ON changed the frame height:\n%s", during)
+	}
+	if !strings.Contains(during, "Thinking...") {
+		t.Fatalf("busy label not in the status line:\n%s", during)
+	}
+	// The label sits on the SAME row as the model/ctx status.
+	for _, line := range strings.Split(stripSGR(during), "\n") {
+		if strings.Contains(line, "Thinking...") && !strings.Contains(line, "ctx") {
+			t.Fatalf("busy not on the status row: %q", line)
+		}
+	}
+
+	m = step(t, m, busyOffMsg{})
+	after := content(m)
+	if strings.Count(after, "\n") != rowsBefore {
+		t.Fatal("busy OFF changed the frame height")
+	}
+	if strings.Contains(after, "Thinking...") {
+		t.Fatal("busy label not cleared")
+	}
+}
