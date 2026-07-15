@@ -38,6 +38,21 @@ type Tool interface {
 	Call(ctx context.Context, args map[string]any) (text string, isError bool, err error)
 }
 
+// approver is an optional Tool interface: a tool whose calls change state on
+// the user's machine reports that each call needs interactive user approval.
+// A tool may report false when its set is configured to auto-approve.
+type approver interface {
+	RequiresApproval() bool
+}
+
+// ApprovalReporter is an optional Dispatcher capability: it reports whether a
+// named tool's calls need interactive user approval before execution. The
+// chat layer gates such calls behind a confirmation prompt, and rejects them
+// outright in non-interactive runs.
+type ApprovalReporter interface {
+	RequiresApproval(name string) bool
+}
+
 // Env carries host context the toolsets need at construction time.
 type Env struct {
 	// ProjectRoot anchors project-scoped tools — the agent set's skill
@@ -50,12 +65,13 @@ type Env struct {
 type SetFactory func(env Env, node yaml.Node) ([]Tool, error)
 
 // sets is the central registry of built-in toolsets, one source file per set,
-// named after it (command.go, agent.go). Adding a set = a file with its
-// factory and one line here; growing a set = its factory returns one more
-// Tool. Future candidates: "code" (editing), "web" (browse/search).
+// named after it (command.go, agent.go, code.go). Adding a set = a file with
+// its factory and one line here; growing a set = its factory returns one more
+// Tool. Future candidate: "web" (browse/search).
 var sets = map[string]SetFactory{
 	"command": newCommandSet,
 	"agent":   newAgentSet,
+	"code":    newCodeSet,
 }
 
 // Registry holds the enabled built-in tools and satisfies Dispatcher.
@@ -143,6 +159,20 @@ func (r *Registry) Tools() []provider.ToolDef {
 	return out
 }
 
+// RequiresApproval reports whether the named built-in tool asks for
+// interactive approval (via the optional approver interface).
+func (r *Registry) RequiresApproval(name string) bool {
+	if r == nil {
+		return false
+	}
+	t, ok := r.index[name]
+	if !ok {
+		return false
+	}
+	a, ok := t.(approver)
+	return ok && a.RequiresApproval()
+}
+
 // CallTool dispatches a call to the matching built-in tool.
 func (r *Registry) CallTool(ctx context.Context, name string, args map[string]any) (string, bool, error) {
 	if r == nil {
@@ -203,4 +233,19 @@ func (m *multiDispatcher) CallTool(ctx context.Context, name string, args map[st
 		}
 	}
 	return "", true, fmt.Errorf("unknown tool: %s", name)
+}
+
+// RequiresApproval routes the question to the part owning the tool name.
+// Parts without the ApprovalReporter capability (e.g. the MCP manager) never
+// require approval — their behavior is unchanged.
+func (m *multiDispatcher) RequiresApproval(name string) bool {
+	for _, p := range m.parts {
+		for _, def := range p.Tools() {
+			if def.Name == name {
+				ar, ok := p.(ApprovalReporter)
+				return ok && ar.RequiresApproval(name)
+			}
+		}
+	}
+	return false
 }

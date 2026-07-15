@@ -178,6 +178,21 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 		*history = append(*history, msg)
 
 		for _, tc := range toolCalls {
+			// Approval-requiring tools cannot ask anyone here: reject the call
+			// with a result that tells the model (and the user reading the
+			// transcript) how to enable it.
+			if needsApproval(dispatch, tc.Name) {
+				*history = append(*history, provider.Message{
+					Role: "tool",
+					Content: fmt.Sprintf("%s was not executed: it modifies files and requires interactive approval, "+
+						"which is unavailable in this non-interactive run. Set the toolset's auto-approve option "+
+						"(e.g. tools.code.auto_write: true) to permit it here.", tc.Name),
+					ToolCallID:   tc.ID,
+					ToolCallName: tc.Name,
+					IsError:      true,
+				})
+				continue
+			}
 			resultText, isError, callErr := dispatch.CallTool(ctx, tc.Name, tc.Arguments)
 			if callErr != nil {
 				resultText = fmt.Sprintf("Error calling tool: %v", callErr)
@@ -192,6 +207,14 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 			})
 		}
 	}
+}
+
+// needsApproval reports whether the dispatcher marks the named tool's calls
+// as requiring interactive user approval (the tool.ApprovalReporter
+// capability; parts without it — e.g. MCP servers — never require approval).
+func needsApproval(dispatch tool.Dispatcher, name string) bool {
+	ar, ok := dispatch.(tool.ApprovalReporter)
+	return ok && ar.RequiresApproval(name)
 }
 
 // nopWriteCloser adapts a plain writer to the reasoning stream's WriteCloser.

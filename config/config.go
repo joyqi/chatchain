@@ -22,8 +22,9 @@ type ProviderConfig struct {
 	// name (its presence enables every tool in the set); the value is the
 	// set's shared raw config, decoded lazily by the set itself (an empty/null
 	// value means defaults). Sets and their value shapes: "command"
-	// (run_command; a list of allowed program globs) and "agent" (load_skill;
-	// no settings yet).
+	// (run_command; a list of allowed program globs), "agent" (load_skill; no
+	// settings yet), and "code" (glob/grep/list_dir/read_file/edit_file/
+	// write_file; a mapping with auto_write).
 	Tools map[string]yaml.Node `yaml:"tools"`
 }
 

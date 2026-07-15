@@ -194,8 +194,8 @@ Besides MCP servers, ChatChain ships built-in tools grouped into named
 **toolsets** that you enable per provider in the config file. A toolset is
 enabled by listing it under that provider's `tools:` key; the value is the
 set's shared configuration, and an empty value uses its defaults. Available
-sets: `command` (running programs) and `agent` (skill activation; auto-enabled
-by agent mode).
+sets: `command` (running programs), `code` (reading, searching, and editing
+project files), and `agent` (skill activation; auto-enabled by agent mode).
 
 ```yaml
 providers:
@@ -237,6 +237,33 @@ Safety model:
   `python`, …) effectively grants broad execution — that is your choice.
 - Each call is capped at **10 minutes**. While a command runs, the status-line
   spinner shows the elapsed time; press **ESC** (or Ctrl+C) to terminate it.
+
+#### `code` — coding tools
+
+The coding loop: `glob` and `grep` locate files (`.git`, `.gitignore` matches,
+and binaries excluded), `list_dir` explores, `read_file` returns line-numbered
+content, and `edit_file` (exact, unique string replacement) / `write_file`
+change files. Everything is confined to the **project root** (the git root of
+the working directory). Verification — builds, tests — goes through
+`run_command`, so enable the `command` set alongside.
+
+Safety model:
+
+- A file must be **read before it can be modified**, and a file that changed
+  on disk since it was read must be re-read first — the model can never
+  blind-overwrite your edits.
+- Every modifying call asks for confirmation in the chat (allow once / allow
+  for this session / deny). Non-interactive `-m` runs reject modifications
+  outright. Set `auto_write: true` under `tools: code:` to skip confirmations
+  and allow `-m` writes:
+
+```yaml
+    tools:
+      code:
+        auto_write: true   # optional; default asks before every write
+```
+
+Design: docs/design/code-toolset.md
 
 ### Agent Mode
 

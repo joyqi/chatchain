@@ -44,6 +44,10 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 		sessionScope = agent.Root
 	}
 
+	// Tools the user approved with "allow for this session" — consulted by the
+	// approval gate before every call of an approval-requiring tool.
+	approved := make(map[string]bool)
+
 	var history []provider.Message
 	persisted := 0
 	if len(importedHistory) > 0 {
@@ -615,7 +619,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			history = history[:hist0] // tool rounds append; reset per attempt
 			var err error
 			if isToolProvider && len(tools) > 0 {
-				reply, thinking, err = toolLoop(turnCtx, u, sink, tp, dispatch, &history, tools, sendOverlay)
+				reply, thinking, err = toolLoop(turnCtx, u, sink, tp, dispatch, &history, tools, sendOverlay, approved)
 			} else {
 				reply, thinking, err = streamTurn(turnCtx, u, sink, func(w io.Writer, r io.WriteCloser) (string, string, error) {
 					return p.StreamChat(turnCtx, agents.ComposeSendHistory(history, sendOverlay), w, r)
@@ -837,7 +841,7 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w i
 // toolLoop is the v2 twin of executeWithTools: rounds of streaming +
 // tool execution rendered through the ui frame (Busy labels instead of the
 // stderr spinner; per-tool cancel scopes instead of raw-mode watches).
-func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string) (string, string, error) {
+func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, approved map[string]bool) (string, string, error) {
 	for rounds := 0; ; rounds++ {
 		if rounds == maxToolRounds {
 			return "", "", errToolRoundsExceeded
@@ -858,6 +862,36 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.Too
 
 		for _, tc := range toolCalls {
 			sink.CommitLines("", CodeStyle.Sprint(toolCallHeader(tc)))
+
+			// Approval gate: state-changing tools (tool.ApprovalReporter) run
+			// only with the user's consent — once, or for the whole session.
+			// The call header above shows what is being approved.
+			if needsApproval(dispatch, tc.Name) && !approved[tc.Name] {
+				choice, aerr := u.Select(ctx, ui.SelectSpec{
+					Title: fmt.Sprintf("%s wants to modify files — allow?", displayToolName(tc.Name)),
+					Items: []string{"Allow once", "Allow for this session", "Deny"},
+				})
+				if aerr != nil {
+					return "", "", aerr
+				}
+				if choice.Cancelled || choice.Index == 2 {
+					const declined = "The user declined this call."
+					lc := &lineCommitter{commit: sink.CommitLines}
+					printToolResult(lc, declined, true)
+					lc.flush()
+					*history = append(*history, provider.Message{
+						Role:         "tool",
+						Content:      declined,
+						ToolCallID:   tc.ID,
+						ToolCallName: tc.Name,
+						IsError:      true,
+					})
+					continue
+				}
+				if choice.Index == 1 {
+					approved[tc.Name] = true
+				}
+			}
 
 			toolCtx, cancel := context.WithCancel(ctx)
 			pop := u.PushCancelScope(cancel)

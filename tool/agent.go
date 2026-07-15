@@ -160,33 +160,44 @@ func (l *loadSkill) serveFile(sk agents.Skill, file string, args map[string]any)
 }
 
 // readCapped reads a regular file up to loadSkillMaxBytes, returning a
-// model-facing error string on failure.
+// model-facing error string on failure. Oversized files carry a marker.
 func readCapped(path string) ([]byte, string) {
+	data, size, errText := readFileLimited(path, loadSkillMaxBytes)
+	if errText != "" {
+		return nil, errText
+	}
+	if size > loadSkillMaxBytes {
+		data = append(data, fmt.Sprintf("\n[file is %d bytes; only the first %d MB was read]",
+			size, loadSkillMaxBytes/(1024*1024))...)
+	}
+	return data, ""
+}
+
+// readFileLimited reads a regular file up to max bytes, returning the data,
+// the file's true size, and a model-facing error string on failure. Shared by
+// the agent and code sets.
+func readFileLimited(path string, max int64) ([]byte, int64, string) {
 	fi, err := os.Stat(path)
 	switch {
 	case os.IsNotExist(err):
-		return nil, fmt.Sprintf("file does not exist: %s", path)
+		return nil, 0, fmt.Sprintf("file does not exist: %s", path)
 	case err != nil:
-		return nil, fmt.Sprintf("cannot access %s: %v", path, err)
+		return nil, 0, fmt.Sprintf("cannot access %s: %v", path, err)
 	case fi.IsDir():
-		return nil, fmt.Sprintf("%s is a directory, not a file", path)
+		return nil, 0, fmt.Sprintf("%s is a directory, not a file", path)
 	case !fi.Mode().IsRegular():
-		return nil, fmt.Sprintf("%s is not a regular file", path)
+		return nil, 0, fmt.Sprintf("%s is not a regular file", path)
 	}
 	fh, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Sprintf("cannot open %s: %v", path, err)
+		return nil, 0, fmt.Sprintf("cannot open %s: %v", path, err)
 	}
 	defer fh.Close()
-	data, err := io.ReadAll(io.LimitReader(fh, loadSkillMaxBytes))
+	data, err := io.ReadAll(io.LimitReader(fh, max))
 	if err != nil {
-		return nil, fmt.Sprintf("cannot read %s: %v", path, err)
+		return nil, 0, fmt.Sprintf("cannot read %s: %v", path, err)
 	}
-	if fi.Size() > loadSkillMaxBytes {
-		data = append(data, fmt.Sprintf("\n[file is %d bytes; only the first %d MB was read]",
-			fi.Size(), loadSkillMaxBytes/(1024*1024))...)
-	}
-	return data, ""
+	return data, fi.Size(), ""
 }
 
 // windowLines applies the offset/limit line window and the output cap to
