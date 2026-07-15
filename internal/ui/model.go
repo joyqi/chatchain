@@ -16,16 +16,6 @@ import (
 	"chatchain/internal/textwidth"
 )
 
-// Raw SGR styles — the frame is deliberately dependency-light.
-const (
-	faint    = "\x1b[2m"
-	cyan     = "\x1b[36m"
-	green    = "\x1b[32m"
-	revOn    = "\x1b[7m"
-	inputBox = "\x1b[7;2m" // input fields: a subtle (faint reverse) background
-	sgrReset = "\x1b[0m"
-)
-
 // spinnerFrames drive the busy/preview headers and the per-insert activity
 // glyph (braille dots, single column — width-safe).
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}

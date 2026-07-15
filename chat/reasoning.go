@@ -10,7 +10,7 @@ import (
 const reasoningSymbol = "◇"
 
 func dim(s string) string {
-	return "\033[2m" + s + "\033[0m"
+	return DimStyle.Sprint(s)
 }
 
 func reasoningElapsed(start time.Time) string {

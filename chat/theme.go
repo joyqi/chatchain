@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"chatchain/internal/markdown"
+	"chatchain/internal/ui"
 
 	"github.com/muesli/termenv"
 )
@@ -31,6 +32,7 @@ func detectCodeTheme() {
 	if time.Since(start) > time.Second {
 		bgUnsupported = true
 	}
+	ui.SetDarkBackground(dark) // adaptive ui shades (input background)
 	if dark {
 		markdown.SetCodeTheme("monokai")
 	} else {

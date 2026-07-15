@@ -1105,7 +1105,7 @@ func TestInputPanel(t *testing.T) {
 			t.Fatalf("input row wider than the box: %q", l)
 		}
 	}
-	if !strings.Contains(content(m), inputBox) {
+	if !strings.Contains(content(m), inputBg()) {
 		t.Fatal("input row lost its background styling")
 	}
 
@@ -1132,4 +1132,46 @@ func TestInputPanelEscCancels(t *testing.T) {
 	if r := <-reply; !r.Cancelled {
 		t.Fatal("Esc did not cancel the input surface")
 	}
+}
+
+// TestInputPanelColors pins the field's color contract: the box is an
+// adaptive background shade (per detected terminal tone), typed text renders
+// in the DEFAULT foreground (no reverse video, no fg recolor), and the
+// placeholder is faint on the same background.
+func TestInputPanelColors(t *testing.T) {
+	t.Cleanup(func() { SetDarkBackground(true) })
+
+	m := newTestModel(t)
+	reply := make(chan TabbedResult, 1)
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{Panels: []Panel{
+		{Title: "Model", Kind: PanelInput, Placeholder: "hint", InputWidth: 12},
+	}}, reply: reply})
+
+	// Placeholder: faint, on the dark-side shade by default.
+	c := content(m)
+	if !strings.Contains(c, "\x1b[48;5;236m") {
+		t.Fatalf("dark-side background shade missing:\n%q", c)
+	}
+	if !strings.Contains(c, faint+"hint") {
+		t.Fatalf("placeholder not faint:\n%q", c)
+	}
+
+	// Typed text: bare runes right after the background+pad — no reverse, no
+	// fg color, no faint.
+	m = typeInto(t, m, "abc")
+	c = content(m)
+	if !strings.Contains(c, "\x1b[48;5;236m abc") {
+		t.Fatalf("typed text not default-foreground on the shade:\n%q", c)
+	}
+	if strings.Contains(c, revOn+" abc") || strings.Contains(c, faint+"abc") {
+		t.Fatalf("typed text carries reverse/faint styling:\n%q", c)
+	}
+
+	// Light backgrounds flip to the light-side shade.
+	SetDarkBackground(false)
+	if c := content(m); !strings.Contains(c, "\x1b[48;5;254m") {
+		t.Fatalf("light-side shade missing:\n%q", c)
+	}
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	<-reply
 }

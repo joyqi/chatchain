@@ -352,6 +352,12 @@ func (m *model) renderSurface(b *strings.Builder) {
 		boxW = clampInt(boxW, 4, maxInt(4, w-6))
 		st.input.SetWidth(boxW)
 		view := st.input.View()
+		if st.input.Value() == "" && p.Placeholder != "" {
+			// Our own placeholder render: faint on the field background
+			// (textinput's would come unstyled — indistinguishable from
+			// typed text).
+			view = faint + ansi.Truncate(p.Placeholder, boxW, "…")
+		}
 		pad := boxW - ansi.StringWidth(view)
 		if pad < 0 {
 			pad = 0
@@ -364,10 +370,12 @@ func (m *model) renderSurface(b *strings.Builder) {
 			m.surfCur.Y = strings.Count(b.String(), "\n") + 2
 			m.surfCur.X = 3 + c.X
 		}
-		// Blank rows above and below, like the slider. inputBox re-asserts
-		// the background after the field content (its edges stay styled even
-		// if a future style emits a reset inside).
-		b.WriteString("\n\n  " + inputBox + " " + view + inputBox +
+		// Blank rows above and below, like the slider. Text renders in the
+		// default foreground on the adaptive background shade; the trailing
+		// re-assert keeps the padding shaded even if the field content ever
+		// carries a reset.
+		bg := inputBg()
+		b.WriteString("\n\n  " + bg + " " + view + sgrReset + bg +
 			strings.Repeat(" ", pad) + " " + sgrReset + "\n")
 	case PanelView:
 		lines := st.items
@@ -428,9 +436,6 @@ func (m *model) renderSurface(b *strings.Builder) {
 	}
 	b.WriteString("\n" + faint + ansi.Truncate(hint, maxInt(4, m.width), "…") + sgrReset)
 }
-
-// ErrPrefix styles surface-level error rows.
-const ErrPrefix = "\x1b[31m⚠ \x1b[0m"
 
 // surfaceHint mirrors the v1 promptui help lines exactly.
 func surfaceHint(p Panel, st *panelState) string {
