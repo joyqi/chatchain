@@ -1,16 +1,20 @@
-// Package tool provides chatchain's built-in tools — internal tools the user
-// enables through the config file (alongside, or instead of, MCP servers).
+// Package tool provides chatchain's built-in toolsets — named groups of
+// internal tools the user enables through the config file (alongside, or
+// instead of, MCP servers).
 //
-// Each built-in tool is registered in the factories table by name. A provider's
-// `tools:` config maps a tool name to that tool's raw config; the tool decodes
-// its own config (an empty value means defaults). The Registry aggregates the
-// enabled tools behind the Dispatcher surface, and Merge combines several
-// dispatchers (e.g. built-ins + an MCP manager) into one.
+// Each toolset is registered in the sets table by name. A provider's `tools:`
+// config maps a set name to the set's shared raw config; the set factory
+// decodes that one config instance and hands it to every tool it constructs
+// (an empty value means defaults). Current sets: "command" (run_command) and
+// "agent" (load_skill). The Registry aggregates the enabled tools behind the
+// Dispatcher surface, and Merge combines several dispatchers (e.g. built-ins
+// + an MCP manager) into one.
 package tool
 
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"chatchain/provider"
 
@@ -34,15 +38,24 @@ type Tool interface {
 	Call(ctx context.Context, args map[string]any) (text string, isError bool, err error)
 }
 
-// Factory builds a tool from its raw YAML config node. A zero/null node means
-// "use defaults" — every factory must succeed on an empty node.
-type Factory func(node yaml.Node) (Tool, error)
+// Env carries host context the toolsets need at construction time.
+type Env struct {
+	// ProjectRoot anchors project-scoped tools — the agent set's skill
+	// discovery. Empty means "resolve from the working directory at call time".
+	ProjectRoot string
+}
 
-// factories is the central registry of built-in tools. Adding a tool = add a
-// file with its Factory and one line here.
-var factories = map[string]Factory{
-	"run_command": newRunCommand,
-	"read_file":   newReadFile,
+// SetFactory builds a toolset's tools from the set's shared raw YAML config.
+// A zero/null node means "use defaults" — every factory must succeed on it.
+type SetFactory func(env Env, node yaml.Node) ([]Tool, error)
+
+// sets is the central registry of built-in toolsets, one source file per set,
+// named after it (command.go, agent.go). Adding a set = a file with its
+// factory and one line here; growing a set = its factory returns one more
+// Tool. Future candidates: "code" (editing), "web" (browse/search).
+var sets = map[string]SetFactory{
+	"command": newCommandSet,
+	"agent":   newAgentSet,
 }
 
 // Registry holds the enabled built-in tools and satisfies Dispatcher.
@@ -51,61 +64,71 @@ type Registry struct {
 	index map[string]Tool
 }
 
-// Build constructs the enabled built-in tools from the per-tool raw config: a
-// key's presence enables that tool. Unknown tool names and construction errors
-// are reported via warnf (nil to suppress) and skipped — a bad entry never
-// aborts startup (mirrors MCP's graceful degradation).
-func Build(raw map[string]yaml.Node, warnf func(string, ...any)) *Registry {
+// Build constructs the enabled toolsets from the per-set raw config: a key's
+// presence enables that set. Unknown set names and construction errors are
+// reported via warnf (nil to suppress) and skipped — a bad entry never aborts
+// startup (mirrors MCP's graceful degradation). Keys are processed in sorted
+// order so collisions resolve deterministically.
+func Build(env Env, raw map[string]yaml.Node, warnf func(string, ...any)) *Registry {
 	r := &Registry{index: make(map[string]Tool)}
-	for name, node := range raw {
-		f, ok := factories[name]
+	names := make([]string, 0, len(raw))
+	for name := range raw {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		f, ok := sets[name]
 		if !ok {
 			if warnf != nil {
-				warnf("unknown built-in tool %q (ignored)", name)
+				warnf("unknown toolset %q (ignored)", name)
 			}
 			continue
 		}
-		t, err := f(node)
+		tools, err := f(env, raw[name])
 		if err != nil {
 			if warnf != nil {
-				warnf("tool %q: %v (ignored)", name, err)
+				warnf("toolset %q: %v (ignored)", name, err)
 			}
 			continue
 		}
-		def := t.Def()
-		if _, dup := r.index[def.Name]; dup {
-			continue
-		}
-		r.order = append(r.order, t)
-		r.index[def.Name] = t
+		r.add(tools)
 	}
 	return r
 }
 
-// Enable registers the named built-in tool with its default (empty) config
-// unless the config already enabled it. Agent mode uses it to auto-register
-// read_file without requiring a `tools:` entry. Failures are reported via
-// warnf (nil to suppress) and skipped, like Build.
-func (r *Registry) Enable(name string, warnf func(string, ...any)) {
-	if _, ok := r.index[name]; ok {
-		return
-	}
-	f, ok := factories[name]
+// EnableSet registers the named toolset with its default (empty) config.
+// Agent mode uses it to auto-register the agent set without a `tools:` entry;
+// tools already enabled by the config keep their configured instance.
+// Failures are reported via warnf (nil to suppress) and skipped, like Build.
+func (r *Registry) EnableSet(env Env, name string, warnf func(string, ...any)) {
+	f, ok := sets[name]
 	if !ok {
 		if warnf != nil {
-			warnf("unknown built-in tool %q (ignored)", name)
+			warnf("unknown toolset %q (ignored)", name)
 		}
 		return
 	}
-	t, err := f(yaml.Node{})
+	tools, err := f(env, yaml.Node{})
 	if err != nil {
 		if warnf != nil {
-			warnf("tool %q: %v (ignored)", name, err)
+			warnf("toolset %q: %v (ignored)", name, err)
 		}
 		return
 	}
-	r.order = append(r.order, t)
-	r.index[t.Def().Name] = t
+	r.add(tools)
+}
+
+// add appends tools, skipping any whose name is already registered (the
+// earlier registration — e.g. a configured instance — wins).
+func (r *Registry) add(tools []Tool) {
+	for _, t := range tools {
+		name := t.Def().Name
+		if _, dup := r.index[name]; dup {
+			continue
+		}
+		r.order = append(r.order, t)
+		r.index[name] = t
+	}
 }
 
 // Tools returns the definitions of the enabled built-in tools.

@@ -116,7 +116,7 @@ var rootCmd = &cobra.Command{
 
 		// Agent mode is explicitly opt-in: the --agent flag or the provider's
 		// `agent: true` config. It anchors the AGENTS.md/skills overlay in the
-		// REPL and auto-enables the read_file built-in tool everywhere.
+		// REPL and auto-enables the agent toolset (load_skill) everywhere.
 		agentMode := agentFlag || pc.Agent
 
 		// Build MCP server configs from CLI flags + config file
@@ -137,6 +137,14 @@ var rootCmd = &cobra.Command{
 			agentOpts = chat.AgentOptions{Enabled: true, Root: chat.ProjectRoot(cwd)}
 		}
 
+		// The toolsets' host context. The project root anchors the agent set's
+		// skill discovery — resolved in every mode, so a `tools: {agent: ...}`
+		// entry works outside agent mode too.
+		toolEnv := tool.Env{ProjectRoot: agentOpts.Root}
+		if toolEnv.ProjectRoot == "" && cwdErr == nil {
+			toolEnv.ProjectRoot = chat.ProjectRoot(cwd)
+		}
+
 		// Non-interactive mode: connect MCP synchronously (the single request needs
 		// the full tool set before it is sent), quietly, then respond.
 		if chatMessage != "" {
@@ -146,7 +154,7 @@ var rootCmd = &cobra.Command{
 				mgr.ConnectWait(context.Background())
 				defer mgr.Close()
 			}
-			dispatch := buildDispatcher(pc, mgr, agentMode)
+			dispatch := buildDispatcher(pc, mgr, agentMode, toolEnv)
 			return chat.Once(context.Background(), p, chatMessage, systemPrompt, dispatch, agentOpts, os.Stdout)
 		}
 
@@ -253,7 +261,7 @@ var rootCmd = &cobra.Command{
 		// MCP connects in the background from inside chat.Run (which owns the
 		// prompt and reports each server as it resolves); the dispatcher reads the
 		// manager's tool set live, so late-arriving tools appear without a rebuild.
-		dispatch := buildDispatcher(pc, mgr, agentMode)
+		dispatch := buildDispatcher(pc, mgr, agentMode, toolEnv)
 		// The interactive UI requires a terminal (docs/design/ui-architecture.md);
 		// piped input goes through -m/--message.
 		if !term.IsTerminal(int(os.Stdout.Fd())) {
@@ -387,19 +395,18 @@ func providerEnvKey(providerType string) string {
 }
 
 // buildDispatcher assembles the tool dispatcher for a provider: its enabled
-// built-in tools (from the provider's `tools:` config) merged with the MCP
-// manager. Agent mode additionally auto-enables the read_file built-in — a
-// skill is activated by reading its SKILL.md through it — with a config entry
-// still free to declare it explicitly. Built-ins are passed first so they win
-// any tool-name collision. The result is always non-nil (it may advertise no
-// tools).
-func buildDispatcher(pc config.ProviderConfig, mgr *mcpmgr.Manager, agent bool) tool.Dispatcher {
+// built-in toolsets (from the provider's `tools:` config) merged with the MCP
+// manager. Agent mode additionally auto-enables the agent set — skills are
+// activated through its load_skill tool — with a config entry still free to
+// declare it explicitly. Built-ins are passed first so they win any tool-name
+// collision. The result is always non-nil (it may advertise no tools).
+func buildDispatcher(pc config.ProviderConfig, mgr *mcpmgr.Manager, agent bool, env tool.Env) tool.Dispatcher {
 	warnf := func(format string, args ...any) {
 		chat.ErrorStyle.Fprintf(os.Stderr, "⚠ "+format+"\n", args...)
 	}
-	reg := tool.Build(pc.Tools, warnf)
+	reg := tool.Build(env, pc.Tools, warnf)
 	if agent {
-		reg.Enable("read_file", warnf)
+		reg.EnableSet(env, "agent", warnf)
 	}
 
 	var parts []tool.Dispatcher

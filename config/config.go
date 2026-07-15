@@ -18,11 +18,12 @@ type ProviderConfig struct {
 	// yaml.v3 decodes the YAML 1.1 truthy spellings (true/yes/on) natively.
 	Agent         bool   `yaml:"agent"`
 	ContextWindow string `yaml:"context_window"` // e.g. "200k", "1m", "128000"
-	// Tools enables built-in tools for this provider. The key is the tool name
-	// (its presence enables the tool); the value is that tool's raw config,
-	// decoded lazily by the tool itself (an empty/null value means defaults).
-	// Different tools accept different value shapes (run_command takes a list of
-	// allowed program globs).
+	// Tools enables built-in toolsets for this provider. The key is the set
+	// name (its presence enables every tool in the set); the value is the
+	// set's shared raw config, decoded lazily by the set itself (an empty/null
+	// value means defaults). Sets and their value shapes: "command"
+	// (run_command; a list of allowed program globs) and "agent" (load_skill;
+	// no settings yet).
 	Tools map[string]yaml.Node `yaml:"tools"`
 }
 

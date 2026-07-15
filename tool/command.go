@@ -29,6 +29,16 @@ type runCommand struct {
 	allow []string
 }
 
+// newCommandSet builds the "command" toolset. Its shared config is the allow
+// list of program globs, consumed by run_command (the set's only tool so far).
+func newCommandSet(_ Env, node yaml.Node) ([]Tool, error) {
+	rc, err := newRunCommand(node)
+	if err != nil {
+		return nil, err
+	}
+	return []Tool{rc}, nil
+}
+
 // newRunCommand builds the tool from its config: a list of allowed program
 // globs. An empty/null config permits any program.
 func newRunCommand(node yaml.Node) (Tool, error) {

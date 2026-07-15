@@ -17,7 +17,7 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 - **Context management** — live token accounting against the context window (configurable via `--context-window` or the `/model` Context tab), with `/compact` LLM-summarization of older history; when the window nears full a confirmation is offered before compacting (declining snoozes the prompt until usage grows further)
 - **Model settings mid-chat** — `/model` opens a tabbed panel over the model, context window, reasoning effort, and temperature, all persisted with the session and replayed on resume
 - **Conversation export** — `/export` renders the session to a single self-contained HTML file (inline CSS, dark mode with a toggle, syntax-highlighted code) or a plain Markdown document; saved sessions export the full on-disk log, so compaction never hides older rounds (ephemeral `--no-save` sessions export the current in-memory view)
-- **Agent mode** — opt-in via `--agent` (or `agent: true` per provider): layered `AGENTS.md` instructions and [Agent Skills](https://agentskills.io/specification) are injected as a volatile system-prompt overlay, the `read_file` tool is auto-enabled, and sessions are grouped per project
+- **Agent mode** — opt-in via `--agent` (or `agent: true` per provider): layered `AGENTS.md` instructions and [Agent Skills](https://agentskills.io/specification) are injected as a volatile system-prompt overlay, the `agent` toolset (`load_skill`) is auto-enabled, and sessions are grouped per project
 - **Request inspector** — `/debug` opens a two-tab console: a **Verbose** toggle turns recording on/off (off by default), and **Messages** browses the captured API calls (newest first), each summarized by action and content (e.g. `Chat 你好…`) rather than raw method/URL — drill into any one to read its `↑ Request` and `↓ Response` bodies, pretty-printed, with `c` to copy to the clipboard. Nothing is printed to the terminal; it replaces the old `-v` flag
 - **System prompt** — set via flag or interactive input
 - **Config file** — persistent API keys, default models, custom provider aliases, and MCP server definitions via `~/.chatchain.yaml`
@@ -102,7 +102,7 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 | `--system-input` | `-S` | Enter system prompt interactively |
 | `--list` | `-l` | List configured providers, or models for a given provider |
 | `--mcp` | | MCP server (command string or URL, repeatable) |
-| `--agent` | | Enable agent mode (AGENTS.md overlay, skills, `read_file`, project-scoped sessions) |
+| `--agent` | | Enable agent mode (AGENTS.md overlay, skills, `load_skill`, project-scoped sessions) |
 | `--config` | `-c` | Path to config file (default: `~/.chatchain.yaml`) |
 
 ### Environment Variables
@@ -188,11 +188,14 @@ chatchain openai -m "hi" -M gpt-4o
 chatchain openai -k sk-override -m "hi" -M gpt-4o
 ```
 
-### Built-in Tools
+### Built-in Toolsets
 
-Besides MCP servers, ChatChain ships **built-in tools** that you enable per provider
-in the config file. A tool is enabled by listing it under that provider's `tools:`
-key; an empty value uses the tool's defaults.
+Besides MCP servers, ChatChain ships built-in tools grouped into named
+**toolsets** that you enable per provider in the config file. A toolset is
+enabled by listing it under that provider's `tools:` key; the value is the
+set's shared configuration, and an empty value uses its defaults. Available
+sets: `command` (running programs) and `agent` (skill activation; auto-enabled
+by agent mode).
 
 ```yaml
 providers:
@@ -201,7 +204,7 @@ providers:
     key: sk-ant-xxx
     model: claude-sonnet-4-20250514
     tools:
-      run_command:           # allow only these programs
+      command:               # allow only these programs
         - git
         - ssh
         - "py*"              # globs are supported (matches python, pytest, …)
@@ -210,10 +213,10 @@ providers:
     key: sk-official
     model: gpt-4o
     tools:
-      run_command:           # empty → any program is allowed
+      command:               # empty → any program is allowed
 ```
 
-#### `run_command`
+#### `command` — `run_command`
 
 Lets the model run commands on your machine and returns their combined
 stdout/stderr. The allow list contains **program names** (`argv[0]`), each matched
@@ -274,18 +277,20 @@ higher wins):
 3. `~/.agents/skills/` — cross-client user skills
 
 Discovered skills are advertised to the model as a name + description catalog
-inside the overlay; the model activates one by reading its `SKILL.md` with
-`read_file`, then reads referenced files the same way and runs bundled scripts
-through `run_command` (enable it for the provider if your skills need
-scripts). Invalid skills are skipped with a warning, never fatal.
+inside the overlay; the model activates one by calling `load_skill` with the
+skill's name, reads files the skill references through the same tool's `file`
+argument, and runs bundled scripts through `run_command` (enable the `command`
+toolset for the provider if your skills need scripts). Invalid skills are
+skipped with a warning, never fatal.
 
-#### `read_file`
+#### `agent` — `load_skill`
 
-Agent mode auto-enables the `read_file` built-in tool: read-only access to
-regular files — `path` (absolute, cwd-relative, or `~`-expanded) plus an
-optional `offset`/`limit` line window, with size-capped, truncation-marked
-output. It can also be enabled explicitly under `tools:` like any built-in,
-agent mode or not.
+Agent mode auto-enables the `agent` toolset. Its `load_skill` tool activates a
+skill by name: it returns the skill's instructions (the `SKILL.md` body) and
+directory, and the optional `file` argument reads a file bundled inside that
+directory — reads never leave the skill's directory. Output is size-capped
+with an optional `offset`/`limit` line window. The set can also be enabled
+explicitly under `tools:` like any other, agent mode or not.
 
 #### Project-Scoped Sessions
 

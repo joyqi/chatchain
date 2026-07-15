@@ -1,4 +1,4 @@
-# Agent mode (P1) — AGENTS.md, skills, read_file, project sessions
+# Agent mode (P1) — AGENTS.md, skills, load_skill, project sessions
 
 ## Switch
 
@@ -54,30 +54,47 @@ Per the Agent Skills spec (https://agentskills.io/specification):
   skipped with a startup warning, never fatal.
 - **Level 1**: names + descriptions render into a catalog block inside the
   volatile overlay (modelled on `skills-ref to-prompt`), with an instruction
-  that a skill is used by reading its `SKILL.md` via the `read_file` tool.
-  Every catalog field is XML-escaped (descriptions come from arbitrary,
-  possibly cloned, skill files and land in the system prompt — markup must
-  not break out of the block), and the rendered catalog is capped at 32 KiB
-  with an omission note, mirroring the AGENTS.md cap.
-- **Levels 2/3**: activation is exactly that — the model calls `read_file`
-  on the skill's `SKILL.md`, then reads referenced files or runs bundled
-  scripts through the existing `run_command` tool (the spec's own script
-  guidance — `uv run`, `npx`, `go run` — is argv-shaped, so the argv-only
-  run_command decision stands).
+  that a skill is used by calling the `load_skill` tool with its name (paths
+  stay encapsulated behind the tool). Every catalog field is XML-escaped
+  (descriptions come from arbitrary, possibly cloned, skill files and land in
+  the system prompt — markup must not break out of the block), and the
+  rendered catalog is capped at 32 KiB with an omission note, mirroring the
+  AGENTS.md cap.
+- **Levels 2/3**: activation is exactly that — the model calls `load_skill`
+  with the skill's name (getting the SKILL.md body plus the skill's
+  directory), reads referenced files through the same tool's `file` argument,
+  and runs bundled scripts through the existing `run_command` tool (the
+  spec's own script guidance — `uv run`, `npx`, `go run` — is argv-shaped, so
+  the argv-only run_command decision stands).
 - The skills catalog participates in the same mtime-based freshness check as
   AGENTS.md: the probe stats the discovery roots (add/remove detection) AND
   each discovered skill's SKILL.md (in-place description edits are detected
   too, at the cost of N extra stats per turn).
 - `allowed-tools` (spec-experimental) is ignored in P1.
 
-## read_file — the first read-only built-in tool
+## Toolsets and load_skill
 
-New built-in tool in the `tool/` package, auto-registered when agent mode is
-on (still declarable/configurable like `run_command`):
+Built-in tools are grouped into named **toolsets** (one source file per set in
+`tool/`, named after it): a provider's `tools:` config keys are set names, and
+each set decodes one shared config instance for all its tools. Current sets:
+`command` (run_command; config = allowed program globs) and `agent`
+(load_skill; no settings yet). Future sets slot in the same way (`code` for
+editing, `web` for browse/search). Agent mode auto-registers the `agent` set;
+a `tools:` entry may still declare it explicitly (the configured instance
+wins).
 
-- Arguments: `path` (required), optional `offset`/`limit` line window.
-- Absolute or cwd-relative paths, `~` expansion; regular files only; size cap
-  (reuse the attachment cap conventions); output truncation with a marker.
+`load_skill` — the agent set's activation tool (this replaced the
+general-purpose `read_file`, which could read anything on the machine):
+
+- Arguments: `skill` (required, the catalog name), optional `file` (a path
+  relative to the skill's directory), optional `offset`/`limit` line window.
+- Without `file`: returns the SKILL.md body (frontmatter consumed) headed by
+  the skill's name and directory — the directory is what the model passes to
+  `run_command` for bundled scripts.
+- With `file`: serves a file bundled in the skill's directory; absolute paths
+  and `..` escapes are rejected (symlink escapes wait for the P2
+  workspace-trust pass). Size cap + output truncation with a continuation
+  marker, as before.
 - Read-only: no write/edit tools in P1 (those arrive with the P2 permission
   framework).
 
@@ -119,5 +136,5 @@ skills, `allowed-tools`, skills validation command, cwd/git context injection.
 AGENTS.md chain assembly (nesting, cap, mtime reuse); composeSystem overlay
 (history stays clean, persisted bundle has no overlay); skills discovery
 precedence + frontmatter validation (invalid skipped); catalog rendering;
-read_file (window, cap, missing/dir errors); loop cap; project slug encoding;
+load_skill (resolution, jail, window, cap, errors); loop cap; project slug encoding;
 locator across layouts; agent-off = byte-identical behavior (regression).

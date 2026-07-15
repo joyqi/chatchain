@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"chatchain/internal/skills"
 	"chatchain/provider"
 )
 
@@ -170,7 +171,7 @@ type systemOverlay struct {
 	// skillPaths/skillStamps mirror agentsChain's Files/Stamps for the per-turn
 	// freshness check (statSkillsRoots).
 	skillDirs     []string
-	skills        []agentSkill
+	skills        []skills.Skill
 	skillWarnings []string
 	skillPaths    []string
 	skillStamps   []time.Time
@@ -178,7 +179,7 @@ type systemOverlay struct {
 
 // newSystemOverlay assembles the initial overlay for root/cwd.
 func newSystemOverlay(root, cwd string) *systemOverlay {
-	return newSystemOverlayDirs(root, cwd, skillsRoots(root))
+	return newSystemOverlayDirs(root, cwd, skills.Roots(root))
 }
 
 // newSystemOverlayDirs is newSystemOverlay with explicit skill discovery
@@ -193,8 +194,8 @@ func newSystemOverlayDirs(root, cwd string, skillDirs []string) *systemOverlay {
 // over the result (the probe covers the discovered SKILL.md files, so it must
 // be taken after discovery).
 func (o *systemOverlay) reloadSkills() {
-	o.skills, o.skillWarnings = discoverSkills(o.skillDirs)
-	o.skillPaths, o.skillStamps = skillsProbe(o.skillDirs, o.skills)
+	o.skills, o.skillWarnings = skills.Discover(o.skillDirs)
+	o.skillPaths, o.skillStamps = skills.Probe(o.skillDirs, o.skills)
 }
 
 // refresh probes the AGENTS.md chain's and the skills roots' freshness and
@@ -208,7 +209,7 @@ func (o *systemOverlay) refresh() (agentsChanged, skillsChanged bool) {
 		o.chain = loadAgentsChain(o.root, o.cwd)
 		agentsChanged = true
 	}
-	if paths, stamps := skillsProbe(o.skillDirs, o.skills); !slices.Equal(paths, o.skillPaths) || !timesEqual(stamps, o.skillStamps) {
+	if paths, stamps := skills.Probe(o.skillDirs, o.skills); !slices.Equal(paths, o.skillPaths) || !timesEqual(stamps, o.skillStamps) {
 		o.reloadSkills()
 		skillsChanged = true
 	}
@@ -258,11 +259,11 @@ func (o *systemOverlay) skillCount() int {
 
 // warnings returns the invalid-skill warnings from the latest discovery.
 // skillList returns the discovered skills (nil-safe copy) for the /skills view.
-func (o *systemOverlay) skillList() []agentSkill {
+func (o *systemOverlay) skillList() []skills.Skill {
 	if o == nil {
 		return nil
 	}
-	return append([]agentSkill(nil), o.skills...)
+	return append([]skills.Skill(nil), o.skills...)
 }
 
 func (o *systemOverlay) warnings() []string {

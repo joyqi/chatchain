@@ -183,16 +183,16 @@ func rawTools(t *testing.T, y string) map[string]yaml.Node {
 }
 
 func TestBuildRegistry(t *testing.T) {
-	t.Run("absent key disables tool", func(t *testing.T) {
-		r := Build(rawTools(t, "other_tool:\n"), nil)
-		if len(r.Tools()) != 0 {
-			t.Fatalf("expected no tools, got %v", r.Tools())
+	t.Run("absent key disables set", func(t *testing.T) {
+		r := Build(Env{}, rawTools(t, "agent:\n"), nil)
+		if defs := r.Tools(); len(defs) != 1 || defs[0].Name != "load_skill" {
+			t.Fatalf("expected only the agent set (load_skill), got %v", defs)
 		}
 	})
 
 	t.Run("present empty enables with allow-all", func(t *testing.T) {
 		var warned []string
-		r := Build(rawTools(t, "run_command:\n"), func(f string, a ...any) {
+		r := Build(Env{}, rawTools(t, "command:\n"), func(f string, a ...any) {
 			warned = append(warned, f)
 		})
 		if len(r.Tools()) != 1 || r.Tools()[0].Name != "run_command" {
@@ -208,16 +208,16 @@ func TestBuildRegistry(t *testing.T) {
 	})
 
 	t.Run("populated list restricts", func(t *testing.T) {
-		r := Build(rawTools(t, "run_command:\n  - git\n  - ssh\n"), nil)
+		r := Build(Env{}, rawTools(t, "command:\n  - git\n  - ssh\n"), nil)
 		out, isErr, _ := r.CallTool(context.Background(), "run_command", map[string]any{"command": "rm -rf /"})
 		if !isErr || !strings.Contains(out, "not allowed") {
 			t.Fatalf("rm should be rejected, got (%q, %v)", out, isErr)
 		}
 	})
 
-	t.Run("unknown tool warns and is skipped", func(t *testing.T) {
+	t.Run("unknown set warns and is skipped", func(t *testing.T) {
 		var warned int
-		r := Build(rawTools(t, "bogus_tool:\n"), func(string, ...any) { warned++ })
+		r := Build(Env{}, rawTools(t, "bogus_set:\n"), func(string, ...any) { warned++ })
 		if len(r.Tools()) != 0 || warned != 1 {
 			t.Fatalf("expected skip+1 warning, got tools=%v warned=%d", r.Tools(), warned)
 		}
@@ -225,7 +225,7 @@ func TestBuildRegistry(t *testing.T) {
 }
 
 func TestMerge(t *testing.T) {
-	reg := Build(rawTools(t, "run_command:\n"), nil)
+	reg := Build(Env{}, rawTools(t, "command:\n"), nil)
 	merged := Merge(reg, nil)
 	if len(merged.Tools()) != 1 {
 		t.Fatalf("merge should expose run_command, got %v", merged.Tools())
