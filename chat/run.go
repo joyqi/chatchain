@@ -317,11 +317,19 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			stop := u.Busy("Fetching available models...")
 			models, ferr := p.ListModels(ctx)
 			stop()
+			manualModel := ferr != nil || len(models) == 0
 			if ferr != nil {
-				printErr("Error: %v", ferr)
-				continue
+				printErr("Fetching models failed: %v — enter a model name manually.", ferr)
 			}
-			modelValues, modelLabels, modelIdx := modelRows(p.Model(), models)
+			modelPanel := ui.Panel{Title: "Model", Kind: ui.PanelInput,
+				Text: p.Model(), Placeholder: "model name (e.g. gpt-4o)", InputWidth: 40}
+			var modelValues []string
+			if !manualModel {
+				var modelLabels []string
+				var modelIdx int
+				modelValues, modelLabels, modelIdx = modelRows(p.Model(), models)
+				modelPanel = ui.Panel{Title: "Model", Kind: ui.PanelList, Items: modelLabels, Cursor: modelIdx}
+			}
 			windows, windowLabels, windowIdx := contextWindowRows(budget.window)
 			tun, tunable := p.(provider.Tunable)
 			curEffort := ""
@@ -336,7 +344,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				maxTemp = 1.0
 			}
 			r, serr := u.Tabbed(ctx, ui.TabbedSpec{Panels: []ui.Panel{
-				{Title: "Model", Kind: ui.PanelList, Items: modelLabels, Cursor: modelIdx},
+				modelPanel,
 				{Title: "Context", Kind: ui.PanelList, Items: windowLabels, Cursor: windowIdx},
 				{Title: "Effort", Kind: ui.PanelList, Items: levelLabels, Cursor: levelIdx},
 				{Title: "Temperature", Kind: ui.PanelSlider, Min: 0, Max: maxTemp, Step: 0.1, Value: curTemp},
@@ -345,7 +353,13 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				continue
 			}
 			changed := false
-			if v := modelValues[r.Panels[0].Cursor]; v != "" && v != p.Model() {
+			chosenModel := ""
+			if manualModel {
+				chosenModel = strings.TrimSpace(r.Panels[0].Text)
+			} else {
+				chosenModel = modelValues[r.Panels[0].Cursor]
+			}
+			if v := chosenModel; v != "" && v != p.Model() {
 				p.SetModel(v)
 				sw.SetModel(v)
 				printDim("Model switched to %s", v)
@@ -636,21 +650,35 @@ func ensureModel(ctx context.Context, u *ui.UI, p provider.Provider, sw *Session
 	stop := u.Busy("Fetching available models...")
 	models, err := p.ListModels(ctx)
 	stop()
-	if err != nil {
-		u.PrintLines(ErrorStyle.Sprintf("Error: %v", err))
+	var name string
+	switch {
+	case err != nil || len(models) == 0:
+		// Listing unavailable (no such API, or it errored): fall back to a
+		// manual model-name input.
+		if err != nil {
+			u.PrintLines(ErrorStyle.Sprintf("Fetching models failed: %v", err))
+		}
+		r, serr := u.Tabbed(ctx, ui.TabbedSpec{Panels: []ui.Panel{{
+			Title: "Model", Kind: ui.PanelInput,
+			Placeholder: "model name (e.g. gpt-4o)", InputWidth: 40,
+		}}})
+		if serr != nil || r.Cancelled {
+			return false
+		}
+		name = strings.TrimSpace(r.Panels[0].Text)
+	default:
+		r, serr := u.Select(ctx, ui.SelectSpec{Title: "Select a model", Items: models})
+		if serr != nil || r.Cancelled {
+			return false
+		}
+		name = models[r.Index]
+	}
+	if name == "" {
 		return false
 	}
-	if len(models) == 0 {
-		u.PrintLines(ErrorStyle.Sprint("No models available"))
-		return false
-	}
-	r, serr := u.Select(ctx, ui.SelectSpec{Title: "Select a model", Items: models})
-	if serr != nil || r.Cancelled {
-		return false
-	}
-	p.SetModel(models[r.Index])
-	sw.SetModel(models[r.Index])
-	u.PrintLines(DimStyle.Sprintf("Using model: %s", models[r.Index]))
+	p.SetModel(name)
+	sw.SetModel(name)
+	u.PrintLines(DimStyle.Sprintf("Using model: %s", name))
 	return true
 }
 

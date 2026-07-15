@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/progress"
+	"charm.land/bubbles/v2/textinput"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -21,6 +22,7 @@ const (
 	PanelList PanelKind = iota
 	PanelMulti
 	PanelSlider
+	PanelInput
 	PanelBrowser
 	PanelView
 )
@@ -49,6 +51,12 @@ type Panel struct {
 	// Browser starting directory ("" = working directory).
 	Dir string
 
+	// Input: a one-line text field with a subtle background; content beyond
+	// InputWidth scrolls horizontally. Text is the initial value.
+	Text        string
+	Placeholder string
+	InputWidth  int // visible columns (0 = 40), clamped to the terminal
+
 	// Refresh, with TabbedSpec.RefreshEvery, live-updates Items/Lines while
 	// the surface is open (background MCP connects, incoming requests).
 	Refresh func() []string
@@ -67,6 +75,7 @@ type PanelResult struct {
 	Checked []int    // Multi: checked indices (ascending)
 	Value   *float64 // Slider
 	Path    string   // Browser: chosen file ("" if none)
+	Text    string   // Input: the submitted text
 }
 
 // TabbedResult reports the whole surface at commit.
@@ -94,10 +103,11 @@ type panelState struct {
 	entries []browseEntry
 	chosen  string
 	errmsg  string
-	copied  bool // View: last "c" copied to clipboard
-	wrapped int  // View(Wrap): wrapped row count from the last render
-	hoff    int  // View(!Wrap): horizontal pan offset (h/l)
-	rows    int  // last visible row budget, for paging
+	copied  bool            // View: last "c" copied to clipboard
+	wrapped int             // View(Wrap): wrapped row count from the last render
+	hoff    int             // View(!Wrap): horizontal pan offset (h/l)
+	input   textinput.Model // Input
+	rows    int             // last visible row budget, for paging
 }
 
 // surfaceState drives an open Tabbed surface.
@@ -127,6 +137,19 @@ func newSurface(spec TabbedSpec, reply chan TabbedResult, gen int) *surfaceState
 			}
 		case PanelSlider:
 			st.value = p.Value
+		case PanelInput:
+			ti := textinput.New()
+			ti.Prompt = ""
+			ti.Placeholder = p.Placeholder
+			ti.SetVirtualCursor(false) // real terminal cursor: IME preedit anchors here
+			// No internal SGR: the row's subtle-background wrapper styles the
+			// whole box; lipgloss resets inside would punch holes in it.
+			ti.SetStyles(textinput.Styles{})
+			ti.SetValue(p.Text)
+			if i == 0 {
+				ti.Focus()
+			}
+			st.input = ti
 		case PanelView:
 			st.items = append([]string{}, p.Lines...)
 		case PanelBrowser:
@@ -182,7 +205,7 @@ func (s *surfaceState) result() TabbedResult {
 	r := TabbedResult{Focused: s.focus, Panels: make([]PanelResult, len(s.ps))}
 	for i := range s.ps {
 		st := &s.ps[i]
-		pr := PanelResult{Cursor: st.cursor, Value: st.value, Path: st.chosen}
+		pr := PanelResult{Cursor: st.cursor, Value: st.value, Path: st.chosen, Text: st.input.Value()}
 		for j := 0; j < len(st.items); j++ {
 			if st.checked[j] {
 				pr.Checked = append(pr.Checked, j)
@@ -191,6 +214,18 @@ func (s *surfaceState) result() TabbedResult {
 		r.Panels[i] = pr
 	}
 	return r
+}
+
+// setFocus moves the focused tab, keeping exactly the focused input panel's
+// field focused (focus drives both editing and the real-cursor position).
+func (s *surfaceState) setFocus(i int) {
+	if s.spec.Panels[s.focus].Kind == PanelInput {
+		s.ps[s.focus].input.Blur()
+	}
+	s.focus = i
+	if s.spec.Panels[s.focus].Kind == PanelInput {
+		s.ps[s.focus].input.Focus()
+	}
 }
 
 // sliderStep ports the v1 SliderPanel semantics: integer step indices (no
@@ -309,6 +344,31 @@ func (m *model) renderSurface(b *strings.Builder) {
 		bar.SetWidth(clampInt(w-13, 10, 40))
 		// Blank rows above and below give the lone bar row some breathing room.
 		b.WriteString("\n\n  " + val + "  " + bar.ViewAs(pct) + "\n")
+	case PanelInput:
+		boxW := p.InputWidth
+		if boxW <= 0 {
+			boxW = 40
+		}
+		boxW = clampInt(boxW, 4, maxInt(4, w-6))
+		st.input.SetWidth(boxW)
+		view := st.input.View()
+		pad := boxW - ansi.StringWidth(view)
+		if pad < 0 {
+			pad = 0
+		}
+		// Track where the field's cursor lands so View can place the REAL
+		// terminal cursor there (rows written so far + the blank row + this
+		// row; columns: 2 indent + 1 box padding).
+		if c := st.input.Cursor(); c != nil {
+			m.surfCur = c
+			m.surfCur.Y = strings.Count(b.String(), "\n") + 2
+			m.surfCur.X = 3 + c.X
+		}
+		// Blank rows above and below, like the slider. inputBox re-asserts
+		// the background after the field content (its edges stay styled even
+		// if a future style emits a reset inside).
+		b.WriteString("\n\n  " + inputBox + " " + view + inputBox +
+			strings.Repeat(" ", pad) + " " + sgrReset + "\n")
 	case PanelView:
 		lines := st.items
 		if p.Wrap {
@@ -377,6 +437,8 @@ func surfaceHint(p Panel, st *panelState) string {
 	switch p.Kind {
 	case PanelSlider:
 		return "←→ adjust · g default · G max · Enter confirm · q/Esc cancel"
+	case PanelInput:
+		return "←→ move · Enter confirm · Esc cancel"
 	case PanelView:
 		if st.copied {
 			return "✓ copied to clipboard"

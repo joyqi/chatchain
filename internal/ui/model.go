@@ -22,6 +22,7 @@ const (
 	cyan     = "\x1b[36m"
 	green    = "\x1b[32m"
 	revOn    = "\x1b[7m"
+	inputBox = "\x1b[7;2m" // input fields: a subtle (faint reverse) background
 	sgrReset = "\x1b[0m"
 )
 
@@ -65,6 +66,7 @@ type model struct {
 	region  regionMsg // staging window snapshot (tail + preview), see region.go
 	surf    *surfaceState
 	surfGen int
+	surfCur *tea.Cursor // real-cursor target inside the surface (input fields)
 
 	cancels []context.CancelFunc // interrupt scope stack (bottom = turn)
 
@@ -171,6 +173,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.PasteMsg:
 		if m.surf != nil {
+			if p := m.surf.spec.Panels[m.surf.focus]; p.Kind == PanelInput {
+				st := &m.surf.ps[m.surf.focus]
+				flat := strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(msg.Content)
+				st.input, _ = st.input.Update(tea.PasteMsg{Content: strings.TrimSpace(flat)})
+			}
 			return m, nil
 		}
 		content := strings.ReplaceAll(msg.Content, "\r\n", "\n")
@@ -478,6 +485,25 @@ func (m *model) surfaceKey(k tea.Key) {
 	p := s.spec.Panels[s.focus]
 	st := &s.ps[s.focus]
 
+	// Input panels own the keyboard: letters must type, not navigate. Only
+	// the surface-level chords stay routed (Tab/Enter/Esc/Ctrl+C); the rest —
+	// including textinput's emacs-style Ctrl bindings — feed the field.
+	if p.Kind == PanelInput {
+		switch {
+		case k.Mod == tea.ModCtrl && k.Code == 'c':
+			m.closeSurface(TabbedResult{Cancelled: true})
+		case k.Code == tea.KeyTab:
+			s.setFocus((s.focus + 1) % len(s.spec.Panels))
+		case k.Code == tea.KeyEscape:
+			m.closeSurface(TabbedResult{Cancelled: true})
+		case k.Code == tea.KeyEnter:
+			m.closeSurface(s.result())
+		default:
+			st.input, _ = st.input.Update(tea.KeyPressMsg(k))
+		}
+		return
+	}
+
 	if k.Mod == tea.ModCtrl {
 		// readline heritage: Ctrl+P/N mirror ↑↓, Ctrl+B/F mirror ←→ (paging).
 		switch k.Code {
@@ -496,7 +522,7 @@ func (m *model) surfaceKey(k tea.Key) {
 	}
 	switch k.Code {
 	case tea.KeyTab:
-		s.focus = (s.focus + 1) % len(s.spec.Panels)
+		s.setFocus((s.focus + 1) % len(s.spec.Panels))
 		return
 	case tea.KeyEscape:
 		m.closeSurface(TabbedResult{Cancelled: true})
@@ -654,10 +680,16 @@ func clampInt(v, lo, hi int) int {
 func (m *model) View() tea.View {
 	if m.oneShot {
 		var b strings.Builder
+		m.surfCur = nil
 		if m.surf != nil {
 			m.renderSurface(&b)
 		}
-		return tea.NewView(strings.TrimPrefix(b.String(), "\n"))
+		view := tea.NewView(strings.TrimPrefix(b.String(), "\n"))
+		if m.surfCur != nil {
+			m.surfCur.Y-- // the trimmed leading newline
+			view.Cursor = m.surfCur
+		}
+		return view
 	}
 
 	var b strings.Builder
@@ -718,6 +750,7 @@ func (m *model) View() tea.View {
 
 	b.WriteString("\n" + faint + strings.Repeat("─", w) + sgrReset)
 
+	m.surfCur = nil
 	switch {
 	case m.surf != nil:
 		// Interaction surface: replaces the status row; its vacated rows on
@@ -731,6 +764,9 @@ func (m *model) View() tea.View {
 
 	view := tea.NewView(b.String())
 	view.WindowTitle = m.title
+	if m.surfCur != nil {
+		view.Cursor = m.surfCur // an input field owns the real cursor
+	}
 	if m.surf == nil {
 		if c := m.ta.Cursor(); c != nil {
 			c.Y += rowsAbove

@@ -1043,3 +1043,93 @@ func TestChunkOverflowBelowScreenHeight(t *testing.T) {
 		t.Fatalf("h=1 chunking = %d chunks, want 3 (size 2)", len(c))
 	}
 }
+
+// typeInto sends each rune as a key press.
+func typeInto(t *testing.T, m *model, s string) *model {
+	t.Helper()
+	for _, r := range s {
+		m = step(t, m, tea.KeyPressMsg(tea.Key{Code: r, Text: string(r)}))
+	}
+	return m
+}
+
+// TestInputPanel pins the PanelInput contract: letters (including the q/g/j/k
+// navigation keys of other panels) TYPE into the field; the value survives a
+// Tab round-trip; Enter commits the text into PanelResult.Text; the rendered
+// row carries the subtle background and never exceeds the box width (content
+// beyond it scrolls horizontally); pastes are flattened to one line; the REAL
+// cursor is placed inside the field.
+func TestInputPanel(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan TabbedResult, 1)
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{Panels: []Panel{
+		{Title: "Model", Kind: PanelInput, Placeholder: "model name", InputWidth: 10},
+		{Title: "Other", Kind: PanelList, Items: []string{"a", "b"}},
+	}}, reply: reply})
+
+	// Letter keys type — q must not cancel, g/j/k must not navigate.
+	m = typeInto(t, m, "qgjk")
+	if m.surf == nil {
+		t.Fatal("q cancelled the surface while typing into an input")
+	}
+	if got := m.surf.ps[0].input.Value(); got != "qgjk" {
+		t.Fatalf("typed value = %q, want qgjk", got)
+	}
+
+	// The real cursor is inside the field (composer's cursor is suppressed).
+	if v := m.View(); v.Cursor == nil || v.Cursor.Y == 0 {
+		t.Fatalf("real cursor not placed in the input field: %+v", v.Cursor)
+	}
+
+	// Paste flattens to a single line.
+	m = step(t, m, tea.PasteMsg{Content: "-multi\nline"})
+	if got := m.surf.ps[0].input.Value(); got != "qgjk-multi line" {
+		t.Fatalf("paste value = %q", got)
+	}
+
+	// Tab away and back keeps the value; list keys navigate again meanwhile.
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+	if m.surf.ps[1].cursor != 1 {
+		t.Fatal("j did not navigate the list after tabbing away from the input")
+	}
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	if got := m.surf.ps[0].input.Value(); got != "qgjk-multi line" {
+		t.Fatalf("value lost across tab round-trip: %q", got)
+	}
+
+	// Long content scrolls horizontally: the box row stays bounded.
+	m = typeInto(t, m, "-0123456789abcdef")
+	for _, l := range strings.Split(stripSGR(content(m)), "\n") {
+		if strings.Contains(l, "def") && textwidth.StringWidth(l) > 10+6 {
+			t.Fatalf("input row wider than the box: %q", l)
+		}
+	}
+	if !strings.Contains(content(m), inputBox) {
+		t.Fatal("input row lost its background styling")
+	}
+
+	// Enter commits ALL tabs; the text lands in PanelResult.Text.
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	r := <-reply
+	if r.Cancelled || r.Panels[0].Text != "qgjk-multi line-0123456789abcdef" {
+		t.Fatalf("commit result = %+v", r)
+	}
+	if r.Panels[1].Cursor != 1 {
+		t.Fatal("list tab state not committed alongside the input")
+	}
+}
+
+// TestInputPanelEscCancels: Esc (and Ctrl+C) still cancel while typing.
+func TestInputPanelEscCancels(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan TabbedResult, 1)
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{Panels: []Panel{
+		{Title: "Model", Kind: PanelInput},
+	}}, reply: reply})
+	m = typeInto(t, m, "abc")
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if r := <-reply; !r.Cancelled {
+		t.Fatal("Esc did not cancel the input surface")
+	}
+}
