@@ -10,6 +10,7 @@ import (
 
 	"chatchain/chat"
 	"chatchain/config"
+	"chatchain/internal/agents"
 	mcpmgr "chatchain/mcp"
 	"chatchain/provider"
 	"chatchain/tool"
@@ -134,7 +135,7 @@ var rootCmd = &cobra.Command{
 			if cwdErr != nil {
 				return fmt.Errorf("failed to resolve working directory: %w", cwdErr)
 			}
-			agentOpts = chat.AgentOptions{Enabled: true, Root: chat.ProjectRoot(cwd)}
+			agentOpts = chat.AgentOptions{Enabled: true, Root: agents.ProjectRoot(cwd)}
 		}
 
 		// The toolsets' host context. The project root anchors the agent set's
@@ -142,7 +143,7 @@ var rootCmd = &cobra.Command{
 		// entry works outside agent mode too.
 		toolEnv := tool.Env{ProjectRoot: agentOpts.Root}
 		if toolEnv.ProjectRoot == "" && cwdErr == nil {
-			toolEnv.ProjectRoot = chat.ProjectRoot(cwd)
+			toolEnv.ProjectRoot = agents.ProjectRoot(cwd)
 		}
 
 		// Non-interactive mode: connect MCP synchronously (the single request needs

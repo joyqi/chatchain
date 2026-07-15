@@ -1,4 +1,4 @@
-package chat
+package agents
 
 import (
 	"os"
@@ -136,16 +136,16 @@ func TestOverlayFreshness(t *testing.T) {
 	}
 
 	// nil skill dirs: the test never scans the developer's real home skills.
-	o := newSystemOverlayDirs(root, sub, nil)
-	if got := o.content(); got != "v1" {
+	o := newOverlayDirs(root, sub, nil)
+	if got := o.Content(); got != "v1" {
 		t.Fatalf("initial content = %q, want v1", got)
 	}
 
 	// Unchanged mtimes: no rebuild, same composed string.
-	if a, s := o.refresh(); a || s {
+	if a, s := o.Refresh(); a || s {
 		t.Error("refresh with unchanged mtime should report no change")
 	}
-	if got := o.content(); got != "v1" {
+	if got := o.Content(); got != "v1" {
 		t.Errorf("content after no-op refresh = %q, want v1", got)
 	}
 
@@ -156,19 +156,19 @@ func TestOverlayFreshness(t *testing.T) {
 	if err := os.Chtimes(rootFile, t0.Add(2*time.Second), t0.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if a, _ := o.refresh(); !a {
+	if a, _ := o.Refresh(); !a {
 		t.Fatal("refresh after mtime change should report a change")
 	}
-	if got := o.content(); got != "v2" {
+	if got := o.Content(); got != "v2" {
 		t.Errorf("content after reload = %q, want v2", got)
 	}
 
 	// File-set change (new AGENTS.md on the path): rebuilt.
 	writeAgents(t, sub, "SUB")
-	if a, _ := o.refresh(); !a {
+	if a, _ := o.Refresh(); !a {
 		t.Fatal("refresh after a new chain file should report a change")
 	}
-	if got, n := o.content(), o.fileCount(); got != "v2\n\nSUB" || n != 2 {
+	if got, n := o.Content(), o.FileCount(); got != "v2\n\nSUB" || n != 2 {
 		t.Errorf("content = %q fileCount = %d, want joined chain of 2 files", got, n)
 	}
 
@@ -176,10 +176,10 @@ func TestOverlayFreshness(t *testing.T) {
 	if err := os.Remove(filepath.Join(sub, agentsFileName)); err != nil {
 		t.Fatal(err)
 	}
-	if a, _ := o.refresh(); !a {
+	if a, _ := o.Refresh(); !a {
 		t.Fatal("refresh after a removed chain file should report a change")
 	}
-	if got, n := o.content(), o.fileCount(); got != "v2" || n != 1 {
+	if got, n := o.Content(), o.FileCount(); got != "v2" || n != 1 {
 		t.Errorf("content = %q fileCount = %d after removal", got, n)
 	}
 }
@@ -191,13 +191,13 @@ func TestComposeSendHistory(t *testing.T) {
 	}
 
 	// Empty overlay: the exact same slice, no copy (agent off = today's bytes).
-	out := composeSendHistory(history, "")
+	out := ComposeSendHistory(history, "")
 	if len(out) != len(history) || &out[0] != &history[0] {
 		t.Error("empty overlay should return the history slice itself")
 	}
 
 	// Overlay appends to the existing system message on a copy.
-	out = composeSendHistory(history, "OVERLAY")
+	out = ComposeSendHistory(history, "OVERLAY")
 	if out[0].Content != "sys\n\nOVERLAY" {
 		t.Errorf("send system = %q, want overlay appended", out[0].Content)
 	}
@@ -210,7 +210,7 @@ func TestComposeSendHistory(t *testing.T) {
 
 	// No user system prompt: a synthetic system message is inserted.
 	noSys := []provider.Message{{Role: "user", Content: "hi"}}
-	out = composeSendHistory(noSys, "OVERLAY")
+	out = ComposeSendHistory(noSys, "OVERLAY")
 	if len(out) != 2 || out[0].Role != "system" || out[0].Content != "OVERLAY" {
 		t.Errorf("synthetic system message missing: %+v", out)
 	}
@@ -225,7 +225,7 @@ func TestComposeSendHistory(t *testing.T) {
 func TestCleanHistoryAfterTurn(t *testing.T) {
 	history := []provider.Message{{Role: "system", Content: "sys"}}
 	history = append(history, provider.Message{Role: "user", Content: "question"})
-	send := composeSendHistory(history, "OVERLAY")
+	send := ComposeSendHistory(history, "OVERLAY")
 	_ = send // the provider would receive this copy
 	history = append(history, provider.Message{Role: "assistant", Content: "answer"})
 

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"chatchain/internal/agents"
 	mcpmgr "chatchain/mcp"
 	"chatchain/provider"
 	"chatchain/tool"
@@ -36,9 +37,9 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 		if cerr != nil || cwd == "" {
 			cwd = agent.Root
 		}
-		ov := newSystemOverlay(agent.Root, cwd)
-		ov.refresh()
-		sendOverlay = ov.content()
+		ov := agents.NewOverlay(agent.Root, cwd)
+		ov.Refresh()
+		sendOverlay = ov.Content()
 	}
 
 	tp, isToolProvider := p.(provider.ToolProvider)
@@ -56,7 +57,7 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 		return nil
 	}
 
-	reply, err := p.Chat(ctx, composeSendHistory(messages, sendOverlay))
+	reply, err := p.Chat(ctx, agents.ComposeSendHistory(messages, sendOverlay))
 	if err != nil {
 		return err
 	}
@@ -148,7 +149,7 @@ var errToolRoundsExceeded = fmt.Errorf("tool loop exceeded %d rounds without a f
 // trips. The interactive twin with rendering and interrupts is toolLoop.
 //
 // overlay is the turn's agent-mode system overlay: each round sends a
-// send-time copy of *history with it applied (see composeSendHistory), while
+// send-time copy of *history with it applied (see agents.ComposeSendHistory), while
 // the appended assistant/tool messages land in the clean *history. Empty
 // means none — every round then sends *history itself, exactly as before.
 func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string) (string, string, error) {
@@ -157,7 +158,7 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 			return "", "", errToolRoundsExceeded
 		}
 		content, reasoning, toolCalls, err := tp.StreamChatWithTools(ctx,
-			composeSendHistory(*history, overlay), tools, io.Discard, nopWriteCloser{io.Discard})
+			agents.ComposeSendHistory(*history, overlay), tools, io.Discard, nopWriteCloser{io.Discard})
 		if err != nil {
 			return "", "", err
 		}

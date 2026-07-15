@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"chatchain/internal/agents"
 	"chatchain/internal/markdown"
 	"chatchain/internal/ui"
 	mcpmgr "chatchain/mcp"
@@ -29,13 +30,13 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 	// Program it would race the event loop's stdin ownership).
 	detectCodeTheme()
 
-	var overlay *systemOverlay
+	var overlay *agents.Overlay
 	if agent.Enabled {
 		cwd, cerr := os.Getwd()
 		if cerr != nil || cwd == "" {
 			cwd = agent.Root
 		}
-		overlay = newSystemOverlay(agent.Root, cwd)
+		overlay = agents.NewOverlay(agent.Root, cwd)
 	}
 	setAgentCommands(agent.Enabled)
 	sessionScope := ""
@@ -65,13 +66,13 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 	if id := sw.ID(); id != "" {
 		DimStyle.Printf("Session: %s\n", id)
 	}
-	if n := overlay.fileCount(); n > 0 {
-		DimStyle.Printf("Agent mode: AGENTS.md loaded (%d files, %.1f KB)\n", n, float64(overlay.chainSize())/1024)
+	if n := overlay.FileCount(); n > 0 {
+		DimStyle.Printf("Agent mode: AGENTS.md loaded (%d files, %.1f KB)\n", n, float64(overlay.ChainSize())/1024)
 	}
-	if n := overlay.skillCount(); n > 0 {
+	if n := overlay.SkillCount(); n > 0 {
 		DimStyle.Printf("Agent mode: %d skill(s) available\n", n)
 	}
-	for _, warn := range overlay.warnings() {
+	for _, warn := range overlay.Warnings() {
 		DimStyle.Printf("⚠ %s\n", warn)
 	}
 	if len(importedHistory) > 0 {
@@ -553,8 +554,8 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			continue
 		}
 		if overlay != nil && (input == "/skills" || strings.HasPrefix(input, "/skills ")) {
-			overlay.refresh()
-			_ = u.View(ctx, ui.ViewSpec{Title: "Skills", Lines: skillsStatusLines(overlay.skillList(), overlay.warnings(), agent.Root)})
+			overlay.Refresh()
+			_ = u.View(ctx, ui.ViewSpec{Title: "Skills", Lines: skillsStatusLines(overlay.Skills(), overlay.Warnings(), agent.Root)})
 			continue
 		}
 		if input == "/status" || strings.HasPrefix(input, "/status ") {
@@ -574,17 +575,17 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			continue
 		}
 
-		agentsChanged, skillsChanged := overlay.refresh()
+		agentsChanged, skillsChanged := overlay.Refresh()
 		if agentsChanged {
-			printDim("AGENTS.md reloaded (%d files)", overlay.fileCount())
+			printDim("AGENTS.md reloaded (%d files)", overlay.FileCount())
 		}
 		if skillsChanged {
-			printDim("Skills reloaded (%d skill(s))", overlay.skillCount())
-			for _, warn := range overlay.warnings() {
+			printDim("Skills reloaded (%d skill(s))", overlay.SkillCount())
+			for _, warn := range overlay.Warnings() {
 				printDim("⚠ %s", warn)
 			}
 		}
-		sendOverlay := overlay.content()
+		sendOverlay := overlay.Content()
 
 		extra := budget.counter.count(input)
 		for _, att := range pendingAttachments {
@@ -617,7 +618,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				reply, thinking, err = toolLoop(turnCtx, u, sink, tp, dispatch, &history, tools, sendOverlay)
 			} else {
 				reply, thinking, err = streamTurn(turnCtx, u, sink, func(w io.Writer, r io.WriteCloser) (string, string, error) {
-					return p.StreamChat(turnCtx, composeSendHistory(history, sendOverlay), w, r)
+					return p.StreamChat(turnCtx, agents.ComposeSendHistory(history, sendOverlay), w, r)
 				})
 			}
 			return err
@@ -841,7 +842,7 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.Too
 		if rounds == maxToolRounds {
 			return "", "", errToolRoundsExceeded
 		}
-		content, reasoning, toolCalls, err := streamToolRound(ctx, u, sink, tp, composeSendHistory(*history, overlay), tools)
+		content, reasoning, toolCalls, err := streamToolRound(ctx, u, sink, tp, agents.ComposeSendHistory(*history, overlay), tools)
 		if err != nil {
 			return content, reasoning, err
 		}

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"chatchain/internal/skills"
+	"chatchain/internal/agents"
 	"chatchain/provider"
 
 	"gopkg.in/yaml.v3"
@@ -92,39 +92,39 @@ func (l *loadSkill) Call(_ context.Context, args map[string]any) (string, bool, 
 
 // resolve re-discovers skills (discovery is a few readdirs — cheap, and always
 // consistent with the catalog the model just saw) and finds name.
-func (l *loadSkill) resolve(name string) (skills.Skill, string) {
+func (l *loadSkill) resolve(name string) (agents.Skill, string) {
 	root := l.root
 	if root == "" {
 		if cwd, err := os.Getwd(); err == nil {
 			root = cwd
 		}
 	}
-	sks, _ := skills.Discover(skills.Roots(root))
+	sks, _ := agents.DiscoverSkills(agents.SkillRoots(root))
 	for _, sk := range sks {
 		if sk.Name == name {
 			return sk, ""
 		}
 	}
 	if len(sks) == 0 {
-		return skills.Skill{}, fmt.Sprintf("unknown skill %q: no skills are installed", name)
+		return agents.Skill{}, fmt.Sprintf("unknown skill %q: no skills are installed", name)
 	}
 	names := make([]string, 0, len(sks))
 	for _, sk := range sks {
 		names = append(names, sk.Name)
 	}
 	sort.Strings(names)
-	return skills.Skill{}, fmt.Sprintf("unknown skill %q; available skills: %s", name, strings.Join(names, ", "))
+	return agents.Skill{}, fmt.Sprintf("unknown skill %q; available skills: %s", name, strings.Join(names, ", "))
 }
 
 // serveInstructions returns the skill's SKILL.md body prefixed with a header
 // naming the skill and its directory — the model needs the directory to run
 // bundled scripts through run_command and to name files for "file" reads.
-func (l *loadSkill) serveInstructions(sk skills.Skill, args map[string]any) (string, bool, error) {
+func (l *loadSkill) serveInstructions(sk agents.Skill, args map[string]any) (string, bool, error) {
 	data, errText := readCapped(sk.Path)
 	if errText != "" {
 		return errText, true, nil
 	}
-	body, err := skills.Body(data)
+	body, err := agents.SkillBody(data)
 	if err != nil {
 		// Discovery validated the frontmatter; reaching this means the file
 		// changed since. Surface it rather than serving half a manifest.
@@ -141,7 +141,7 @@ func (l *loadSkill) serveInstructions(sk skills.Skill, args map[string]any) (str
 // jailed to that directory: absolute paths and ".." escapes are rejected.
 // (Symlinks pointing outside are accepted until the P2 workspace-trust pass —
 // still strictly tighter than the machine-wide read_file this replaced.)
-func (l *loadSkill) serveFile(sk skills.Skill, file string, args map[string]any) (string, bool, error) {
+func (l *loadSkill) serveFile(sk agents.Skill, file string, args map[string]any) (string, bool, error) {
 	clean := filepath.Clean(filepath.FromSlash(file))
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return fmt.Sprintf("file must be a relative path inside the skill's directory, got %q", file), true, nil

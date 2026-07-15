@@ -1,4 +1,10 @@
-package chat
+// Package agents implements the agent-mode workspace context
+// (docs/design/agent-mode.md): AGENTS.md files and the Agent Skills catalog
+// form a volatile system-prompt overlay, composed at send time and never
+// stored in history. The chat layer drives the Overlay and renders its
+// notices; the agent toolset's load_skill resolves skill names back to their
+// files through the same skill discovery (skills.go).
+package agents
 
 import (
 	"io"
@@ -9,22 +15,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"chatchain/internal/skills"
 	"chatchain/provider"
 )
-
-// Agent mode (docs/design/agent-mode.md): AGENTS.md files and the skills
-// catalog form a volatile system-prompt overlay. The chain is discovered from
-// the project root down to the working directory, joined with the catalog of
-// discovered skills (skills.go), appended to the outgoing system message at
-// send time, and never stored in the in-memory or persisted history.
-
-// AgentOptions configures agent mode for Run. The zero value keeps agent mode
-// off, and Run behaves exactly as it does without the feature.
-type AgentOptions struct {
-	Enabled bool
-	Root    string // project root: the git root of the cwd, or the cwd itself
-}
 
 // agentsFileName is the exact file name looked up in each directory on the
 // root→cwd path (per the Codex reference semantics, https://agents.md/).
@@ -158,34 +150,34 @@ func truncateAtRune(s string, max int) string {
 	return s[:cut]
 }
 
-// systemOverlay manages the volatile overlay for one chat session: it caches
-// the assembled AGENTS.md chain and the discovered skills, re-reading either
-// only when its freshness probe shows the file set or newest mtime changed, so
+// Overlay manages the volatile overlay for one chat session: it caches the
+// assembled AGENTS.md chain and the discovered skills, re-reading either only
+// when its freshness probe shows the file set or newest mtime changed, so
 // unchanged turns reuse the byte-identical composition (keeping provider
 // prompt caches warm). Nil-safe: a nil overlay (agent mode off) is inert.
-type systemOverlay struct {
+type Overlay struct {
 	root, cwd string
 	chain     agentsChain
 
 	// Skills state. skillDirs is fixed at construction (precedence high→low);
 	// skillPaths/skillStamps mirror agentsChain's Files/Stamps for the per-turn
-	// freshness check (statSkillsRoots).
+	// freshness check.
 	skillDirs     []string
-	skills        []skills.Skill
+	skills        []Skill
 	skillWarnings []string
 	skillPaths    []string
 	skillStamps   []time.Time
 }
 
-// newSystemOverlay assembles the initial overlay for root/cwd.
-func newSystemOverlay(root, cwd string) *systemOverlay {
-	return newSystemOverlayDirs(root, cwd, skills.Roots(root))
+// NewOverlay assembles the initial overlay for root/cwd.
+func NewOverlay(root, cwd string) *Overlay {
+	return newOverlayDirs(root, cwd, SkillRoots(root))
 }
 
-// newSystemOverlayDirs is newSystemOverlay with explicit skill discovery
-// directories, so tests inject temp dirs and never scan the real home.
-func newSystemOverlayDirs(root, cwd string, skillDirs []string) *systemOverlay {
-	o := &systemOverlay{root: root, cwd: cwd, skillDirs: skillDirs, chain: loadAgentsChain(root, cwd)}
+// newOverlayDirs is NewOverlay with explicit skill discovery directories, so
+// tests inject temp dirs and never scan the real home.
+func newOverlayDirs(root, cwd string, skillDirs []string) *Overlay {
+	o := &Overlay{root: root, cwd: cwd, skillDirs: skillDirs, chain: loadAgentsChain(root, cwd)}
 	o.reloadSkills()
 	return o
 }
@@ -193,15 +185,15 @@ func newSystemOverlayDirs(root, cwd string, skillDirs []string) *systemOverlay {
 // reloadSkills re-runs skill discovery and records the freshness probe taken
 // over the result (the probe covers the discovered SKILL.md files, so it must
 // be taken after discovery).
-func (o *systemOverlay) reloadSkills() {
-	o.skills, o.skillWarnings = skills.Discover(o.skillDirs)
-	o.skillPaths, o.skillStamps = skills.Probe(o.skillDirs, o.skills)
+func (o *Overlay) reloadSkills() {
+	o.skills, o.skillWarnings = DiscoverSkills(o.skillDirs)
+	o.skillPaths, o.skillStamps = probeSkills(o.skillDirs, o.skills)
 }
 
-// refresh probes the AGENTS.md chain's and the skills roots' freshness and
+// Refresh probes the AGENTS.md chain's and the skills roots' freshness and
 // rebuilds whichever changed. The two changes are reported separately so the
 // caller can print the matching reload notice.
-func (o *systemOverlay) refresh() (agentsChanged, skillsChanged bool) {
+func (o *Overlay) Refresh() (agentsChanged, skillsChanged bool) {
 	if o == nil {
 		return false, false
 	}
@@ -209,16 +201,16 @@ func (o *systemOverlay) refresh() (agentsChanged, skillsChanged bool) {
 		o.chain = loadAgentsChain(o.root, o.cwd)
 		agentsChanged = true
 	}
-	if paths, stamps := skills.Probe(o.skillDirs, o.skills); !slices.Equal(paths, o.skillPaths) || !timesEqual(stamps, o.skillStamps) {
+	if paths, stamps := probeSkills(o.skillDirs, o.skills); !slices.Equal(paths, o.skillPaths) || !timesEqual(stamps, o.skillStamps) {
 		o.reloadSkills()
 		skillsChanged = true
 	}
 	return agentsChanged, skillsChanged
 }
 
-// content returns the current overlay text — the AGENTS.md chain joined with
+// Content returns the current overlay text — the AGENTS.md chain joined with
 // the skills catalog — or "" when agent mode is off and neither exists.
-func (o *systemOverlay) content() string {
+func (o *Overlay) Content() string {
 	if o == nil {
 		return ""
 	}
@@ -232,54 +224,54 @@ func (o *systemOverlay) content() string {
 	return o.chain.Content + "\n\n" + catalog
 }
 
-// fileCount returns how many AGENTS.md files feed the overlay.
-func (o *systemOverlay) fileCount() int {
+// FileCount returns how many AGENTS.md files feed the overlay.
+func (o *Overlay) FileCount() int {
 	if o == nil {
 		return 0
 	}
 	return len(o.chain.Files)
 }
 
-// chainSize returns the byte size of the assembled AGENTS.md chain alone (for
-// the startup banner; content() may additionally carry the skills catalog).
-func (o *systemOverlay) chainSize() int {
+// ChainSize returns the byte size of the assembled AGENTS.md chain alone (for
+// the startup banner; Content may additionally carry the skills catalog).
+func (o *Overlay) ChainSize() int {
 	if o == nil {
 		return 0
 	}
 	return len(o.chain.Content)
 }
 
-// skillCount returns how many skills the catalog advertises.
-func (o *systemOverlay) skillCount() int {
+// SkillCount returns how many skills the catalog advertises.
+func (o *Overlay) SkillCount() int {
 	if o == nil {
 		return 0
 	}
 	return len(o.skills)
 }
 
-// warnings returns the invalid-skill warnings from the latest discovery.
-// skillList returns the discovered skills (nil-safe copy) for the /skills view.
-func (o *systemOverlay) skillList() []skills.Skill {
+// Skills returns the discovered skills (nil-safe copy) for the /skills view.
+func (o *Overlay) Skills() []Skill {
 	if o == nil {
 		return nil
 	}
-	return append([]skills.Skill(nil), o.skills...)
+	return append([]Skill(nil), o.skills...)
 }
 
-func (o *systemOverlay) warnings() []string {
+// Warnings returns the invalid-skill warnings from the latest discovery.
+func (o *Overlay) Warnings() []string {
 	if o == nil {
 		return nil
 	}
 	return o.skillWarnings
 }
 
-// composeSendHistory returns the messages to send for one turn: history itself
+// ComposeSendHistory returns the messages to send for one turn: history itself
 // when the overlay is empty (agent mode off keeps the exact same slice),
 // otherwise a shallow copy whose system message has the overlay appended — or
 // a synthetic system message prepended when the user has none. history is
 // never mutated, so persistence, compaction, and /export keep seeing the
 // clean conversation.
-func composeSendHistory(history []provider.Message, overlay string) []provider.Message {
+func ComposeSendHistory(history []provider.Message, overlay string) []provider.Message {
 	if overlay == "" {
 		return history
 	}
@@ -292,13 +284,4 @@ func composeSendHistory(history []provider.Message, overlay string) []provider.M
 	out := make([]provider.Message, 0, len(history)+1)
 	out = append(out, provider.Message{Role: "system", Content: overlay})
 	return append(out, history...)
-}
-
-// agentCommandHint appends /skills to the startup command line only when
-// agent mode is on (the command exists but answers with a notice otherwise).
-func agentCommandHint(o *systemOverlay) string {
-	if o == nil {
-		return ""
-	}
-	return ", /skills"
 }
