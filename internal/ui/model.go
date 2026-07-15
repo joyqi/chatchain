@@ -47,10 +47,11 @@ type busyState struct {
 // model is the tea.Model behind the facade. All state mutation happens inside
 // Update (single-threaded); the facade reaches in only via messages.
 type model struct {
-	ta     textarea.Model
-	width  int
-	height int
-	widthO *atomic.Int64 // shared with UI for facade-side wrapping
+	ta      textarea.Model
+	width   int
+	height  int
+	widthO  *atomic.Int64 // shared with UI for facade-side wrapping
+	heightO *atomic.Int64 // shared with UI: region chunks scrollback inserts below screen height
 
 	status StatusData
 	title  string
@@ -91,7 +92,7 @@ type model struct {
 	oneShot bool
 }
 
-func newModel(widthO *atomic.Int64) *model {
+func newModel(widthO, heightO *atomic.Int64) *model {
 	ta := textarea.New()
 	ta.SetVirtualCursor(false) // REAL terminal cursor: IME preedit anchors here
 	ta.ShowLineNumbers = false
@@ -110,7 +111,7 @@ func newModel(widthO *atomic.Int64) *model {
 	})
 	ta.SetWidth(80)
 	ta.Focus()
-	return &model{ta: ta, width: 80, widthO: widthO}
+	return &model{ta: ta, width: 80, widthO: widthO, heightO: heightO}
 }
 
 func (m *model) Init() tea.Cmd {
@@ -131,6 +132,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ta.SetWidth(msg.Width)
 		if m.widthO != nil {
 			m.widthO.Store(int64(msg.Width))
+		}
+		if m.heightO != nil && msg.Height > 0 {
+			m.heightO.Store(int64(msg.Height))
 		}
 		if widthChanged && m.flushTail != nil {
 			// A width change reflows the screen and the renderer's relative

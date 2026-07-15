@@ -82,6 +82,7 @@ type UI struct {
 	done   chan struct{}
 	err    error // Program.Run result; read after done closes
 	width  atomic.Int64
+	height atomic.Int64
 	region region // the output staging window (see region.go)
 }
 
@@ -91,7 +92,8 @@ func New() *UI {
 	u := &UI{done: make(chan struct{})}
 	u.region.u = u
 	u.width.Store(80)
-	m := newModel(&u.width)
+	u.height.Store(24)
+	m := newModel(&u.width, &u.height)
 	m.flushTail = u.region.flushTail
 	u.p = tea.NewProgram(m)
 	go func() {
@@ -260,7 +262,7 @@ func (u *UI) View(ctx context.Context, spec ViewSpec) error {
 // cancels, and releases the terminal. Pre-REPL interactions (--resume
 // session picker) use it; in-REPL surfaces go through UI.Tabbed.
 func RunSurface(spec TabbedSpec) (TabbedResult, error) {
-	m := newModel(nil)
+	m := newModel(nil, nil)
 	m.oneShot = true
 	reply := make(chan TabbedResult, 1)
 	m.surf = newSurface(spec, reply, 1)

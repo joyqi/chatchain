@@ -24,7 +24,7 @@ func step(t *testing.T, m *model, msg tea.Msg) *model {
 func newTestModel(t *testing.T) *model {
 	t.Helper()
 	var w atomic.Int64
-	m := newModel(&w)
+	m := newModel(&w, nil)
 	return step(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
 }
 
@@ -791,7 +791,7 @@ func TestResizeFlushesStagingTail(t *testing.T) {
 	r.openPreview("rendering…")
 
 	var w atomic.Int64
-	m := newModel(&w)
+	m := newModel(&w, nil)
 	m.flushTail = r.flushTail
 	m = step(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
 
@@ -1005,5 +1005,41 @@ func TestStatusLineFieldHues(t *testing.T) {
 	m = step(t, m, statusMsg(StatusData{}))
 	if !strings.Contains(stripSGR(m.statusLine()), "—") {
 		t.Fatalf("missing em-dash placeholder:\n%q", m.statusLine())
+	}
+}
+
+// TestChunkOverflowBelowScreenHeight pins the insertAbove safety contract: a
+// scrollback insert taller than the screen desyncs the renderer's frame anchor
+// (InsertLine is clamped to the screen height while the scroll is not), so the
+// region must never Println a block of ≥ screen-height lines. Repro'd via a
+// large /session resume echo eating the composer separators and status line.
+func TestChunkOverflowBelowScreenHeight(t *testing.T) {
+	lines := make([]string, 100)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("l%d", i)
+	}
+	chunks := chunkOverflow(lines, 30)
+	total := 0
+	for _, c := range chunks {
+		if len(c) > 15 { // h/2
+			t.Fatalf("chunk of %d lines exceeds half the screen height", len(c))
+		}
+		total += len(c)
+	}
+	if total != 100 {
+		t.Fatalf("chunking lost lines: %d/100", total)
+	}
+	if got := chunks[0][0]; got != "l0" {
+		t.Fatalf("order broken: first line %q", got)
+	}
+	if got := chunks[len(chunks)-1][len(chunks[len(chunks)-1])-1]; got != "l99" {
+		t.Fatalf("order broken: last line %q", got)
+	}
+	if chunkOverflow(nil, 30) != nil {
+		t.Fatal("empty overflow must produce no chunks")
+	}
+	// Tiny terminals still make progress.
+	if c := chunkOverflow(lines[:5], 1); len(c) != 3 {
+		t.Fatalf("h=1 chunking = %d chunks, want 3 (size 2)", len(c))
 	}
 }

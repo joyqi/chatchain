@@ -72,15 +72,53 @@ func (r *region) snapshotLocked() regionMsg {
 
 // publishLocked emits the overflow and the fresh snapshot. Println+Send stay
 // under the caller's lock so interleaved writers cannot reorder history.
+//
+// The overflow is CHUNKED below the screen height: the renderer's insertAbove
+// scrolls the screen by the block's row count and compensates with
+// InsertLine(n), which the terminal clamps to the screen height — a single
+// insert taller than the screen permanently desyncs the frame anchor (the
+// composer separators and status line get eaten). Seen in the wild with a big
+// /session resume echo. Half the screen per Println keeps headroom for the
+// occasional line that still wraps.
 func (r *region) publishLocked(over []string) {
 	if r.emit != nil {
 		r.emit(over, r.snapshotLocked())
 		return
 	}
-	if len(over) > 0 {
-		r.u.p.Println(joinOverflow(over))
+	for _, chunk := range chunkOverflow(over, r.screenHeight()) {
+		r.u.p.Println(joinOverflow(chunk))
 	}
 	r.u.p.Send(r.snapshotLocked())
+}
+
+func (r *region) screenHeight() int {
+	if r.u == nil {
+		return 24
+	}
+	if h := int(r.u.height.Load()); h > 0 {
+		return h
+	}
+	return 24
+}
+
+// chunkOverflow splits lines into batches of at most max(2, h/2) lines.
+func chunkOverflow(over []string, h int) [][]string {
+	if len(over) == 0 {
+		return nil
+	}
+	size := h / 2
+	if size < 2 {
+		size = 2
+	}
+	var chunks [][]string
+	for start := 0; start < len(over); start += size {
+		end := start + size
+		if end > len(over) {
+			end = len(over)
+		}
+		chunks = append(chunks, over[start:end])
+	}
+	return chunks
 }
 
 // joinOverflow joins overflow lines for one Println. bubbletea's insertAbove
