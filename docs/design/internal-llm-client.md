@@ -1,7 +1,7 @@
 # internal/llm — minimal provider API client (SDK replacement)
 
-Status: proposed (2026-07-16) · Research: 7-agent SDK/wire inventory + adversarial critic
-(brain: `internal-llm-client` once accepted)
+Status: SHIPPED (2026-07-16) — all four dialects live, SDKs removed; binary 81.5MB → 27.8MB
+Research: 7-agent SDK/wire inventory + adversarial critic · Brain: `internal-llm-client`
 
 ## Goal
 
@@ -26,8 +26,8 @@ internal/llm/
   chatcomp.go   — OpenAI chat-completions dialect (also every compatible server: deepseek, kimi…)
   responses.go  — OpenAI Responses dialect
   anthropic.go  — Anthropic messages dialect
-  google.go     — Gemini/Vertex generateContent dialect (both backends, one body shape)
-  googleauth.go — stdlib-only ADC token source for Vertex (see Auth)
+  google.go     — Gemini/Vertex generateContent dialect (both backends, express auth;
+                  see Auth — the planned googleauth.go turned out unnecessary)
 ```
 
 Dialect clients expose wire-shaped request/response structs (exact JSON tags) plus a streaming
@@ -90,14 +90,13 @@ Extracted from the SDK sources (versions: openai v3.43.0, anthropic v1.57.0, gen
   next round — sessions already persist this Content JSON.
 - Usage from `usageMetadata`.
 
-### Auth (Vertex) — the one real dependency question
-Stdlib-only ADC (~200 lines): read `$GOOGLE_APPLICATION_CREDENTIALS`, else
-`~/.config/gcloud/application_default_credentials.json`; `authorized_user` → refresh-token
-grant, `service_account` → RS256 JWT-bearer grant (crypto/rsa + x509), else GCE metadata
-server. Cache token, refresh early; scope `cloud-platform`; honor `quota_project_id` via
-`X-Goog-User-Project`. DROPPED: workload-identity federation, impersonation — `gcloud auth
-application-default login` is the documented path. This deletes the entire
-grpc/protobuf/s2a/opencensus tail.
+### Auth (Vertex) — resolved: no OAuth needed at all
+Implementation finding: cmd/root.go REQUIRES an API key for every provider, so the genai
+SDK's ADC/OAuth path was unreachable in chatchain — Vertex has only ever run in "express"
+mode (x-goog-api-key on aiplatform.googleapis.com). The port keeps exactly that; the
+planned ~200-line stdlib ADC token source was never needed. If ADC-based Vertex auth ever
+becomes a requirement, that plan (refresh-token + RS256 JWT-bearer grants, GCE metadata)
+is the shape to build. Dropping genai deleted the entire grpc/protobuf/s2a/opencensus tail.
 
 ## Cross-cutting contracts (from the critic — each is load-bearing)
 

@@ -466,9 +466,8 @@ chatchain/
 - [bubbles/v2](https://github.com/charmbracelet/bubbles) — UI components (textarea, progress)
 - [lipgloss/v2](https://github.com/charmbracelet/lipgloss) — Style and layout for terminal output (v1 still used by the markdown renderer)
 - [x/ansi](https://github.com/charmbracelet/x) — ANSI escape sequence handling
-- [openai-go](https://github.com/openai/openai-go) — OpenAI SDK
-- [anthropic-sdk-go](https://github.com/anthropics/anthropic-sdk-go) — Anthropic SDK
-- [go-genai](https://github.com/googleapis/go-genai) — Google Gemini SDK
+- Provider APIs are spoken directly by a minimal built-in wire client
+  (`internal/llm`) — no official SDKs (see docs/design/internal-llm-client.md)
 - [go-sdk (MCP)](https://github.com/modelcontextprotocol/go-sdk) — Model Context Protocol SDK
 
 ## License
