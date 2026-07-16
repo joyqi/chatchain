@@ -10,8 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
+	"chatchain/internal/llm"
 )
 
 // Compile-time check that AnthropicProvider implements ToolProvider.
@@ -19,52 +18,50 @@ var _ ToolProvider = (*AnthropicProvider)(nil)
 var _ UsageReporter = (*AnthropicProvider)(nil)
 var _ Tunable = (*AnthropicProvider)(nil)
 
+const anthropicDefaultBaseURL = "https://api.anthropic.com"
+
 type AnthropicProvider struct {
 	baseProvider
-	client *anthropic.Client
+	client llm.Anthropic
 }
 
 func NewAnthropic(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *AnthropicProvider {
-	opts := []option.RequestOption{
-		option.WithAPIKey(apiKey),
+	if baseURL == "" {
+		baseURL = anthropicDefaultBaseURL
 	}
-	if baseURL != "" {
-		opts = append(opts, option.WithBaseURL(baseURL))
-	}
-	if httpClient != nil {
-		opts = append(opts, option.WithHTTPClient(httpClient))
-	}
-
-	client := anthropic.NewClient(opts...)
+	c := llm.New(baseURL, httpClient)
+	c.Header.Set("x-api-key", apiKey)
+	c.Header.Set("anthropic-version", "2023-06-01")
 	return &AnthropicProvider{
 		baseProvider: baseProvider{providerType: "anthropic", model: model, temperature: temperature},
-		client:       &client,
+		client:       llm.Anthropic{Client: c},
 	}
 }
 
 func (p *AnthropicProvider) ListModels(ctx context.Context) ([]string, error) {
-	page, err := p.client.Models.List(ctx, anthropic.ModelListParams{})
+	models, err := p.client.Models(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list models: %w", err)
 	}
-	var models []string
-	for _, m := range page.Data {
-		models = append(models, m.ID)
-	}
-
-	sort.Strings(models)
 	return models, nil
 }
 
-func (p *AnthropicProvider) buildParams(messages []Message) (anthropic.MessageNewParams, []anthropic.MessageParam) {
-	var msgs []anthropic.MessageParam
-	var system []anthropic.TextBlockParam
+func (p *AnthropicProvider) buildRequest(messages []Message) *llm.AnthropicRequest {
+	req := &llm.AnthropicRequest{
+		Model:       p.model,
+		MaxTokens:   4096,
+		Temperature: p.temperature,
+	}
+	if p.effort != "" {
+		req.OutputConfig = &llm.AnthropicOutputConfig{Effort: p.effort}
+	}
+
 	// Buffer for coalescing consecutive tool result messages into one user message
-	var pendingToolResults []anthropic.ContentBlockParamUnion
+	var pendingToolResults []any
 
 	flushToolResults := func() {
 		if len(pendingToolResults) > 0 {
-			msgs = append(msgs, anthropic.NewUserMessage(pendingToolResults...))
+			req.Messages = append(req.Messages, llm.AnthropicMsg{Role: "user", Content: pendingToolResults})
 			pendingToolResults = nil
 		}
 	}
@@ -80,64 +77,66 @@ func (p *AnthropicProvider) buildParams(messages []Message) (anthropic.MessageNe
 		}
 		switch msg.Role {
 		case "system":
-			system = append(system, anthropic.TextBlockParam{Text: msg.Content})
+			req.System = append(req.System, llm.AnthropicTextBlock{Type: "text", Text: msg.Content})
 		case "user":
-			var blocks []anthropic.ContentBlockParamUnion
+			var blocks []any
 			for _, att := range msg.Attachments {
 				switch {
 				case strings.HasPrefix(att.MimeType, "image/"):
-					blocks = append(blocks, anthropic.NewImageBlockBase64(att.MimeType, base64.StdEncoding.EncodeToString(att.Data)))
+					blocks = append(blocks, llm.AnthropicImageBlock{Type: "image", Source: llm.AnthropicSource{
+						Type:      "base64",
+						MediaType: att.MimeType,
+						Data:      base64.StdEncoding.EncodeToString(att.Data),
+					}})
 				case att.MimeType == "application/pdf":
-					blocks = append(blocks, anthropic.NewDocumentBlock(anthropic.Base64PDFSourceParam{
-						Data: base64.StdEncoding.EncodeToString(att.Data),
-					}))
+					blocks = append(blocks, llm.AnthropicDocumentBlock{Type: "document", Source: llm.AnthropicSource{
+						Type:      "base64",
+						MediaType: "application/pdf",
+						Data:      base64.StdEncoding.EncodeToString(att.Data),
+					}})
 				default:
 					// Text files: inline as text block
-					blocks = append(blocks, anthropic.NewTextBlock("[File: "+att.Filename+"]\n"+string(att.Data)))
+					blocks = append(blocks, llm.AnthropicTextBlock{Type: "text", Text: "[File: " + att.Filename + "]\n" + string(att.Data)})
 				}
 			}
-			blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
+			blocks = append(blocks, llm.AnthropicTextBlock{Type: "text", Text: msg.Content})
 			// Tool results (if any) come first in the merged user message.
 			pendingToolResults = append(pendingToolResults, blocks...)
 			flushToolResults()
 		case "assistant":
 			if len(msg.ToolCalls) > 0 {
-				var blocks []anthropic.ContentBlockParamUnion
+				var blocks []any
 				if msg.Content != "" {
-					blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
+					blocks = append(blocks, llm.AnthropicTextBlock{Type: "text", Text: msg.Content})
 				}
 				for _, tc := range msg.ToolCalls {
-					blocks = append(blocks, anthropic.NewToolUseBlock(tc.ID, tc.Arguments, tc.Name))
+					input := tc.Arguments
+					if input == nil {
+						input = map[string]any{}
+					}
+					blocks = append(blocks, llm.AnthropicToolUseBlock{Type: "tool_use", ID: tc.ID, Input: input, Name: tc.Name})
 				}
-				msgs = append(msgs, anthropic.NewAssistantMessage(blocks...))
+				req.Messages = append(req.Messages, llm.AnthropicMsg{Role: "assistant", Content: blocks})
 			} else {
-				msgs = append(msgs, anthropic.NewAssistantMessage(anthropic.NewTextBlock(msg.Content)))
+				req.Messages = append(req.Messages, llm.AnthropicMsg{Role: "assistant", Content: []any{llm.AnthropicTextBlock{Type: "text", Text: msg.Content}}})
 			}
 		case "tool":
 			// Coalesce consecutive tool results into a single user message
-			pendingToolResults = append(pendingToolResults, anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, msg.IsError))
+			pendingToolResults = append(pendingToolResults, llm.AnthropicToolResultBlock{
+				Type:      "tool_result",
+				ToolUseID: msg.ToolCallID,
+				Content:   []llm.AnthropicTextBlock{{Type: "text", Text: msg.Content}},
+				IsError:   msg.IsError,
+			})
 		}
 	}
 	flushToolResults()
 
-	params := anthropic.MessageNewParams{
-		Model:     anthropic.Model(p.model),
-		MaxTokens: 4096,
-		Messages:  msgs,
-		System:    system,
-	}
-	if p.temperature != nil {
-		params.Temperature = anthropic.Float(*p.temperature)
-	}
-	if p.effort != "" {
-		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffort(p.effort)}
-	}
-	return params, msgs
+	return req
 }
 
 func (p *AnthropicProvider) Chat(ctx context.Context, messages []Message) (string, error) {
-	params, _ := p.buildParams(messages)
-	resp, err := p.client.Messages.New(ctx, params)
+	resp, err := p.client.Message(ctx, p.buildRequest(messages))
 	if err != nil {
 		return "", fmt.Errorf("chat error: %w", err)
 	}
@@ -160,31 +159,35 @@ func (p *AnthropicProvider) StreamChatWithTools(ctx context.Context, messages []
 }
 
 func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []Message, tools []ToolDef, w io.Writer, reasoningW io.WriteCloser) (string, string, []ToolCall, error) {
-	params, _ := p.buildParams(messages)
+	req := p.buildRequest(messages)
 
 	// Add tool definitions if provided
-	if len(tools) > 0 {
-		for _, t := range tools {
-			schema := anthropic.ToolInputSchemaParam{
-				Properties: t.InputSchema["properties"],
-			}
-			if req, ok := t.InputSchema["required"].([]any); ok {
-				for _, r := range req {
-					if s, ok := r.(string); ok {
-						schema.Required = append(schema.Required, s)
-					}
+	for _, t := range tools {
+		schema := llm.AnthropicToolSchema{
+			Type:       "object",
+			Properties: t.InputSchema["properties"],
+		}
+		if reqd, ok := t.InputSchema["required"].([]any); ok {
+			for _, r := range reqd {
+				if s, ok := r.(string); ok {
+					schema.Required = append(schema.Required, s)
 				}
 			}
-			toolParam := anthropic.ToolUnionParamOfTool(schema, t.Name)
-			toolParam.OfTool.Description = anthropic.String(t.Description)
-			params.Tools = append(params.Tools, toolParam)
 		}
+		req.Tools = append(req.Tools, llm.AnthropicTool{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: schema,
+		})
 	}
 
-	stream := p.client.Messages.NewStreaming(ctx, params)
 	p.lastUsageOK = false
+	stream, err := p.client.StreamMessage(ctx, req)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("stream error: %w", err)
+	}
+	defer stream.Close()
 
-	var full, thinkFull string
 	reasoningClosed := false
 	closeReasoning := func() {
 		if !reasoningClosed {
@@ -192,70 +195,107 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 			reasoningClosed = true
 		}
 	}
+	defer closeReasoning()
 
-	// Track tool use blocks during streaming
-	type toolUseAcc struct {
-		id       string
-		name     string
-		argsJSON strings.Builder
+	// Content blocks accumulate BY INDEX: content_block_delta events address
+	// blocks by `index` and can interleave across open blocks (parallel
+	// tool_use), so a single "current block" accumulator would mix fragments
+	// of different blocks. Assembly walks the indexes in order at the end.
+	type blockAcc struct {
+		kind    string          // "text" | "thinking" | "tool_use"
+		id      string          // tool_use
+		name    string          // tool_use
+		content strings.Builder // text/thinking deltas
+		args    strings.Builder // input_json deltas
 	}
-	var currentToolUse *toolUseAcc
-	var toolUseBlocks []toolUseAcc
-	var stopReason string
+	blocks := make(map[int]*blockAcc)
+	block := func(idx int, kind string) *blockAcc {
+		acc := blocks[idx]
+		if acc == nil {
+			acc = &blockAcc{kind: kind}
+			blocks[idx] = acc
+		}
+		return acc
+	}
+	assemble := func() (full, think string, toolCalls []ToolCall) {
+		idxs := make([]int, 0, len(blocks))
+		for i := range blocks {
+			idxs = append(idxs, i)
+		}
+		sort.Ints(idxs)
+		var text, thinking strings.Builder
+		for _, i := range idxs {
+			acc := blocks[i]
+			switch acc.kind {
+			case "text":
+				text.WriteString(acc.content.String())
+			case "thinking":
+				thinking.WriteString(acc.content.String())
+			case "tool_use":
+				args := map[string]any{}
+				if argsStr := acc.args.String(); argsStr != "" {
+					json.Unmarshal([]byte(argsStr), &args)
+				}
+				toolCalls = append(toolCalls, ToolCall{ID: acc.id, Name: acc.name, Arguments: args})
+			}
+		}
+		return text.String(), thinking.String(), toolCalls
+	}
 
-	for stream.Next() {
-		evt := stream.Current()
+	var stopReason string
+	for {
+		evt, cerr := stream.Next()
+		if cerr == io.EOF {
+			break
+		}
+		if cerr != nil {
+			full, think, _ := assemble()
+			return full, think, nil, fmt.Errorf("stream error: %w", cerr)
+		}
 		switch evt.Type {
 		case "message_start":
-			p.lastInput = int(evt.Message.Usage.InputTokens)
+			if evt.Message != nil {
+				p.lastInput = evt.Message.Usage.InputTokens
+			}
 		case "content_block_start":
-			if evt.ContentBlock.Type == "tool_use" {
-				currentToolUse = &toolUseAcc{
+			if evt.ContentBlock != nil {
+				blocks[evt.Index] = &blockAcc{
+					kind: evt.ContentBlock.Type,
 					id:   evt.ContentBlock.ID,
 					name: evt.ContentBlock.Name,
 				}
 			}
 		case "content_block_delta":
-			if evt.Delta.Type == "thinking_delta" {
+			if evt.Delta == nil {
+				continue
+			}
+			switch evt.Delta.Type {
+			case "thinking_delta":
 				fmt.Fprint(reasoningW, evt.Delta.Thinking)
-				thinkFull += evt.Delta.Thinking
-			} else if evt.Delta.Type == "text_delta" {
+				block(evt.Index, "thinking").content.WriteString(evt.Delta.Thinking)
+			case "text_delta":
 				closeReasoning()
 				fmt.Fprint(w, evt.Delta.Text)
-				full += evt.Delta.Text
-			} else if evt.Delta.Type == "input_json_delta" && currentToolUse != nil {
-				currentToolUse.argsJSON.WriteString(evt.Delta.PartialJSON)
-			}
-		case "content_block_stop":
-			if currentToolUse != nil {
-				toolUseBlocks = append(toolUseBlocks, *currentToolUse)
-				currentToolUse = nil
+				block(evt.Index, "text").content.WriteString(evt.Delta.Text)
+			case "input_json_delta":
+				block(evt.Index, "tool_use").args.WriteString(evt.Delta.PartialJSON)
 			}
 		case "message_delta":
-			stopReason = string(evt.Delta.StopReason)
-			p.lastOutput = int(evt.Usage.OutputTokens)
-			p.lastUsageOK = true
+			if evt.Delta != nil {
+				stopReason = evt.Delta.StopReason
+			}
+			if evt.Usage != nil {
+				p.lastOutput = evt.Usage.OutputTokens // cumulative
+				p.lastUsageOK = true
+			}
 		}
 	}
 	closeReasoning()
-	if err := stream.Err(); err != nil {
-		return full, thinkFull, nil, fmt.Errorf("stream error: %w", err)
-	}
 
-	// If model requested tool calls, parse and return them
-	if stopReason == "tool_use" && len(toolUseBlocks) > 0 {
-		var toolCalls []ToolCall
-		for _, tb := range toolUseBlocks {
-			args := map[string]any{}
-			if argsStr := tb.argsJSON.String(); argsStr != "" {
-				json.Unmarshal([]byte(argsStr), &args)
-			}
-			toolCalls = append(toolCalls, ToolCall{
-				ID:        tb.id,
-				Name:      tb.name,
-				Arguments: args,
-			})
-		}
+	full, thinkFull, toolCalls := assemble()
+
+	// If model requested tool calls, return them (assembled in index order)
+	if stopReason == "tool_use" && len(toolCalls) > 0 {
 		return full, thinkFull, toolCalls, nil
 	}
 
