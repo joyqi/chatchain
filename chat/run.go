@@ -842,10 +842,9 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w i
 // tool execution rendered through the ui frame (Busy labels instead of the
 // stderr spinner; per-tool cancel scopes instead of raw-mode watches).
 func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, approved map[string]bool) (string, string, error) {
-	for rounds := 0; ; rounds++ {
-		if rounds == maxToolRounds {
-			return "", "", errToolRoundsExceeded
-		}
+	// No round cap: the user is the brake (ESC cancels the turn; approval
+	// gates cover mutating tools) — industry parity with the major CLIs.
+	for {
 		content, reasoning, toolCalls, err := streamToolRound(ctx, u, sink, tp, agents.ComposeSendHistory(*history, overlay), tools)
 		if err != nil {
 			return content, reasoning, err

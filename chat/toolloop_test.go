@@ -12,11 +12,19 @@ import (
 
 // loopingToolProvider always requests another tool call, never producing a
 // final text response — the runaway case maxToolRounds guards against.
-type loopingToolProvider struct{ calls int }
+// loopingToolProvider keeps requesting tool calls; with stopAfter > 0 it
+// answers normally on round stopAfter+1 (an eventually-finishing agent).
+type loopingToolProvider struct {
+	calls     int
+	stopAfter int
+}
 
 func (p *loopingToolProvider) StreamChatWithTools(ctx context.Context, msgs []provider.Message, tools []provider.ToolDef, w io.Writer, reasoning io.WriteCloser) (string, string, []provider.ToolCall, error) {
 	reasoning.Close()
 	p.calls++
+	if p.stopAfter > 0 && p.calls > p.stopAfter {
+		return "done", "", nil, nil
+	}
 	return "", "", []provider.ToolCall{{ID: fmt.Sprintf("call-%d", p.calls), Name: "noop", Arguments: map[string]any{}}}, nil
 }
 
@@ -29,15 +37,17 @@ func (noopDispatcher) CallTool(ctx context.Context, name string, args map[string
 }
 
 func TestToolLoopCap(t *testing.T) {
+	// Opt-in limit (--max-turns): the loop stops after exactly N rounds.
+	const limit = 7
 	tp := &loopingToolProvider{}
 	history := []provider.Message{{Role: "user", Content: "go"}}
 
-	_, _, err := executeWithTools(context.Background(), tp, noopDispatcher{}, &history, noopDispatcher{}.Tools(), "")
+	_, _, err := executeWithTools(context.Background(), tp, noopDispatcher{}, &history, noopDispatcher{}.Tools(), "", limit)
 	if !errors.Is(err, errToolRoundsExceeded) {
 		t.Fatalf("err = %v, want errToolRoundsExceeded", err)
 	}
-	if tp.calls != maxToolRounds {
-		t.Errorf("model calls = %d, want exactly %d", tp.calls, maxToolRounds)
+	if tp.calls != limit {
+		t.Errorf("model calls = %d, want exactly %d", tp.calls, limit)
 	}
 	if isRetryable(err) {
 		t.Error("the loop-cap error must not be retried")
@@ -45,7 +55,7 @@ func TestToolLoopCap(t *testing.T) {
 
 	// History stays well-formed: the user message followed by complete
 	// assistant/tool round pairs — every tool call has its matching result.
-	if want := 1 + 2*maxToolRounds; len(history) != want {
+	if want := 1 + 2*limit; len(history) != want {
 		t.Fatalf("len(history) = %d, want %d", len(history), want)
 	}
 	if history[0].Role != "user" {
@@ -59,5 +69,20 @@ func TestToolLoopCap(t *testing.T) {
 		if r.Role != "tool" || r.ToolCallID != a.ToolCalls[0].ID || r.IsError {
 			t.Fatalf("history[%d] = %+v, want the matching successful tool result", i+1, r)
 		}
+	}
+}
+
+// TestToolLoopUnlimitedByDefault pins the no-default-cap contract: with
+// maxTurns 0 the loop runs past any historical cap and ends only when the
+// model stops calling tools.
+func TestToolLoopUnlimitedByDefault(t *testing.T) {
+	tp := &loopingToolProvider{stopAfter: 75}
+	history := []provider.Message{{Role: "user", Content: "go"}}
+	reply, _, err := executeWithTools(context.Background(), tp, noopDispatcher{}, &history, noopDispatcher{}.Tools(), "", 0)
+	if err != nil {
+		t.Fatalf("unlimited loop errored: %v", err)
+	}
+	if tp.calls != 76 || reply != "done" {
+		t.Fatalf("calls = %d reply = %q, want 76 rounds then the final answer", tp.calls, reply)
 	}
 }

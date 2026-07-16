@@ -34,6 +34,7 @@ var (
 	noSave            bool
 	contextWindowFlag string
 	agentFlag         bool
+	maxTurns          int
 )
 
 var rootCmd = &cobra.Command{
@@ -156,7 +157,7 @@ var rootCmd = &cobra.Command{
 				defer mgr.Close()
 			}
 			dispatch := buildDispatcher(pc, mgr, agentMode, toolEnv)
-			return chat.Once(context.Background(), p, chatMessage, systemPrompt, dispatch, agentOpts, os.Stdout)
+			return chat.Once(context.Background(), p, chatMessage, systemPrompt, dispatch, agentOpts, maxTurns, os.Stdout)
 		}
 
 		// Interactive: start connecting MCP servers NOW, in the background, so the
@@ -286,6 +287,7 @@ func init() {
 	rootCmd.Flags().StringVar(&resumeID, "resume", "", "Resume a saved session: --resume to pick interactively, or --resume=<id>")
 	rootCmd.Flags().Lookup("resume").NoOptDefVal = " " // allow bare --resume (interactive picker)
 	rootCmd.Flags().BoolVar(&noSave, "no-save", false, "Do not persist this session to disk (ephemeral)")
+	rootCmd.Flags().IntVar(&maxTurns, "max-turns", 0, "Limit agentic tool turns in non-interactive mode (-m only; 0 = unlimited)")
 	rootCmd.Flags().StringVar(&contextWindowFlag, "context-window", "", "Context window size for compaction accounting (e.g. 200k, 1m); default 128k")
 	rootCmd.Flags().BoolVar(&agentFlag, "agent", false, "Enable agent mode (AGENTS.md system-prompt overlay)")
 }

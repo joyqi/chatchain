@@ -72,6 +72,7 @@ chatchain <provider> -M <model> -m "<message>"
 | `-k, --key <key>` | API key (overrides env var) |
 | `-u, --url <url>` | Custom API base URL |
 | `-c, --config <path>` | Path to config file (default: `~/.chatchain.yaml`) |
+| `--max-turns <n>` | Limit agentic tool turns in non-interactive mode (default: unlimited) |
 
 ## Providers and Environment Variables
 

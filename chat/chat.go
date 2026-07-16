@@ -22,7 +22,7 @@ func FetchModels(ctx context.Context, p provider.Provider) ([]string, error) {
 	return p.ListModels(ctx)
 }
 
-func Once(ctx context.Context, p provider.Provider, message string, systemPrompt string, dispatch tool.Dispatcher, agent AgentOptions, w io.Writer) error {
+func Once(ctx context.Context, p provider.Provider, message string, systemPrompt string, dispatch tool.Dispatcher, agent AgentOptions, maxTurns int, w io.Writer) error {
 	var messages []provider.Message
 	if systemPrompt != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
@@ -50,7 +50,7 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 	}
 
 	if isToolProvider && len(tools) > 0 {
-		reply, _, err := executeWithTools(ctx, tp, dispatch, &messages, tools, sendOverlay)
+		reply, _, err := executeWithTools(ctx, tp, dispatch, &messages, tools, sendOverlay, maxTurns)
 		if err != nil {
 			return err
 		}
@@ -143,26 +143,28 @@ func truncateRunes(s string, max int) string {
 // appTitle is the terminal-title fallback before a session has a real title.
 const appTitle = "chatchain"
 
-const maxToolRounds = 50
-
-// errToolRoundsExceeded is returned when the loop cap is hit. Non-retryable
-// (see isRetryable): retrying a runaway loop would only run it again.
-var errToolRoundsExceeded = fmt.Errorf("tool loop exceeded %d rounds without a final response", maxToolRounds)
+// errToolRoundsExceeded is returned when an explicit --max-turns limit is
+// hit. Non-retryable (see isRetryable): retrying a runaway loop would only
+// run it again. There is NO default cap — interactively the user is the brake
+// (ESC + tool approval gates), matching Claude Code/Codex/Cursor/Cline; for
+// the non-interactive path the -m caller opts in via --max-turns.
+var errToolRoundsExceeded = errors.New("tool loop reached the --max-turns limit without a final response")
 
 // executeWithTools runs the non-interactive (Once) tool loop: each round
 // streams one StreamChatWithTools call quietly (nothing renders — the final
 // text is returned whole), executes any tool calls, feeds the results back,
-// and repeats until the model answers without tools or the maxToolRounds cap
-// trips. The interactive twin with rendering and interrupts is toolLoop.
+// and repeats until the model answers without tools (or an explicit maxTurns
+// limit trips; 0 = unlimited). The interactive twin with rendering and
+// interrupts is toolLoop.
 //
 // overlay is the turn's agent-mode system overlay: each round sends a
 // send-time copy of *history with it applied (see agents.ComposeSendHistory), while
 // the appended assistant/tool messages land in the clean *history. Empty
 // means none — every round then sends *history itself, exactly as before.
-func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string) (string, string, error) {
+func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, maxTurns int) (string, string, error) {
 	for rounds := 0; ; rounds++ {
-		if rounds == maxToolRounds {
-			return "", "", errToolRoundsExceeded
+		if maxTurns > 0 && rounds == maxTurns {
+			return "", "", fmt.Errorf("%w (%d turns)", errToolRoundsExceeded, maxTurns)
 		}
 		content, reasoning, toolCalls, err := tp.StreamChatWithTools(ctx,
 			agents.ComposeSendHistory(*history, overlay), tools, io.Discard, nopWriteCloser{io.Discard})
