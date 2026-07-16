@@ -7,13 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strings"
 
-	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
-	"github.com/openai/openai-go/v3/packages/param"
-	"github.com/openai/openai-go/v3/shared"
+	"chatchain/internal/llm"
 )
 
 // Compile-time check that OpenAIProvider implements ToolProvider.
@@ -22,9 +18,11 @@ var _ RawContentProvider = (*OpenAIProvider)(nil)
 var _ UsageReporter = (*OpenAIProvider)(nil)
 var _ Tunable = (*OpenAIProvider)(nil)
 
+const openAIDefaultBaseURL = "https://api.openai.com/v1"
+
 type OpenAIProvider struct {
 	baseProvider
-	client               *openai.Client
+	client               llm.ChatComp
 	lastAssistantRawJSON string // raw JSON of last assistant message with tool calls
 }
 
@@ -49,107 +47,87 @@ func (p *OpenAIProvider) UnmarshalRawContent(data []byte) (any, error) {
 }
 
 func NewOpenAI(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *OpenAIProvider {
-	opts := []option.RequestOption{
-		option.WithAPIKey(apiKey),
+	if baseURL == "" {
+		baseURL = openAIDefaultBaseURL
 	}
-	if baseURL != "" {
-		opts = append(opts, option.WithBaseURL(baseURL))
-	}
-	if httpClient != nil {
-		opts = append(opts, option.WithHTTPClient(httpClient))
-	}
-
-	client := openai.NewClient(opts...)
+	c := llm.New(baseURL, httpClient)
+	c.Header.Set("Authorization", "Bearer "+apiKey)
 	return &OpenAIProvider{
 		baseProvider: baseProvider{providerType: "openai", model: model, temperature: temperature},
-		client:       &client,
+		client:       llm.ChatComp{Client: c},
 	}
 }
 
 func (p *OpenAIProvider) ListModels(ctx context.Context) ([]string, error) {
-	page, err := p.client.Models.List(ctx)
+	models, err := p.client.Models(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list models: %w", err)
 	}
-	var models []string
-	for _, m := range page.Data {
-		models = append(models, m.ID)
-	}
-
-	sort.Strings(models)
 	return models, nil
 }
 
-func (p *OpenAIProvider) buildParams(messages []Message) openai.ChatCompletionNewParams {
-	params := openai.ChatCompletionNewParams{
-		Model: p.model,
-	}
-	if p.temperature != nil {
-		params.Temperature = openai.Float(*p.temperature)
-	}
-	if p.effort != "" {
-		params.ReasoningEffort = shared.ReasoningEffort(p.effort)
+func (p *OpenAIProvider) buildRequest(messages []Message) *llm.ChatCompRequest {
+	req := &llm.ChatCompRequest{
+		Model:           p.model,
+		Temperature:     p.temperature,
+		ReasoningEffort: p.effort,
 	}
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
-			params.Messages = append(params.Messages, openai.SystemMessage(msg.Content))
+			req.Messages = append(req.Messages, llm.ChatMsg{Role: "system", Content: msg.Content})
 		case "user":
 			if len(msg.Attachments) > 0 {
-				var parts []openai.ChatCompletionContentPartUnionParam
+				var parts []any
 				for _, att := range msg.Attachments {
 					if strings.HasPrefix(att.MimeType, "image/") {
 						dataURL := "data:" + att.MimeType + ";base64," + base64.StdEncoding.EncodeToString(att.Data)
-						parts = append(parts, openai.ImageContentPart(openai.ChatCompletionContentPartImageImageURLParam{
-							URL: dataURL,
-						}))
+						parts = append(parts, llm.ChatImagePart{Type: "image_url", ImageURL: llm.ChatImageURL{URL: dataURL}})
 					} else {
-						b64 := base64.StdEncoding.EncodeToString(att.Data)
-						parts = append(parts, openai.FileContentPart(openai.ChatCompletionContentPartFileFileParam{
-							FileData: openai.String(b64),
-							Filename: openai.String(att.Filename),
-						}))
+						parts = append(parts, llm.ChatFilePart{Type: "file", File: llm.ChatFileData{
+							FileData: base64.StdEncoding.EncodeToString(att.Data),
+							Filename: att.Filename,
+						}})
 					}
 				}
-				parts = append(parts, openai.TextContentPart(msg.Content))
-				params.Messages = append(params.Messages, openai.UserMessage(parts))
+				parts = append(parts, llm.ChatTextPart{Type: "text", Text: msg.Content})
+				req.Messages = append(req.Messages, llm.ChatMsg{Role: "user", Content: parts})
 			} else {
-				params.Messages = append(params.Messages, openai.UserMessage(msg.Content))
+				req.Messages = append(req.Messages, llm.ChatMsg{Role: "user", Content: msg.Content})
 			}
 		case "assistant":
 			if len(msg.ToolCalls) > 0 {
 				// If raw assistant JSON is available, replay it verbatim.
 				// This preserves provider-specific fields (e.g. kimi reasoning).
 				if rawJSON, ok := msg.RawContent.(string); ok && rawJSON != "" {
-					params.Messages = append(params.Messages, param.Override[openai.ChatCompletionMessageParamUnion](json.RawMessage(rawJSON)))
-				} else {
-					assistant := openai.AssistantMessage(msg.Content)
-					for _, tc := range msg.ToolCalls {
-						argsJSON, _ := json.Marshal(tc.Arguments)
-						assistant.OfAssistant.ToolCalls = append(assistant.OfAssistant.ToolCalls, openai.ChatCompletionMessageToolCallUnionParam{
-							OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
-								ID: tc.ID,
-								Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
-									Name:      tc.Name,
-									Arguments: string(argsJSON),
-								},
-							},
-						})
-					}
-					params.Messages = append(params.Messages, assistant)
+					req.Messages = append(req.Messages, json.RawMessage(rawJSON))
+					continue
 				}
+				assistant := llm.ChatMsg{Role: "assistant", Content: msg.Content}
+				for _, tc := range msg.ToolCalls {
+					argsJSON, _ := json.Marshal(tc.Arguments)
+					assistant.ToolCalls = append(assistant.ToolCalls, llm.ChatToolCall{
+						ID:   tc.ID,
+						Type: "function",
+						Function: llm.ChatToolCallFunc{
+							Name:      tc.Name,
+							Arguments: string(argsJSON),
+						},
+					})
+				}
+				req.Messages = append(req.Messages, assistant)
 			} else {
-				params.Messages = append(params.Messages, openai.AssistantMessage(msg.Content))
+				req.Messages = append(req.Messages, llm.ChatMsg{Role: "assistant", Content: msg.Content})
 			}
 		case "tool":
-			params.Messages = append(params.Messages, openai.ToolMessage(msg.Content, msg.ToolCallID))
+			req.Messages = append(req.Messages, llm.ChatMsg{Role: "tool", Content: msg.Content, ToolCallID: msg.ToolCallID})
 		}
 	}
-	return params
+	return req
 }
 
 func (p *OpenAIProvider) Chat(ctx context.Context, messages []Message) (string, error) {
-	resp, err := p.client.Chat.Completions.New(ctx, p.buildParams(messages))
+	resp, err := p.client.Complete(ctx, p.buildRequest(messages))
 	if err != nil {
 		return "", fmt.Errorf("chat error: %w", err)
 	}
@@ -169,23 +147,22 @@ func (p *OpenAIProvider) StreamChatWithTools(ctx context.Context, messages []Mes
 }
 
 func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Message, tools []ToolDef, w io.Writer, reasoningW io.WriteCloser) (string, string, []ToolCall, error) {
-	params := p.buildParams(messages)
-	// Request usage stats in the final stream chunk (off by default for streams).
-	params.StreamOptions = openai.ChatCompletionStreamOptionsParam{IncludeUsage: openai.Bool(true)}
+	req := p.buildRequest(messages)
 	p.lastUsageOK = false
-
-	// Add tool definitions if provided
-	if len(tools) > 0 {
-		for _, t := range tools {
-			params.Tools = append(params.Tools, openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
-				Name:        t.Name,
-				Description: openai.String(t.Description),
-				Parameters:  shared.FunctionParameters(t.InputSchema),
-			}))
-		}
+	for _, t := range tools {
+		req.Tools = append(req.Tools, llm.ChatTool{Type: "function", Function: llm.ChatToolFunction{
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  t.InputSchema,
+		}})
 	}
 
-	stream := p.client.Chat.Completions.NewStreaming(ctx, params)
+	stream, err := p.client.StreamCompletion(ctx, req)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("stream error: %w", err)
+	}
+	defer stream.Close()
+
 	var full, thinkFull string
 	reasoningClosed := false
 	closeReasoning := func() {
@@ -194,8 +171,10 @@ func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Mess
 			reasoningClosed = true
 		}
 	}
+	defer closeReasoning()
 
-	// Accumulate tool calls: index → {id, name, arguments}
+	// Accumulate tool calls by stream index (id/name arrive once, arguments
+	// concatenate across deltas).
 	type toolCallAcc struct {
 		id   string
 		name string
@@ -204,31 +183,38 @@ func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Mess
 	toolCallMap := make(map[int]*toolCallAcc)
 	var finishReason string
 
-	for stream.Next() {
-		evt := stream.Current()
-		// The final chunk (IncludeUsage) carries token usage and no choices.
-		if evt.Usage.TotalTokens > 0 {
-			p.lastInput = int(evt.Usage.PromptTokens)
-			p.lastOutput = int(evt.Usage.CompletionTokens)
+	for {
+		chunk, cerr := stream.Next()
+		if cerr == io.EOF {
+			break
+		}
+		if cerr != nil {
+			return full, thinkFull, nil, fmt.Errorf("stream error: %w", cerr)
+		}
+		// The final chunk (include_usage) carries token usage and no choices.
+		if chunk.Usage != nil && chunk.Usage.TotalTokens > 0 {
+			p.lastInput = chunk.Usage.PromptTokens
+			p.lastOutput = chunk.Usage.CompletionTokens
 			p.lastUsageOK = true
 		}
-		for _, choice := range evt.Choices {
+		for _, choice := range chunk.Choices {
 			if choice.FinishReason != "" {
 				finishReason = choice.FinishReason
 			}
 
-			// Check for reasoning field in raw JSON (DeepSeek and compatible models)
-			var extra struct {
-				Reasoning *string `json:"reasoning"`
+			// Thinking deltas: aggregators send `reasoning`, deepseek's own
+			// API sends `reasoning_content` — accept either, prefer the first.
+			think := choice.Delta.Reasoning
+			if think == "" {
+				think = choice.Delta.ReasoningContent
 			}
-			if err := json.Unmarshal([]byte(choice.Delta.RawJSON()), &extra); err == nil && extra.Reasoning != nil && *extra.Reasoning != "" {
-				fmt.Fprint(reasoningW, *extra.Reasoning)
-				thinkFull += *extra.Reasoning
+			if think != "" {
+				fmt.Fprint(reasoningW, think)
+				thinkFull += think
 			}
 
-			// Accumulate tool call deltas
 			for _, tc := range choice.Delta.ToolCalls {
-				idx := int(tc.Index)
+				idx := tc.Index
 				if idx < 0 {
 					idx = 0
 				}
@@ -248,33 +234,19 @@ func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Mess
 				}
 			}
 
-			chunk := choice.Delta.Content
-			if chunk != "" {
+			if choice.Delta.Content != "" {
 				closeReasoning()
-				fmt.Fprint(w, chunk)
-				full += chunk
+				fmt.Fprint(w, choice.Delta.Content)
+				full += choice.Delta.Content
 			}
 		}
 	}
 	closeReasoning()
-	if err := stream.Err(); err != nil {
-		return full, thinkFull, nil, fmt.Errorf("stream error: %w", err)
-	}
 
-	// If model requested tool calls, parse and return them
+	// If the model requested tool calls, parse and return them.
 	if finishReason == "tool_calls" && len(toolCallMap) > 0 {
 		var toolCalls []ToolCall
-		// Build raw tool_calls array for replay
-		type rawToolCall struct {
-			ID       string `json:"id"`
-			Type     string `json:"type"`
-			Function struct {
-				Name      string `json:"name"`
-				Arguments string `json:"arguments"`
-			} `json:"function"`
-		}
-		var rawTCs []rawToolCall
-
+		var rawTCs []llm.ChatToolCall
 		for i := 0; i < len(toolCallMap); i++ {
 			acc, ok := toolCallMap[i]
 			if !ok {
@@ -285,22 +257,15 @@ func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Mess
 			if argsStr != "" {
 				json.Unmarshal([]byte(argsStr), &args)
 			}
-			toolCalls = append(toolCalls, ToolCall{
-				ID:        acc.id,
-				Name:      acc.name,
-				Arguments: args,
-			})
-			rawTCs = append(rawTCs, rawToolCall{
-				ID:   acc.id,
-				Type: "function",
-				Function: struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				}{Name: acc.name, Arguments: argsStr},
+			toolCalls = append(toolCalls, ToolCall{ID: acc.id, Name: acc.name, Arguments: args})
+			rawTCs = append(rawTCs, llm.ChatToolCall{
+				ID:       acc.id,
+				Type:     "function",
+				Function: llm.ChatToolCallFunc{Name: acc.name, Arguments: argsStr},
 			})
 		}
 
-		// Save raw assistant message JSON (preserves reasoning for kimi etc.)
+		// Save raw assistant message JSON (preserves reasoning for kimi etc.).
 		rawMsg := map[string]any{
 			"role":       "assistant",
 			"content":    full,

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"chatchain/internal/agents"
+	"chatchain/internal/llm"
 	mcpmgr "chatchain/mcp"
 	"chatchain/provider"
 	"chatchain/tool"
@@ -71,11 +72,17 @@ const maxRetries = 10
 var http4xxPattern = regexp.MustCompile(`\b4\d{2}\b`)
 
 // isRetryable returns true if the error is likely transient and worth retrying.
-// Non-retryable: io.EOF, user interruption, the tool-loop cap, HTTP 4xx
-// (except 429 rate limit).
+// Non-retryable: io.EOF, user interruption, the tool-loop cap, a non-streaming
+// stream response, HTTP 4xx (except 429 rate limit). Errors from internal/llm
+// carry a structured status; anything else falls back to the historical
+// string scan (SDK-shaped errors until every provider is ported).
 func isRetryable(err error) bool {
-	if err == io.EOF || errors.Is(err, errInterrupted) || errors.Is(err, errToolRoundsExceeded) {
+	if err == io.EOF || errors.Is(err, errInterrupted) || errors.Is(err, errToolRoundsExceeded) || errors.Is(err, llm.ErrNoEvents) {
 		return false
+	}
+	var se *llm.StatusError
+	if errors.As(err, &se) {
+		return se.Status == 429 || se.Status >= 500
 	}
 	msg := err.Error()
 	matches := http4xxPattern.FindAllString(msg, -1)
