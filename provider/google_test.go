@@ -3,7 +3,7 @@ package provider
 import (
 	"testing"
 
-	"google.golang.org/genai"
+	"chatchain/internal/llm"
 )
 
 func googleForTest(toolCallIDs bool) *GoogleProvider {
@@ -20,11 +20,11 @@ func googleForTest(toolCallIDs bool) *GoogleProvider {
 // both from fresh stream output and from raw content persisted before the
 // filter existed.
 func TestBuildContentsSanitizesRawContent(t *testing.T) {
-	raw := &genai.Content{
+	raw := &llm.GContent{
 		Role: "model",
-		Parts: []*genai.Part{
+		Parts: []*llm.GPart{
 			{
-				FunctionCall:     &genai.FunctionCall{Name: "get_news", Args: map[string]any{"url": "https://example.com"}},
+				FunctionCall:     &llm.GFunctionCall{Name: "get_news", Args: map[string]any{"url": "https://example.com"}},
 				ThoughtSignature: []byte("sig"),
 			},
 			{}, // zero-value part, marshals to {}
@@ -54,7 +54,7 @@ func TestBuildContentsSanitizesRawContent(t *testing.T) {
 }
 
 func TestSanitizeContentAllPartsEmpty(t *testing.T) {
-	if c := sanitizeContent(&genai.Content{Role: "model", Parts: []*genai.Part{{}, {}}}); c != nil {
+	if c := sanitizeContent(&llm.GContent{Role: "model", Parts: []*llm.GPart{{}, {}}}); c != nil {
 		t.Fatalf("expected nil for all-empty content, got %+v", c)
 	}
 }

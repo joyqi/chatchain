@@ -6,10 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strings"
 
-	"google.golang.org/genai"
+	"chatchain/internal/llm"
 )
 
 var _ ToolProvider = (*GoogleProvider)(nil)
@@ -17,47 +16,51 @@ var _ RawContentProvider = (*GoogleProvider)(nil)
 var _ UsageReporter = (*GoogleProvider)(nil)
 var _ Tunable = (*GoogleProvider)(nil)
 
-// GoogleProvider serves both Google backends through the unified genai SDK:
-// the Gemini Developer API ("gemini") and Vertex AI ("vertexai"). The request
-// schema is shared; the SDK handles the endpoint/auth split via Backend, and
-// the remaining field-level differences are parameterized here — Vertex AI
-// does not accept FunctionCall/FunctionResponse IDs and strictly validates
-// that every part has its data oneof set.
+const (
+	geminiDefaultBaseURL = "https://generativelanguage.googleapis.com"
+	vertexDefaultBaseURL = "https://aiplatform.googleapis.com"
+)
+
+// GoogleProvider serves both Google backends through the shared
+// generateContent dialect (internal/llm): the Gemini Developer API ("gemini")
+// and Vertex AI ("vertexai", express/API-key mode — chatchain always has a
+// key, so the SDK's ADC path was never reachable). The request schema is
+// shared; the remaining field-level differences are parameterized here —
+// Vertex AI does not accept FunctionCall/FunctionResponse IDs and strictly
+// validates that every part has its data oneof set.
 type GoogleProvider struct {
 	baseProvider
-	client           *genai.Client
-	lastModelContent *genai.Content // preserves thought signatures for tool call rounds
-	toolCallIDs      bool           // whether the backend accepts FunctionCall/FunctionResponse IDs
+	client           llm.Google
+	lastModelContent *llm.GContent // preserves thought signatures for tool call rounds
+	toolCallIDs      bool          // whether the backend accepts FunctionCall/FunctionResponse IDs
 }
 
 func NewGemini(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *GoogleProvider {
-	return newGoogle("gemini", genai.BackendGeminiAPI, "", true, apiKey, baseURL, model, temperature, httpClient)
+	if baseURL == "" {
+		baseURL = geminiDefaultBaseURL
+	}
+	return newGoogle("gemini", false, "v1beta", true, apiKey, baseURL, model, temperature, httpClient)
 }
 
 func NewVertexAI(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *GoogleProvider {
-	return newGoogle("vertexai", genai.BackendVertexAI, "v1", false, apiKey, baseURL, model, temperature, httpClient)
+	// Parity with the genai constructor: the default endpoint speaks v1beta1;
+	// a custom base URL historically switched to v1.
+	version := "v1beta1"
+	if baseURL == "" {
+		baseURL = vertexDefaultBaseURL
+	} else {
+		version = "v1"
+	}
+	return newGoogle("vertexai", true, version, false, apiKey, baseURL, model, temperature, httpClient)
 }
 
-func newGoogle(providerType string, backend genai.Backend, apiVersion string, toolCallIDs bool,
+func newGoogle(providerType string, vertex bool, version string, toolCallIDs bool,
 	apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *GoogleProvider {
-	cfg := &genai.ClientConfig{
-		APIKey:  apiKey,
-		Backend: backend,
-	}
-	if baseURL != "" {
-		cfg.HTTPOptions = genai.HTTPOptions{BaseURL: baseURL, APIVersion: apiVersion}
-	}
-	if httpClient != nil {
-		cfg.HTTPClient = httpClient
-	}
-	client, err := genai.NewClient(context.Background(), cfg)
-	if err != nil {
-		panic(fmt.Sprintf("failed to create %s client: %v", providerType, err))
-	}
-
+	c := llm.New(baseURL, httpClient)
+	c.Header.Set("x-goog-api-key", apiKey)
 	return &GoogleProvider{
 		baseProvider: baseProvider{providerType: providerType, model: model, temperature: temperature},
-		client:       client,
+		client:       llm.Google{Client: c, Vertex: vertex, Version: version},
 		toolCallIDs:  toolCallIDs,
 	}
 }
@@ -67,7 +70,7 @@ func (p *GoogleProvider) LastRawContent() any {
 }
 
 func (p *GoogleProvider) MarshalRawContent(v any) ([]byte, error) {
-	c, ok := v.(*genai.Content)
+	c, ok := v.(*llm.GContent)
 	if !ok || c == nil {
 		return nil, fmt.Errorf("%s: unexpected raw content type %T", p.providerType, v)
 	}
@@ -75,7 +78,7 @@ func (p *GoogleProvider) MarshalRawContent(v any) ([]byte, error) {
 }
 
 func (p *GoogleProvider) UnmarshalRawContent(data []byte) (any, error) {
-	var c genai.Content
+	var c llm.GContent
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, err
 	}
@@ -83,53 +86,21 @@ func (p *GoogleProvider) UnmarshalRawContent(data []byte) (any, error) {
 }
 
 func (p *GoogleProvider) ListModels(ctx context.Context) ([]string, error) {
-	page, err := p.client.Models.List(ctx, nil)
+	models, err := p.client.Models(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list models: %w", err)
 	}
-
-	var models []string
-	for {
-		for _, m := range page.Items {
-			models = append(models, m.Name)
-		}
-		if page.NextPageToken == "" {
-			break
-		}
-		page, err = page.Next(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list models: %w", err)
-		}
-	}
-
-	sort.Strings(models)
 	return models, nil
-}
-
-// partHasData reports whether the part's data oneof is set. A zero-value part
-// (e.g. the empty text part that can trail a streamed response) marshals to {}
-// and Vertex AI rejects the whole request with "required oneof field 'data'
-// must have one initialized field".
-func partHasData(p *genai.Part) bool {
-	return p.Text != "" ||
-		p.InlineData != nil ||
-		p.FileData != nil ||
-		p.FunctionCall != nil ||
-		p.FunctionResponse != nil ||
-		p.ExecutableCode != nil ||
-		p.CodeExecutionResult != nil ||
-		p.ToolCall != nil ||
-		p.ToolResponse != nil
 }
 
 // sanitizeContent drops data-less parts before content is replayed to the
 // API, returning nil when nothing remains. Sessions persisted before this
 // filter existed can still carry such parts, so history replay must clean
 // them too, not just fresh stream output.
-func sanitizeContent(c *genai.Content) *genai.Content {
-	kept := make([]*genai.Part, 0, len(c.Parts))
+func sanitizeContent(c *llm.GContent) *llm.GContent {
+	kept := make([]*llm.GPart, 0, len(c.Parts))
 	for _, part := range c.Parts {
-		if partHasData(part) {
+		if part.HasData() {
 			kept = append(kept, part)
 		}
 	}
@@ -139,7 +110,7 @@ func sanitizeContent(c *genai.Content) *genai.Content {
 	if len(kept) == len(c.Parts) {
 		return c
 	}
-	return &genai.Content{Role: c.Role, Parts: kept}
+	return &llm.GContent{Role: c.Role, Parts: kept}
 }
 
 // appendUserContent appends a user-role content, folding it into a trailing
@@ -147,7 +118,7 @@ func sanitizeContent(c *genai.Content) *genai.Content {
 // user/model roles, and an interrupted turn can leave tool results (user-role
 // function responses) directly followed by the next user message — see
 // docs/design/interrupt.md (persistence state 3).
-func appendUserContent(contents []*genai.Content, c *genai.Content) []*genai.Content {
+func appendUserContent(contents []*llm.GContent, c *llm.GContent) []*llm.GContent {
 	if n := len(contents); n > 0 && contents[n-1].Role == "user" {
 		contents[n-1].Parts = append(contents[n-1].Parts, c.Parts...)
 		return contents
@@ -155,90 +126,87 @@ func appendUserContent(contents []*genai.Content, c *genai.Content) []*genai.Con
 	return append(contents, c)
 }
 
-func (p *GoogleProvider) buildContents(messages []Message) ([]*genai.Content, *genai.Content) {
-	var contents []*genai.Content
-	var system *genai.Content
+func textContent(role, text string) *llm.GContent {
+	return &llm.GContent{Role: role, Parts: []*llm.GPart{{Text: text}}}
+}
+
+func (p *GoogleProvider) buildContents(messages []Message) ([]*llm.GContent, *llm.GContent) {
+	var contents []*llm.GContent
+	var system *llm.GContent
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
-			system = genai.NewContentFromText(msg.Content, "user")
+			system = textContent("user", msg.Content)
 		case "user":
 			if len(msg.Attachments) > 0 {
-				var parts []*genai.Part
+				var parts []*llm.GPart
 				for _, att := range msg.Attachments {
-					parts = append(parts, genai.NewPartFromBytes(att.Data, att.MimeType))
+					parts = append(parts, &llm.GPart{InlineData: &llm.GBlob{Data: att.Data, MimeType: att.MimeType}})
 				}
-				parts = append(parts, genai.NewPartFromText(msg.Content))
-				contents = appendUserContent(contents, genai.NewContentFromParts(parts, "user"))
+				parts = append(parts, &llm.GPart{Text: msg.Content})
+				contents = appendUserContent(contents, &llm.GContent{Role: "user", Parts: parts})
 			} else {
-				contents = appendUserContent(contents, genai.NewContentFromText(msg.Content, "user"))
+				contents = appendUserContent(contents, textContent("user", msg.Content))
 			}
 		case "assistant":
 			// Use raw content if available (preserves thought signatures)
-			if raw, ok := msg.RawContent.(*genai.Content); ok && raw != nil {
+			if raw, ok := msg.RawContent.(*llm.GContent); ok && raw != nil {
 				if c := sanitizeContent(raw); c != nil {
 					contents = append(contents, c)
 				}
 			} else if len(msg.ToolCalls) > 0 {
-				var parts []*genai.Part
+				var parts []*llm.GPart
 				if msg.Content != "" {
-					parts = append(parts, genai.NewPartFromText(msg.Content))
+					parts = append(parts, &llm.GPart{Text: msg.Content})
 				}
 				for _, tc := range msg.ToolCalls {
-					fc := &genai.FunctionCall{
-						Name: tc.Name,
-						Args: tc.Arguments,
-					}
+					fc := &llm.GFunctionCall{Name: tc.Name, Args: tc.Arguments}
 					if p.toolCallIDs {
 						fc.ID = tc.ID
 					}
-					parts = append(parts, &genai.Part{FunctionCall: fc})
+					parts = append(parts, &llm.GPart{FunctionCall: fc})
 				}
-				contents = append(contents, genai.NewContentFromParts(parts, "model"))
+				contents = append(contents, &llm.GContent{Role: "model", Parts: parts})
 			} else {
-				contents = append(contents, genai.NewContentFromText(msg.Content, "model"))
+				contents = append(contents, textContent("model", msg.Content))
 			}
 		case "tool":
 			resp := map[string]any{"output": msg.Content}
 			if msg.IsError {
 				resp = map[string]any{"error": msg.Content}
 			}
-			fr := &genai.FunctionResponse{
-				Name:     msg.ToolCallName,
-				Response: resp,
-			}
+			fr := &llm.GFunctionResp{Name: msg.ToolCallName, Response: resp}
 			if p.toolCallIDs {
 				fr.ID = msg.ToolCallID
 			}
-			contents = appendUserContent(contents, genai.NewContentFromParts([]*genai.Part{
-				{FunctionResponse: fr},
-			}, "user"))
+			contents = appendUserContent(contents, &llm.GContent{Role: "user", Parts: []*llm.GPart{{FunctionResponse: fr}}})
 		}
 	}
 	return contents, system
 }
 
-func (p *GoogleProvider) config(system *genai.Content) *genai.GenerateContentConfig {
-	cfg := &genai.GenerateContentConfig{}
+func (p *GoogleProvider) buildRequest(messages []Message) *llm.GenerateRequest {
+	contents, system := p.buildContents(messages)
+	req := &llm.GenerateRequest{Contents: contents, SystemInstruction: system}
+	cfg := &llm.GGenerationConfig{}
 	if p.temperature != nil {
 		temp := float32(*p.temperature)
 		cfg.Temperature = &temp
 	}
 	if p.effort != "" {
-		cfg.ThinkingConfig = &genai.ThinkingConfig{
+		cfg.ThinkingConfig = &llm.GThinkingConfig{
 			IncludeThoughts: true,
-			ThinkingLevel:   genai.ThinkingLevel(strings.ToUpper(p.effort)),
+			ThinkingLevel:   strings.ToUpper(p.effort),
 		}
 	}
-	if system != nil {
-		cfg.SystemInstruction = system
+	if cfg.Temperature != nil || cfg.ThinkingConfig != nil {
+		req.GenerationConfig = cfg
 	}
-	return cfg
+	return req
 }
 
 func (p *GoogleProvider) Chat(ctx context.Context, messages []Message) (string, error) {
-	contents, system := p.buildContents(messages)
-	resp, err := p.client.Models.GenerateContent(ctx, p.model, contents, p.config(system))
+	resp, err := p.client.Generate(ctx, p.model, p.buildRequest(messages))
 	if err != nil {
 		return "", fmt.Errorf("chat error: %w", err)
 	}
@@ -255,24 +223,22 @@ func (p *GoogleProvider) StreamChatWithTools(ctx context.Context, messages []Mes
 }
 
 func (p *GoogleProvider) streamChatInternal(ctx context.Context, messages []Message, tools []ToolDef, w io.Writer, reasoningW io.WriteCloser) (string, string, []ToolCall, error) {
-	contents, system := p.buildContents(messages)
-	cfg := p.config(system)
-
+	req := p.buildRequest(messages)
 	if len(tools) > 0 {
-		var decls []*genai.FunctionDeclaration
+		var decls []*llm.GFunctionDeclaration
 		for _, t := range tools {
-			decls = append(decls, &genai.FunctionDeclaration{
+			decls = append(decls, &llm.GFunctionDeclaration{
 				Name:                 t.Name,
 				Description:          t.Description,
 				ParametersJsonSchema: t.InputSchema,
 			})
 		}
-		cfg.Tools = []*genai.Tool{{FunctionDeclarations: decls}}
+		req.Tools = []*llm.GTool{{FunctionDeclarations: decls}}
 	}
 
 	var full, thinkFull string
 	var toolCalls []ToolCall
-	var rawParts []*genai.Part // accumulate all parts to preserve thought signatures
+	var rawParts []*llm.GPart // accumulate all parts to preserve thought signatures
 	reasoningClosed := false
 	closeReasoning := func() {
 		if !reasoningClosed {
@@ -280,54 +246,62 @@ func (p *GoogleProvider) streamChatInternal(ctx context.Context, messages []Mess
 			reasoningClosed = true
 		}
 	}
+	defer closeReasoning()
 	p.lastUsageOK = false
 
-	for resp, err := range p.client.Models.GenerateContentStream(ctx, p.model, contents, cfg) {
-		if err != nil {
-			closeReasoning()
-			return full, thinkFull, nil, fmt.Errorf("stream error: %w", err)
+	stream, err := p.client.StreamGenerate(ctx, p.model, req)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("stream error: %w", err)
+	}
+	defer stream.Close()
+
+	for {
+		resp, serr := stream.Next()
+		if serr == io.EOF {
+			break
+		}
+		if serr != nil {
+			return full, thinkFull, nil, fmt.Errorf("stream error: %w", serr)
 		}
 		if resp.UsageMetadata != nil {
-			p.lastInput = int(resp.UsageMetadata.PromptTokenCount)
-			p.lastOutput = int(resp.UsageMetadata.CandidatesTokenCount)
+			p.lastInput = resp.UsageMetadata.PromptTokenCount
+			p.lastOutput = resp.UsageMetadata.CandidatesTokenCount
 			p.lastUsageOK = true
 		}
-		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
-			for _, part := range resp.Candidates[0].Content.Parts {
-				if partHasData(part) {
-					rawParts = append(rawParts, part)
+		if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
+			continue
+		}
+		for _, part := range resp.Candidates[0].Content.Parts {
+			if part.HasData() {
+				rawParts = append(rawParts, part)
+			}
+			switch {
+			case part.Thought:
+				fmt.Fprint(reasoningW, part.Text)
+				thinkFull += part.Text
+			case part.FunctionCall != nil:
+				closeReasoning()
+				args := part.FunctionCall.Args
+				if args == nil {
+					args = make(map[string]any)
 				}
-				if part.Thought {
-					fmt.Fprint(reasoningW, part.Text)
-					thinkFull += part.Text
-				} else if part.FunctionCall != nil {
-					closeReasoning()
-					args := part.FunctionCall.Args
-					if args == nil {
-						args = make(map[string]any)
-					}
-					id := part.FunctionCall.ID
-					if id == "" {
-						// Gemini may not return an ID; generate one
-						id = fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, len(toolCalls))
-					}
-					toolCalls = append(toolCalls, ToolCall{
-						ID:        id,
-						Name:      part.FunctionCall.Name,
-						Arguments: args,
-					})
-				} else if part.Text != "" {
-					closeReasoning()
-					fmt.Fprint(w, part.Text)
-					full += part.Text
+				id := part.FunctionCall.ID
+				if id == "" {
+					// Gemini may not return an ID; generate one
+					id = fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, len(toolCalls))
 				}
+				toolCalls = append(toolCalls, ToolCall{ID: id, Name: part.FunctionCall.Name, Arguments: args})
+			case part.Text != "":
+				closeReasoning()
+				fmt.Fprint(w, part.Text)
+				full += part.Text
 			}
 		}
 	}
 	closeReasoning()
 
 	if len(toolCalls) > 0 {
-		p.lastModelContent = genai.NewContentFromParts(rawParts, "model")
+		p.lastModelContent = &llm.GContent{Role: "model", Parts: rawParts}
 		return full, thinkFull, toolCalls, nil
 	}
 	p.lastModelContent = nil
