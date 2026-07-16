@@ -7,14 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strings"
 
-	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
-	"github.com/openai/openai-go/v3/packages/param"
-	"github.com/openai/openai-go/v3/responses"
-	"github.com/openai/openai-go/v3/shared"
+	"chatchain/internal/llm"
 )
 
 var _ ToolProvider = (*OpenResponsesProvider)(nil)
@@ -22,34 +17,28 @@ var _ RawContentProvider = (*OpenResponsesProvider)(nil)
 var _ UsageReporter = (*OpenResponsesProvider)(nil)
 var _ Tunable = (*OpenResponsesProvider)(nil)
 
-// openResponsesRawOutput stores the raw output items from a response.completed event.
-// These are replayed verbatim as input items in the next round to preserve
-// provider-specific fields like reasoning content that the SDK doesn't expose.
+// openResponsesRawOutput stores the raw output items from a response.completed
+// round. These are replayed verbatim as input items in the next round to
+// preserve provider-specific fields like reasoning content.
 type openResponsesRawOutput struct {
 	items []json.RawMessage
 }
 
 type OpenResponsesProvider struct {
 	baseProvider
-	client        *openai.Client
+	client        llm.Responses
 	lastRawOutput *openResponsesRawOutput
 }
 
 func NewOpenResponses(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *OpenResponsesProvider {
-	opts := []option.RequestOption{
-		option.WithAPIKey(apiKey),
+	if baseURL == "" {
+		baseURL = openAIDefaultBaseURL
 	}
-	if baseURL != "" {
-		opts = append(opts, option.WithBaseURL(baseURL))
-	}
-	if httpClient != nil {
-		opts = append(opts, option.WithHTTPClient(httpClient))
-	}
-
-	client := openai.NewClient(opts...)
+	c := llm.New(baseURL, httpClient)
+	c.Header.Set("Authorization", "Bearer "+apiKey)
 	return &OpenResponsesProvider{
 		baseProvider: baseProvider{providerType: "openresponses", model: model, temperature: temperature},
-		client:       &client,
+		client:       llm.Responses{Client: c},
 	}
 }
 
@@ -74,60 +63,43 @@ func (p *OpenResponsesProvider) UnmarshalRawContent(data []byte) (any, error) {
 }
 
 func (p *OpenResponsesProvider) ListModels(ctx context.Context) ([]string, error) {
-	page, err := p.client.Models.List(ctx)
+	models, err := p.client.Models(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list models: %w", err)
 	}
-	var models []string
-	for _, m := range page.Data {
-		models = append(models, m.ID)
-	}
-
-	sort.Strings(models)
 	return models, nil
 }
 
-func (p *OpenResponsesProvider) buildParams(messages []Message) responses.ResponseNewParams {
-	params := responses.ResponseNewParams{
-		Model: p.model,
-	}
-	if p.temperature != nil {
-		params.Temperature = openai.Float(*p.temperature)
+func (p *OpenResponsesProvider) buildRequest(messages []Message) *llm.RespRequest {
+	req := &llm.RespRequest{
+		Model:       p.model,
+		Temperature: p.temperature,
 	}
 	if p.effort != "" {
-		params.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffort(p.effort)}
+		req.Reasoning = &llm.RespReasoning{Effort: p.effort}
 	}
-	var input responses.ResponseInputParam
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
-			params.Instructions = openai.String(msg.Content)
+			// System prompts ride in instructions, never as input items; the
+			// last system message wins.
+			instructions := msg.Content
+			req.Instructions = &instructions
 		case "user":
 			if len(msg.Attachments) > 0 {
-				var content responses.ResponseInputMessageContentListParam
+				var parts []any
 				for _, att := range msg.Attachments {
 					if strings.HasPrefix(att.MimeType, "image/") {
 						dataURL := "data:" + att.MimeType + ";base64," + base64.StdEncoding.EncodeToString(att.Data)
-						content = append(content, responses.ResponseInputContentUnionParam{
-							OfInputImage: &responses.ResponseInputImageParam{
-								ImageURL: param.NewOpt(dataURL),
-								Detail:   responses.ResponseInputImageDetailAuto,
-							},
-						})
+						parts = append(parts, llm.RespImagePart{Type: "input_image", ImageURL: dataURL, Detail: "auto"})
 					} else {
-						b64 := base64.StdEncoding.EncodeToString(att.Data)
-						content = append(content, responses.ResponseInputContentUnionParam{
-							OfInputFile: &responses.ResponseInputFileParam{
-								FileData: param.NewOpt(b64),
-								Filename: param.NewOpt(att.Filename),
-							},
-						})
+						parts = append(parts, llm.RespFilePart{Type: "input_file", FileData: base64.StdEncoding.EncodeToString(att.Data), Filename: att.Filename})
 					}
 				}
-				content = append(content, responses.ResponseInputContentParamOfInputText(msg.Content))
-				input = append(input, responses.ResponseInputItemParamOfMessage(content, responses.EasyInputMessageRoleUser))
+				parts = append(parts, llm.RespTextPart{Type: "input_text", Text: msg.Content})
+				req.Input = append(req.Input, llm.RespMsg{Role: "user", Content: parts})
 			} else {
-				input = append(input, responses.ResponseInputItemParamOfMessage(msg.Content, responses.EasyInputMessageRoleUser))
+				req.Input = append(req.Input, llm.RespMsg{Role: "user", Content: msg.Content})
 			}
 		case "assistant":
 			if len(msg.ToolCalls) > 0 {
@@ -142,30 +114,34 @@ func (p *OpenResponsesProvider) buildParams(messages []Message) responses.Respon
 						if json.Unmarshal(item, &peek) == nil && peek.Type == "message" {
 							continue
 						}
-						input = append(input, param.Override[responses.ResponseInputItemUnionParam](item))
+						req.Input = append(req.Input, item)
 					}
 				} else {
 					if msg.Content != "" {
-						input = append(input, responses.ResponseInputItemParamOfMessage(msg.Content, responses.EasyInputMessageRoleAssistant))
+						req.Input = append(req.Input, llm.RespMsg{Role: "assistant", Content: msg.Content})
 					}
 					for _, tc := range msg.ToolCalls {
 						argsJSON, _ := json.Marshal(tc.Arguments)
-						input = append(input, responses.ResponseInputItemParamOfFunctionCall(string(argsJSON), tc.ID, tc.Name))
+						req.Input = append(req.Input, llm.RespFunctionCall{
+							Type:      "function_call",
+							CallID:    tc.ID,
+							Name:      tc.Name,
+							Arguments: string(argsJSON),
+						})
 					}
 				}
 			} else {
-				input = append(input, responses.ResponseInputItemParamOfMessage(msg.Content, responses.EasyInputMessageRoleAssistant))
+				req.Input = append(req.Input, llm.RespMsg{Role: "assistant", Content: msg.Content})
 			}
 		case "tool":
-			input = append(input, responses.ResponseInputItemParamOfFunctionCallOutput(msg.ToolCallID, msg.Content))
+			req.Input = append(req.Input, llm.RespFunctionCallOutput{Type: "function_call_output", CallID: msg.ToolCallID, Output: msg.Content})
 		}
 	}
-	params.Input.OfInputItemList = input
-	return params
+	return req
 }
 
 func (p *OpenResponsesProvider) Chat(ctx context.Context, messages []Message) (string, error) {
-	resp, err := p.client.Responses.New(ctx, p.buildParams(messages))
+	resp, err := p.client.Create(ctx, p.buildRequest(messages))
 	if err != nil {
 		return "", fmt.Errorf("chat error: %w", err)
 	}
@@ -182,23 +158,24 @@ func (p *OpenResponsesProvider) StreamChatWithTools(ctx context.Context, message
 }
 
 func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages []Message, tools []ToolDef, w io.Writer, reasoningW io.WriteCloser) (string, string, []ToolCall, error) {
-	params := p.buildParams(messages)
-
-	if len(tools) > 0 {
-		for _, t := range tools {
-			params.Tools = append(params.Tools, responses.ToolUnionParam{
-				OfFunction: &responses.FunctionToolParam{
-					Name:        t.Name,
-					Description: param.NewOpt(t.Description),
-					Parameters:  t.InputSchema,
-					Strict:      param.NewOpt(false),
-				},
-			})
-		}
+	req := p.buildRequest(messages)
+	for _, t := range tools {
+		req.Tools = append(req.Tools, llm.RespTool{
+			Type:        "function",
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  t.InputSchema,
+			Strict:      false,
+		})
 	}
 
-	stream := p.client.Responses.NewStreaming(ctx, params)
 	p.lastUsageOK = false
+	stream, err := p.client.StreamResponse(ctx, req)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("stream error: %w", err)
+	}
+	defer stream.Close()
+
 	var full, thinkFull string
 	reasoningClosed := false
 	closeReasoning := func() {
@@ -233,8 +210,16 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 		return b
 	}
 
-	for stream.Next() {
-		evt := stream.Current()
+	var streamErr error
+	for {
+		evt, cerr := stream.Next()
+		if cerr == io.EOF {
+			break
+		}
+		if cerr != nil {
+			streamErr = cerr
+			break
+		}
 		switch evt.Type {
 		case "response.reasoning_summary_text.delta":
 			fmt.Fprint(reasoningW, evt.Delta)
@@ -244,32 +229,30 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 			fmt.Fprint(w, evt.Delta)
 			full += evt.Delta
 		case "response.function_call_arguments.delta":
-			delta := evt.AsResponseFunctionCallArgumentsDelta()
-			getPendingArgs(delta.ItemID).WriteString(delta.Delta)
+			getPendingArgs(evt.ItemID).WriteString(evt.Delta)
 		case "response.function_call_arguments.done":
-			done := evt.AsResponseFunctionCallArgumentsDone()
-			b := getPendingArgs(done.ItemID)
+			b := getPendingArgs(evt.ItemID)
 			b.Reset()
-			b.WriteString(done.Arguments)
+			b.WriteString(evt.Arguments)
 		case "response.output_item.done":
-			item := evt.AsResponseOutputItemDone()
-			// Capture every completed output item as raw JSON for replay
-			rawOutputItems = append(rawOutputItems, json.RawMessage(item.Item.RawJSON()))
-			if item.Item.Type == "function_call" {
-				callID := item.Item.CallID
+			// Capture every completed output item as raw JSON for replay.
+			rawOutputItems = append(rawOutputItems, evt.Item)
+			var item llm.RespOutputItem
+			if json.Unmarshal(evt.Item, &item) == nil && item.Type == "function_call" {
+				callID := item.CallID
 				if callID == "" {
-					callID = item.Item.ID
+					callID = item.ID
 				}
 				if _, exists := fnCalls[callID]; !exists {
 					acc := &fnCallAcc{
-						callID: item.Item.CallID,
-						name:   item.Item.Name,
+						callID: item.CallID,
+						name:   item.Name,
 					}
 					// Prefer the authoritative arguments from the completed
 					// item; fall back to whatever we accumulated via deltas.
-					if argsStr := item.Item.Arguments.OfString; argsStr != "" {
+					if argsStr := item.ArgumentsString(); argsStr != "" {
 						acc.args.WriteString(argsStr)
-					} else if b, ok := pendingArgs[item.Item.ID]; ok {
+					} else if b, ok := pendingArgs[item.ID]; ok {
 						acc.args.WriteString(b.String())
 					}
 					fnCalls[callID] = acc
@@ -277,9 +260,12 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 				}
 			}
 		case "response.completed":
-			done := evt.AsResponseCompleted()
-			p.lastInput = int(done.Response.Usage.InputTokens)
-			p.lastOutput = int(done.Response.Usage.OutputTokens)
+			var usage llm.RespUsage
+			if evt.Response != nil && evt.Response.Usage != nil {
+				usage = *evt.Response.Usage
+			}
+			p.lastInput = usage.InputTokens
+			p.lastOutput = usage.OutputTokens
 			p.lastUsageOK = true
 		default:
 			if evt.Delta != "" && evt.Type == "" {
@@ -290,11 +276,11 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 		}
 	}
 	closeReasoning()
-	if err := stream.Err(); err != nil {
+	if streamErr != nil {
 		if full != "" || thinkFull != "" || len(fnCalls) > 0 {
 			// Ignore stream close errors if we got content
 		} else {
-			return full, thinkFull, nil, fmt.Errorf("stream error: %w", err)
+			return full, thinkFull, nil, fmt.Errorf("stream error: %w", streamErr)
 		}
 	}
 
