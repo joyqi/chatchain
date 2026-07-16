@@ -230,6 +230,7 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 			full += evt.Delta
 		case "response.function_call_arguments.delta":
 			getPendingArgs(evt.ItemID).WriteString(evt.Delta)
+			p.notifyToolDelta("", evt.Delta)
 		case "response.function_call_arguments.done":
 			b := getPendingArgs(evt.ItemID)
 			b.Reset()

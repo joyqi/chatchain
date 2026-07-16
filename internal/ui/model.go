@@ -31,8 +31,9 @@ const queueShownMax = 3
 const previewWindow = 3
 
 type busyState struct {
-	label string
-	since time.Time
+	label  string
+	detail string // live sub-state ("1.2/5.0 MB", "4.2 KB"); updates keep the clock
+	since  time.Time
 }
 
 // model is the tea.Model behind the facade. All state mutation happens inside
@@ -185,6 +186,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case busyOnMsg:
 		m.busy = &busyState{label: msg.label, since: time.Now()}
 		return m, m.ensureSpin()
+
+	case busyDetailMsg:
+		// Live sub-state on the current phase — the clock keeps running.
+		if m.busy != nil {
+			m.busy.detail = string(msg)
+		}
+		return m, nil
 
 	case busyOffMsg:
 		m.busy = nil
@@ -821,6 +829,9 @@ func (m *model) statusLine() string {
 	if m.busy != nil {
 		frame = spinnerFrames[m.spin%len(spinnerFrames)]
 		tail = " " + m.busy.label
+		if m.busy.detail != "" {
+			tail += " · " + m.busy.detail
+		}
 		if elapsed := int(time.Since(m.busy.since).Seconds()); elapsed >= 2 {
 			tail += fmt.Sprintf("  %ds", elapsed)
 		}

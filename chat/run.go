@@ -613,6 +613,9 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 		}
 
 		turnCtx, cancelTurn := context.WithCancel(ctx)
+		// The transport reports upload progress / headers-received through
+		// this slot (progress.go); the stream loops attach the handlers.
+		turnCtx = withTurnProgress(turnCtx)
 		sink := u.StartStream(cancelTurn)
 		var reply, thinking string
 		retryErr := retry(func() error {
@@ -707,37 +710,124 @@ func reportMCPFailures(mgr *mcpmgr.Manager, u *ui.UI) {
 	}
 }
 
-// reasoningPreview renders streaming reasoning as a frame preview (rolling window)
-// collapsing to a "◇ thought for Ns" marker in scrollback — the v2 twin of
-// reasoningStream. It adopts the already-open "Thinking" preview (opened when
-// the turn started waiting); the clock starts at the first reasoning byte.
-type reasoningPreview struct {
-	pw    io.WriteCloser
-	sink  ui.StreamSink
-	start time.Time
-	done  bool
+// turnPhases owns the status line's busy widget across a streaming call's
+// phases (sending → waiting → thinking → composing tool call): one
+// controller, so concurrent reporters (the transport callback, the tool-call
+// observer) and the stream loop never fight over stop functions. Setting the
+// current label again is a no-op; end() is idempotent.
+type turnPhases struct {
+	mu   sync.Mutex
+	u    *ui.UI
+	cur  string
+	stop func()
 }
 
-func newReasoningPreview(pw io.WriteCloser, sink ui.StreamSink) *reasoningPreview {
-	return &reasoningPreview{pw: pw, sink: sink, start: time.Now()}
-}
+func newTurnPhases(u *ui.UI) *turnPhases { return &turnPhases{u: u} }
 
-func (r *reasoningPreview) Write(p []byte) (int, error) {
-	if r.pw == nil {
-		return len(p), nil
-	}
-	return r.pw.Write(p)
-}
-
-func (r *reasoningPreview) finish() {
-	if r.done {
+func (t *turnPhases) set(label string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.cur == label {
 		return
 	}
-	r.done = true
-	if r.pw != nil {
-		r.pw.Close()
+	if t.stop != nil {
+		t.stop()
 	}
-	r.sink.CommitLines(dim(fmt.Sprintf("%s thought for %s", reasoningSymbol, reasoningElapsed(r.start))))
+	t.cur = label
+	t.stop = t.u.Busy(label)
+}
+
+func (t *turnPhases) end() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.stop != nil {
+		t.stop()
+		t.stop, t.cur = nil, ""
+	}
+}
+
+// watchPhases installs the turn's phase reporting: the transport's upload /
+// headers-received callbacks (progress.go) and the initial waiting label.
+// Returns a cleanup detaching the handlers.
+func watchPhases(ctx context.Context, phases *turnPhases) func() {
+	rep := turnProgressFrom(ctx)
+	rep.setHandlers(
+		func(done, total int64) {
+			if total >= sendProgressMinBytes {
+				phases.set("Sending request")
+				phases.u.BusyDetail(fmt.Sprintf("%s / %s", formatByteSize(done), formatByteSize(total)))
+			}
+		},
+		func() { phases.set("Waiting for the model") },
+	)
+	phases.set("Waiting for the model")
+	return func() { rep.setHandlers(nil, nil) }
+}
+
+// busyMeter counts streamed bytes into the status line's busy detail,
+// throttled so high-frequency deltas don't flood the program queue.
+type busyMeter struct {
+	u    *ui.UI
+	n    int64
+	last time.Time
+}
+
+func newBusyMeter(u *ui.UI) *busyMeter { return &busyMeter{u: u} }
+
+func (m *busyMeter) reset() { m.n, m.last = 0, time.Time{} }
+
+func (m *busyMeter) Write(p []byte) (int, error) {
+	m.add(len(p))
+	return len(p), nil
+}
+
+func (m *busyMeter) add(n int) {
+	m.n += int64(n)
+	if time.Since(m.last) < 150*time.Millisecond {
+		return
+	}
+	m.last = time.Now()
+	m.u.BusyDetail(formatByteSize(m.n))
+}
+
+func formatByteSize(n int64) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
+}
+
+// watchToolComposing surfaces "the model is streaming a tool call" in the
+// status line — a large write_file call is otherwise dead air, since tool
+// calls render only once complete. Deltas drive the shared phase controller
+// (with a byte meter); the returned cleanup detaches the observer.
+func watchToolComposing(phases *turnPhases, tp provider.ToolProvider) func() {
+	obs, ok := tp.(provider.ToolCallStreamObserver)
+	if !ok {
+		return func() {}
+	}
+	var mu sync.Mutex
+	var last string
+	meter := newBusyMeter(phases.u)
+	obs.SetToolCallObserver(func(name, delta string) {
+		mu.Lock()
+		defer mu.Unlock()
+		label := "Composing tool call"
+		if name != "" {
+			label += " — " + displayToolName(name)
+		}
+		if label != last {
+			last = label
+			meter.reset()
+		}
+		phases.set(label)
+		meter.add(len(delta))
+	})
+	return func() { obs.SetToolCallObserver(nil) }
 }
 
 // streamTurn renders one provider stream through the ui sink: busy spinner
@@ -778,11 +868,13 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w i
 
 	sink.CommitLines("") // blank line opening the assistant's turn
 
-	// The "Thinking" spinner lives in the frame preview above the separator —
-	// the single home for thinking (no status-line busy). Content-first
-	// streams deferred-close it; the first commit then morphs the header row
-	// away in place, so the composer never moves.
-	pw := sink.BlockPreview("Thinking")
+	// Live turn state renders in the status line — one fixed row, so phase
+	// changes never move the composer. Reasoning text is not rendered live;
+	// it folds into the "◇ thought for Ns" scrollback marker.
+	phases := newTurnPhases(u)
+	defer phases.end()
+	defer watchPhases(ctx, phases)()
+
 	firstN, readErr = reasonPr.Read(firstChunk)
 	if readErr != nil {
 		readErr = nil
@@ -792,7 +884,6 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w i
 	}
 
 	if readErr != nil {
-		pw.Close() // deferred; error output (or sink.Done) reclaims the row
 		<-done
 		if streamErr != nil {
 			return fail(streamErr)
@@ -805,15 +896,13 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w i
 		return markdown.NewWriter(msink), msink
 	}
 
-	if !hasReasoning {
-		pw.Close() // deferred close: the first content commit morphs the header away
-	} else {
-		rv := newReasoningPreview(pw, sink)
-		finishRV := func() { rv.finish() } // done-guarded inside
-		defer finishRV()
-		rv.Write(firstChunk[:firstN])
-		io.Copy(rv, reasonPr)
-		finishRV()
+	if hasReasoning {
+		start := time.Now()
+		phases.set("Thinking")
+		meter := newBusyMeter(u)
+		meter.add(firstN)
+		io.Copy(meter, reasonPr) // count only; the tee already keeps the text
+		sink.CommitLines(dim(fmt.Sprintf("%s thought for %s", reasoningSymbol, reasoningElapsed(start))))
 
 		firstN, readErr = contentPr.Read(firstChunk)
 		if readErr != nil {
@@ -829,9 +918,10 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w i
 			msink.flush()
 			return thinking, thinking, nil
 		}
-		sink.CommitLines("") // blank line separating reasoning from the reply
+		sink.CommitLines("") // blank line separating the marker from the reply
 	}
 
+	phases.end() // streaming output is its own progress from here
 	mdw, msink := newContent()
 	mdw.Write(firstChunk[:firstN])
 	io.Copy(mdw, contentPr)
@@ -901,7 +991,7 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.Too
 
 			toolCtx, cancel := context.WithCancel(ctx)
 			pop := u.PushCancelScope(cancel)
-			stop := u.Busy(displayToolName(tc.Name))
+			stop := u.Busy("Running " + displayToolName(tc.Name))
 			resultText, isError, callErr := dispatch.CallTool(toolCtx, tc.Name, tc.Arguments)
 			stop()
 			pop()
@@ -965,10 +1055,15 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provi
 
 	sink.CommitLines("") // blank line opening this round
 
-	// The "Thinking" spinner lives in the frame preview above the separator
-	// (see streamTurn); a text-less tool round deferred-closes it and the
-	// tool-call header commit morphs it away.
-	pw := sink.BlockPreview("Thinking")
+	// Live round state in the status line (see streamTurn), plus the
+	// tool-call composing watcher: a large streamed tool call would
+	// otherwise be dead air until it completes. Cleanups run after <-done
+	// (every return path passes it), so the observer goroutine is finished.
+	phases := newTurnPhases(u)
+	defer phases.end()
+	defer watchPhases(ctx, phases)()
+	defer watchToolComposing(phases, tp)()
+
 	firstN, readErr = reasonPr.Read(firstChunk)
 	if readErr != nil {
 		readErr = nil
@@ -978,7 +1073,6 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provi
 	}
 
 	if readErr != nil {
-		pw.Close() // deferred; the next commit (tool header, error) reclaims the row
 		<-done
 		if interrupted() || streamErr != nil {
 			return fail(streamErr)
@@ -994,15 +1088,13 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provi
 		return markdown.NewWriter(msink), msink
 	}
 
-	if !hasReasoning {
-		pw.Close() // deferred close: the first content commit morphs the header away
-	} else {
-		rv := newReasoningPreview(pw, sink)
-		finishRV := func() { rv.finish() }
-		defer finishRV()
-		rv.Write(firstChunk[:firstN])
-		io.Copy(rv, reasonPr)
-		finishRV()
+	if hasReasoning {
+		start := time.Now()
+		phases.set("Thinking")
+		meter := newBusyMeter(u)
+		meter.add(firstN)
+		io.Copy(meter, reasonPr) // count only; the tee already keeps the text
+		sink.CommitLines(dim(fmt.Sprintf("%s thought for %s", reasoningSymbol, reasoningElapsed(start))))
 
 		firstN, readErr = contentPr.Read(firstChunk)
 		if readErr != nil {
@@ -1025,6 +1117,7 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provi
 	}
 
 	if firstN > 0 {
+		phases.end() // streaming output is its own progress from here
 		mdw, msink := newContent()
 		mdw.Write(firstChunk[:firstN])
 		io.Copy(mdw, contentPr)

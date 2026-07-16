@@ -175,10 +175,18 @@ func (u *UI) StartStream(cancel context.CancelFunc) StreamSink {
 }
 
 // Busy shows a frame spinner with label (elapsed time appended by ui); the
-// returned stop clears it.
+// returned stop clears it. The status line is the single home for live turn
+// state (thinking, sending, composing tool calls, running tools): one fixed
+// row, so state changes never move the composer.
 func (u *UI) Busy(label string) (stop func()) {
 	u.p.Send(busyOnMsg{label: label})
 	return func() { u.p.Send(busyOffMsg{}) }
+}
+
+// BusyDetail updates the live sub-state of the current busy phase ("1.2/5.0
+// MB", "4.2 KB") without resetting its clock. No-op when nothing is busy.
+func (u *UI) BusyDetail(detail string) {
+	u.p.Send(busyDetailMsg(detail))
 }
 
 // PushCancelScope registers an inner interrupt scope (e.g. one tool call):

@@ -16,6 +16,7 @@ type baseProvider struct {
 	lastInput    int
 	lastOutput   int
 	lastUsageOK  bool
+	toolObserver func(name, argsDelta string)
 }
 
 func (b *baseProvider) Type() string                { return b.providerType }
@@ -30,3 +31,15 @@ func (b *baseProvider) LastUsage() (int, int, bool) { return b.lastInput, b.last
 // ResetUsage clears the last-call token figures (e.g. when resuming a different
 // session) so LastUsage reports nothing until the next API call.
 func (b *baseProvider) ResetUsage() { b.lastInput, b.lastOutput, b.lastUsageOK = 0, 0, false }
+
+// SetToolCallObserver installs (or clears, with nil) the tool-call streaming
+// observer. The chat layer sets it before a streaming turn and clears it once
+// the stream goroutine has finished — no locking needed under that contract.
+func (b *baseProvider) SetToolCallObserver(fn func(name, argsDelta string)) { b.toolObserver = fn }
+
+// notifyToolDelta reports one streamed tool-call fragment to the observer.
+func (b *baseProvider) notifyToolDelta(name, argsDelta string) {
+	if b.toolObserver != nil {
+		b.toolObserver(name, argsDelta)
+	}
+}

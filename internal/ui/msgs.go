@@ -19,8 +19,9 @@ type (
 	titleMsg       string
 	setCommandsMsg []string // slash command table for suggestions/completion
 
-	busyOnMsg  struct{ label string }
-	busyOffMsg struct{}
+	busyOnMsg     struct{ label string }
+	busyDetailMsg string
+	busyOffMsg    struct{}
 
 	scopePushMsg struct{ cancel context.CancelFunc } // a turn/tool cancel scope
 	scopePopMsg  struct{}

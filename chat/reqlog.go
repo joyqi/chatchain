@@ -90,29 +90,43 @@ func (t *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
-	if !t.log.Verbose() {
-		return transport.RoundTrip(req) // recording off — capture nothing
+
+	var e *RequestEntry
+	if t.log.Verbose() {
+		e = &RequestEntry{Time: time.Now(), Method: req.Method, URL: req.URL.String()}
+		if req.Body != nil {
+			if body, err := io.ReadAll(req.Body); err == nil {
+				req.Body = io.NopCloser(bytes.NewReader(body))
+				e.ReqBody = capBytes(body)
+			}
+		}
+		t.log.add(e)
 	}
 
-	e := &RequestEntry{Time: time.Now(), Method: req.Method, URL: req.URL.String()}
-	if req.Body != nil {
-		if body, err := io.ReadAll(req.Body); err == nil {
-			req.Body = io.NopCloser(bytes.NewReader(body))
-			e.ReqBody = capBytes(body)
-		}
+	// Upload progress + headers-received phase, driven by the turn's
+	// context-injected reporter (progress.go). Attached AFTER the verbose
+	// capture above, which reads the body in-process rather than uploading.
+	rep := turnProgressFrom(req.Context())
+	if rep != nil && req.Body != nil && req.ContentLength > 0 {
+		req.Body = &progressBody{rc: req.Body, rep: rep, total: req.ContentLength}
 	}
-	t.log.add(e)
 
 	start := time.Now()
 	resp, err := transport.RoundTrip(req)
+	rep.sent() // nil-safe: headers received (or the attempt failed)
 	if err != nil {
-		t.log.mu.Lock()
-		e.Err = err.Error()
-		e.Duration = time.Since(start)
-		t.log.mu.Unlock()
+		if e != nil {
+			t.log.mu.Lock()
+			e.Err = err.Error()
+			e.Duration = time.Since(start)
+			t.log.mu.Unlock()
+		}
 		return resp, err
 	}
 
+	if e == nil {
+		return resp, nil // recording off — capture nothing further
+	}
 	t.log.mu.Lock()
 	e.Status = resp.Status
 	t.log.mu.Unlock()

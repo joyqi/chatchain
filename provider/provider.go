@@ -82,6 +82,16 @@ type Tunable interface {
 	Effort() string
 }
 
+// ToolCallStreamObserver is an optional interface: providers report tool-call
+// arguments while the model is still streaming them, so the chat layer can
+// show progress (a large write_file call is otherwise dead air — tool calls
+// render only once complete). name is the call's function name when known
+// ("" otherwise); nil clears the observer. All providers implement it via
+// baseProvider; backends that deliver calls atomically notify once.
+type ToolCallStreamObserver interface {
+	SetToolCallObserver(fn func(name, argsDelta string))
+}
+
 // RawContentProvider is an optional interface for providers that need to preserve
 // raw model response content (e.g. Vertex AI thought signatures) across tool call rounds.
 //

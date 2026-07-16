@@ -791,6 +791,34 @@ func TestBusyInStatusLine(t *testing.T) {
 	}
 }
 
+// TestBusyDetail: the live sub-state renders after the label without touching
+// the phase clock, resets with a new phase, and is a no-op when idle.
+func TestBusyDetail(t *testing.T) {
+	m := newTestModel(t)
+	m = step(t, m, busyOnMsg{label: "Composing tool call — write_file"})
+	since := m.busy.since
+	m = step(t, m, busyDetailMsg("4.2 KB"))
+	if got := stripSGR(content(m)); !strings.Contains(got, "Composing tool call — write_file · 4.2 KB") {
+		t.Fatalf("detail not rendered:\n%s", got)
+	}
+	if !m.busy.since.Equal(since) {
+		t.Fatal("detail update reset the phase clock")
+	}
+
+	// A new phase clears the previous detail.
+	m = step(t, m, busyOnMsg{label: "Thinking"})
+	if got := stripSGR(content(m)); strings.Contains(got, "4.2 KB") {
+		t.Fatalf("stale detail survived a phase change:\n%s", got)
+	}
+
+	// Detail with no busy phase is dropped, not resurrected later.
+	m = step(t, m, busyOffMsg{})
+	m = step(t, m, busyDetailMsg("ghost"))
+	if got := stripSGR(content(m)); strings.Contains(got, "ghost") {
+		t.Fatalf("detail rendered with no busy phase:\n%s", got)
+	}
+}
+
 // TestWrappedComposerLayout pins the user-confirmed frame layout: the
 // composer sits between TWO separators; the status line lives below the
 // bottom one (frame bottom); an open surface or the slash-suggestion row

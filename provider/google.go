@@ -291,6 +291,8 @@ func (p *GoogleProvider) streamChatInternal(ctx context.Context, messages []Mess
 					id = fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, len(toolCalls))
 				}
 				toolCalls = append(toolCalls, ToolCall{ID: id, Name: part.FunctionCall.Name, Arguments: args})
+				// generateContent delivers calls atomically: one notification.
+				p.notifyToolDelta(part.FunctionCall.Name, "")
 			case part.Text != "":
 				closeReasoning()
 				fmt.Fprint(w, part.Text)

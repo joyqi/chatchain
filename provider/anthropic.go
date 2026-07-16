@@ -278,7 +278,9 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 				fmt.Fprint(w, evt.Delta.Text)
 				block(evt.Index, "text").content.WriteString(evt.Delta.Text)
 			case "input_json_delta":
-				block(evt.Index, "tool_use").args.WriteString(evt.Delta.PartialJSON)
+				acc := block(evt.Index, "tool_use")
+				acc.args.WriteString(evt.Delta.PartialJSON)
+				p.notifyToolDelta(acc.name, evt.Delta.PartialJSON)
 			}
 		case "message_delta":
 			if evt.Delta != nil {

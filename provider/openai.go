@@ -231,6 +231,7 @@ func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Mess
 				}
 				if tc.Function.Arguments != "" {
 					acc.args.WriteString(tc.Function.Arguments)
+					p.notifyToolDelta(acc.name, tc.Function.Arguments)
 				}
 			}
 
