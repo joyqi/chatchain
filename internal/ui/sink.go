@@ -20,6 +20,10 @@ func (s *streamSink) BlockPreview(label string) io.WriteCloser {
 	return &previewWriter{u: s.u}
 }
 
+func (s *streamSink) RelabelPreview(label string) {
+	s.u.region.relabelPreview(label)
+}
+
 func (s *streamSink) Done() {
 	s.u.region.dropPreview() // a leaked/deferred preview dies with the turn
 	s.u.p.Send(scopePopMsg{})

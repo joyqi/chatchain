@@ -839,13 +839,26 @@ func (c *lineChunker) flush() {
 
 func isUTF8Start(b byte) bool { return b&0xC0 != 0x80 }
 
+// composingLabel renders the streaming header exactly like the final
+// committed tool-call header ("[name …]", CodeStyle), so the preview morphs
+// into the collapsed form without changing its look.
+func composingLabel(name string) string {
+	n := "tool"
+	if name != "" {
+		n = displayToolName(name)
+	}
+	return CodeStyle.Sprint("[" + n + " …]")
+}
+
 // watchToolComposing stages a streaming tool call in the frame's rolling
 // preview — the same surface reasoning and markdown blocks render through —
-// so a large write_file call scrolls live instead of being dead air. When the
+// so a large write_file call scrolls live instead of being dead air. The
+// staged view mirrors the final collapsed display: a "[name …]" header (the
+// name updates as it streams in) over "⎿"-connected argument rows. When the
 // round ends the deferred-closed preview morphs IN PLACE into the committed
-// collapsed tool-call header (the residue mechanics keep the height flat).
-// The returned cleanup detaches the observer and deferred-closes the preview;
-// call it after the stream goroutine has finished.
+// header (the residue mechanics keep the height flat). The returned cleanup
+// detaches the observer and deferred-closes the preview; call it after the
+// stream goroutine has finished.
 func watchToolComposing(phases *turnPhases, sink ui.StreamSink, tp provider.ToolProvider) func() {
 	obs, ok := tp.(provider.ToolCallStreamObserver)
 	if !ok {
@@ -861,19 +874,29 @@ func watchToolComposing(phases *turnPhases, sink ui.StreamSink, tp provider.Tool
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		if pw == nil || (name != "" && current != "" && name != current) {
+		// A different (non-prefix) name is a NEW call: fold the previous
+		// preview and open the next. A growing name is the same call still
+		// spelling itself out: relabel in place.
+		newCall := pw == nil || (name != "" && current != "" && !strings.HasPrefix(name, current))
+		if newCall {
 			if pw != nil {
 				chunker.flush()
 				pw.Close() // folds into the next preview (region residue)
 			}
 			phases.end() // the preview takes over from the status spinner
-			label := "Calling " + displayToolName(name)
-			if name == "" {
-				label = "Calling tool"
-			}
-			w := sink.BlockPreview(label)
+			w := sink.BlockPreview(composingLabel(name))
+			rows := 0
 			pw = w
-			chunker = &lineChunker{width: composeLineWidth, emit: func(line string) { w.Write([]byte(line + "\n")) }}
+			chunker = &lineChunker{width: composeLineWidth, emit: func(line string) {
+				prefix := "  "
+				if rows == 0 {
+					prefix = "⎿ " // the result connector, as in the final display
+				}
+				rows++
+				w.Write([]byte(prefix + line + "\n"))
+			}}
+		} else if name != "" && name != current {
+			sink.RelabelPreview(composingLabel(name))
 		}
 		if name != "" {
 			current = name

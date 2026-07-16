@@ -194,6 +194,19 @@ func (r *region) openPreview(label string) {
 	r.publishLocked(over)
 }
 
+// relabelPreview swaps an open preview's header text in place (a streamed
+// tool call's name arriving or growing) — a content change on an existing
+// row, zero geometry change.
+func (r *region) relabelPreview(label string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.label == "" || !r.open {
+		return
+	}
+	r.label = label
+	r.publishLocked(nil)
+}
+
 // previewLine appends a raw source line to the rolling preview window.
 func (r *region) previewLine(line string) {
 	r.mu.Lock()

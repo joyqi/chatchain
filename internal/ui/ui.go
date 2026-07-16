@@ -69,10 +69,14 @@ type ViewSpec struct {
 
 // StreamSink receives one turn's rendered output: committed lines go above
 // the frame into scrollback; BlockPreview opens the live rolling preview in
-// the frame (raw source lines; Close clears it). Done ends the turn scope.
+// the frame (raw source lines; Close clears it). Labels render as given —
+// pre-style them (a streamed tool call shows its final committed look).
+// RelabelPreview swaps the open preview's header text in place (a call's
+// name arriving mid-stream). Done ends the turn scope.
 type StreamSink interface {
 	CommitLines(lines ...string)
 	BlockPreview(label string) io.WriteCloser
+	RelabelPreview(label string)
 	Done()
 }
 

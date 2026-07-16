@@ -709,8 +709,10 @@ func (m *model) View() tea.View {
 		rowsAbove++
 	}
 	if m.region.label != "" {
+		// The label renders as supplied (callers pre-style it), so a streamed
+		// tool call's header looks exactly like its final committed form.
 		b.WriteString(cyan + spinnerFrames[m.spin%len(spinnerFrames)] + sgrReset +
-			faint + " " + m.region.label + sgrReset + "\n")
+			" " + m.region.label + sgrReset + "\n")
 		for _, line := range m.region.ptail {
 			b.WriteString(faint + "  " + ansi.Truncate(line, maxInt(4, m.width-4), "…") + sgrReset + "\n")
 		}

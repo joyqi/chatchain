@@ -64,8 +64,9 @@ func (s *uiMDSink) Width() int { return s.width() }
 func (s *uiMDSink) BlockPreview(label string) io.WriteCloser {
 	// No deferral needed here: the ui's staging window (internal/ui/region.go)
 	// keeps a closed preview on screen until the rendered block replaces it in
-	// place — the close is visually free by construction.
-	return s.sink.BlockPreview(label)
+	// place — the close is visually free by construction. The ui renders
+	// labels as given, so markdown's plain "rendering…" labels stay dim.
+	return s.sink.BlockPreview(dim(label))
 }
 
 // lineCommitter is an io.Writer that buffers formatted output and commits it
