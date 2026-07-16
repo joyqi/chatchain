@@ -3,8 +3,10 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -134,24 +136,41 @@ func (r *GenerateResponse) Text() string {
 	return b.String()
 }
 
-// modelPath resolves the model resource path. Names carrying a '/' (picked
-// from ListModels: "models/…", "publishers/google/models/…") pass through;
-// bare names get the backend's canonical prefix (genai tModel parity).
-func (g Google) modelPath(model string) string {
-	if !strings.Contains(model, "/") {
-		if g.Vertex {
-			model = "publishers/google/models/" + model
-		} else {
-			model = "models/" + model
-		}
+// modelPath resolves the model resource path — genai tModel parity. Vertex:
+// known resource prefixes pass through; "vendor/model" names (the relay-
+// station convention, e.g. zenmux's "bytedance/doubao-…") become
+// publishers/{vendor}/models/{model}; bare names get publishers/google/.
+// Gemini: models/ and tunedModels/ pass through, everything else (slashes
+// included) is prefixed with models/. Names carrying path metacharacters are
+// rejected upstream by the server; keep them out of the path here.
+func (g Google) modelPath(model string) (string, error) {
+	if strings.Contains(model, "?") || strings.Contains(model, "&") || strings.Contains(model, "..") {
+		return "", fmt.Errorf("llm: invalid model name %q", model)
 	}
-	return "/" + g.Version + "/" + model
+	if g.Vertex {
+		switch {
+		case strings.HasPrefix(model, "projects/") || strings.HasPrefix(model, "models/") || strings.HasPrefix(model, "publishers/"):
+			// pass through
+		case strings.Contains(model, "/"):
+			parts := strings.SplitN(model, "/", 2)
+			model = "publishers/" + parts[0] + "/models/" + parts[1]
+		default:
+			model = "publishers/google/models/" + model
+		}
+	} else if !strings.HasPrefix(model, "models/") && !strings.HasPrefix(model, "tunedModels/") {
+		model = "models/" + model
+	}
+	return "/" + g.Version + "/" + model, nil
 }
 
 // Generate is the non-streaming :generateContent call.
 func (g Google) Generate(ctx context.Context, model string, req *GenerateRequest) (*GenerateResponse, error) {
+	path, err := g.modelPath(model)
+	if err != nil {
+		return nil, err
+	}
 	var out GenerateResponse
-	if err := g.Do(ctx, "POST", g.modelPath(model)+":generateContent", req, &out); err != nil {
+	if err := g.Do(ctx, "POST", path+":generateContent", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -160,21 +179,51 @@ func (g Google) Generate(ctx context.Context, model string, req *GenerateRequest
 // StreamGenerate is :streamGenerateContent?alt=sse; each SSE event carries a
 // whole GenerateResponse.
 func (g Google) StreamGenerate(ctx context.Context, model string, req *GenerateRequest) (*GoogleStream, error) {
-	sse, err := g.Stream(ctx, "POST", g.modelPath(model)+":streamGenerateContent?alt=sse", req)
+	path, err := g.modelPath(model)
+	if err != nil {
+		return nil, err
+	}
+	sse, err := g.Stream(ctx, "POST", path+":streamGenerateContent?alt=sse", req)
 	if err != nil {
 		return nil, err
 	}
 	return &GoogleStream{sse: sse}, nil
 }
 
-// Models lists model names (paginated; sorted). Gemini lists /models; Vertex
-// express lists the Google publisher models. The response key varies by
-// backend (models | publisherModels), so both are accepted.
+// Models lists model names (paginated; sorted). Gemini lists /models. Vertex
+// tries the official publisher-model listing first, then falls back to the
+// Gemini-style /v1beta/models that vertexai-compatible relay stations expose
+// (probed: zenmux serves ONLY that form; the official path 404s there or
+// redirects to a landing page, which surfaces as a decode error). Response
+// keys accepted: models | publisherModels | data(id) — relays vary.
 func (g Google) Models(ctx context.Context) ([]string, error) {
 	base := "/" + g.Version + "/models"
 	if g.Vertex {
 		base = "/" + g.Version + "/publishers/google/models"
 	}
+	names, err := g.listModels(ctx, base)
+	if g.Vertex && err != nil && isListFallbackErr(err) {
+		var ferr error
+		if names, ferr = g.listModels(ctx, "/v1beta/models"); ferr == nil {
+			return names, nil
+		}
+	}
+	return names, err
+}
+
+// isListFallbackErr reports errors that mean "this endpoint shape does not
+// exist here": a 404/405, or a non-JSON body (a relay redirecting the unknown
+// path to its landing page).
+func isListFallbackErr(err error) bool {
+	var se *StatusError
+	if errors.As(err, &se) {
+		return se.Status == http.StatusNotFound || se.Status == http.StatusMethodNotAllowed
+	}
+	var je *json.SyntaxError
+	return errors.As(err, &je)
+}
+
+func (g Google) listModels(ctx context.Context, base string) ([]string, error) {
 	var names []string
 	pageToken := ""
 	for {
@@ -185,6 +234,7 @@ func (g Google) Models(ctx context.Context) ([]string, error) {
 		var out struct {
 			Models          []struct{ Name string } `json:"models"`
 			PublisherModels []struct{ Name string } `json:"publisherModels"`
+			Data            []struct{ ID string }   `json:"data"` // openai-style relays
 			NextPageToken   string                  `json:"nextPageToken"`
 		}
 		if err := g.Do(ctx, "GET", path, nil, &out); err != nil {
@@ -195,6 +245,9 @@ func (g Google) Models(ctx context.Context) ([]string, error) {
 		}
 		for _, m := range out.PublisherModels {
 			names = append(names, m.Name)
+		}
+		for _, m := range out.Data {
+			names = append(names, m.ID)
 		}
 		if out.NextPageToken == "" {
 			break

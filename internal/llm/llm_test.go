@@ -182,3 +182,90 @@ func TestInBandStreamError(t *testing.T) {
 		t.Fatalf("in-band error not surfaced: %v", err)
 	}
 }
+
+// TestGoogleModelPath pins genai tModel parity — including the relay-station
+// "vendor/model" convention (zenmux et al.) that maps to
+// publishers/{vendor}/models/{model} on Vertex and models/{vendor}/{model}
+// on Gemini.
+func TestGoogleModelPath(t *testing.T) {
+	vertex := Google{Vertex: true, Version: "v1"}
+	gemini := Google{Vertex: false, Version: "v1beta"}
+	cases := []struct {
+		g     Google
+		in    string
+		want  string
+		fails bool
+	}{
+		{vertex, "gemini-2.5-pro", "/v1/publishers/google/models/gemini-2.5-pro", false},
+		{vertex, "bytedance/doubao-seedream-5.0-pro", "/v1/publishers/bytedance/models/doubao-seedream-5.0-pro", false},
+		{vertex, "publishers/google/models/x", "/v1/publishers/google/models/x", false},
+		{vertex, "models/x", "/v1/models/x", false},
+		{vertex, "projects/p/x", "/v1/projects/p/x", false},
+		{gemini, "gemini-2.5-pro", "/v1beta/models/gemini-2.5-pro", false},
+		{gemini, "vendor/model", "/v1beta/models/vendor/model", false},
+		{gemini, "models/x", "/v1beta/models/x", false},
+		{vertex, "bad/../escape", "", true},
+		{vertex, "bad?x=1", "", true},
+	}
+	for _, c := range cases {
+		got, err := c.g.modelPath(c.in)
+		if c.fails {
+			if err == nil {
+				t.Errorf("modelPath(%q) accepted a path metacharacter", c.in)
+			}
+			continue
+		}
+		if err != nil || got != c.want {
+			t.Errorf("modelPath(%q) = %q, %v; want %q", c.in, got, err, c.want)
+		}
+	}
+}
+
+// TestGoogleVertexModelsFallback pins the relay-station listing fallback: the
+// official publisher path 404s (or redirects to an HTML landing page — a
+// decode error after redirect-following), and the Gemini-style /v1beta/models
+// answer is used instead.
+func TestGoogleVertexModelsFallback(t *testing.T) {
+	for name, official := range map[string]http.HandlerFunc{
+		"404": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(404)
+		},
+		"html-landing": func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("<!DOCTYPE html><html>landing</html>"))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v1/publishers/google/models":
+					official(w, r)
+				case "/v1beta/models":
+					w.Write([]byte(`{"models":[{"name":"bytedance/doubao"},{"name":"google/gemini-3-pro"}]}`))
+				default:
+					w.WriteHeader(404)
+				}
+			}))
+			defer srv.Close()
+			g := Google{Client: New(srv.URL, srv.Client()), Vertex: true, Version: "v1"}
+			names, err := g.Models(context.Background())
+			if err != nil || len(names) != 2 || names[0] != "bytedance/doubao" {
+				t.Fatalf("fallback failed: %v %v", names, err)
+			}
+		})
+	}
+
+	// The official shape, when present, wins (no fallback issued).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/publishers/google/models" {
+			w.WriteHeader(404)
+			return
+		}
+		w.Write([]byte(`{"publisherModels":[{"name":"publishers/google/models/gemini-3-pro"}]}`))
+	}))
+	defer srv.Close()
+	g := Google{Client: New(srv.URL, srv.Client()), Vertex: true, Version: "v1"}
+	names, err := g.Models(context.Background())
+	if err != nil || len(names) != 1 || names[0] != "publishers/google/models/gemini-3-pro" {
+		t.Fatalf("official path result = %v %v", names, err)
+	}
+}
