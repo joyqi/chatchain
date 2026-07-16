@@ -20,8 +20,12 @@ func (s *streamSink) BlockPreview(label string) io.WriteCloser {
 	return &previewWriter{u: s.u}
 }
 
-func (s *streamSink) RelabelPreview(label string) {
-	s.u.region.relabelPreview(label)
+func (s *streamSink) CallPreview(label string) {
+	s.u.region.openCallPreview(label)
+}
+
+func (s *streamSink) ClosePreview() {
+	s.u.region.closePreview()
 }
 
 func (s *streamSink) Done() {

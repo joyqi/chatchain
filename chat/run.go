@@ -801,46 +801,8 @@ func formatByteSize(n int64) string {
 	}
 }
 
-// composeLineWidth chunks streamed tool-call arguments (usually one endless
-// JSON line) into display rows for the rolling preview.
-const composeLineWidth = 80
-
-// lineChunker re-lines a newline-free stream into fixed-width display rows.
-type lineChunker struct {
-	width int
-	buf   []byte
-	emit  func(line string)
-}
-
-func (c *lineChunker) add(s string) {
-	c.buf = append(c.buf, s...)
-	// Strictly > width: the boundary byte must exist to test, and a buffer
-	// ending exactly at width may end mid-rune (delta boundaries are
-	// arbitrary) — flush() handles the true end of the stream.
-	for len(c.buf) > c.width {
-		cut := c.width
-		for cut > 0 && !isUTF8Start(c.buf[cut]) {
-			cut--
-		}
-		if cut == 0 {
-			break
-		}
-		c.emit(string(c.buf[:cut]))
-		c.buf = append(c.buf[:0], c.buf[cut:]...)
-	}
-}
-
-func (c *lineChunker) flush() {
-	if len(c.buf) > 0 {
-		c.emit(string(c.buf))
-		c.buf = nil
-	}
-}
-
-func isUTF8Start(b byte) bool { return b&0xC0 != 0x80 }
-
 // composingLabel renders the streaming header exactly like the final
-// committed tool-call header ("[name …]", CodeStyle), so the preview morphs
+// committed tool-call header ("[name …]", CodeStyle), so the widget settles
 // into the collapsed form without changing its look.
 func composingLabel(name string) string {
 	n := "tool"
@@ -850,69 +812,34 @@ func composingLabel(name string) string {
 	return CodeStyle.Sprint("[" + n + " …]")
 }
 
-// watchToolComposing stages a streaming tool call in the frame's rolling
-// preview — the same surface reasoning and markdown blocks render through —
-// so a large write_file call scrolls live instead of being dead air. The
-// staged view mirrors the final collapsed display: a "[name …]" header (the
-// name updates as it streams in) over "⎿"-connected argument rows. When the
-// round ends the deferred-closed preview morphs IN PLACE into the committed
-// header (the residue mechanics keep the height flat). The returned cleanup
-// detaches the observer and deferred-closes the preview; call it after the
-// stream goroutine has finished.
+// watchToolComposing raises the tool-call lifecycle widget ("⠋ [name …]" over
+// a live "⎿ elapsed · ESC" row) while the model streams a call's arguments —
+// otherwise a large write_file call is dead air. Argument text is not staged;
+// the widget is the whole display. toolLoop later expands the header to its
+// full form (the clock keeps running) and the result commit settles it. The
+// returned cleanup detaches the observer; the widget deliberately persists.
 func watchToolComposing(phases *turnPhases, sink ui.StreamSink, tp provider.ToolProvider) func() {
 	obs, ok := tp.(provider.ToolCallStreamObserver)
 	if !ok {
 		return func() {}
 	}
 	var mu sync.Mutex
-	var pw io.WriteCloser
-	var current string
-	var chunker *lineChunker
+	var last string
 	obs.SetToolCallObserver(func(name, delta string) {
 		if delta == "" {
-			return // atomic backends (google) have nothing to stage
+			return // atomic backends (google): toolLoop raises the widget
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		// A different (non-prefix) name is a NEW call: fold the previous
-		// preview and open the next. A growing name is the same call still
-		// spelling itself out: relabel in place.
-		newCall := pw == nil || (name != "" && current != "" && !strings.HasPrefix(name, current))
-		if newCall {
-			if pw != nil {
-				chunker.flush()
-				pw.Close() // folds into the next preview (region residue)
-			}
-			phases.end() // the preview takes over from the status spinner
-			w := sink.BlockPreview(composingLabel(name))
-			rows := 0
-			pw = w
-			chunker = &lineChunker{width: composeLineWidth, emit: func(line string) {
-				prefix := "  "
-				if rows == 0 {
-					prefix = "⎿ " // the result connector, as in the final display
-				}
-				rows++
-				w.Write([]byte(prefix + line + "\n"))
-			}}
-		} else if name != "" && name != current {
-			sink.RelabelPreview(composingLabel(name))
+		label := composingLabel(name)
+		if label == last {
+			return
 		}
-		if name != "" {
-			current = name
-		}
-		chunker.add(delta)
+		last = label
+		phases.end() // the widget takes over from the status spinner
+		sink.CallPreview(label)
 	})
-	return func() {
-		obs.SetToolCallObserver(nil)
-		mu.Lock()
-		defer mu.Unlock()
-		if pw != nil {
-			chunker.flush()
-			pw.Close() // deferred: the tool-call header commit morphs it away
-			pw = nil
-		}
-	}
+	return func() { obs.SetToolCallObserver(nil) }
 }
 
 // streamTurn renders one provider stream through the ui sink: busy spinner
@@ -1042,11 +969,18 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.Too
 		*history = append(*history, msg)
 
 		for _, tc := range toolCalls {
-			sink.CommitLines("", CodeStyle.Sprint(toolCallHeader(tc)))
+			header := CodeStyle.Sprint(toolCallHeader(tc))
+
+			// The lifecycle widget: "⠋ [name args…]" over a live "⎿ elapsed ·
+			// ESC" row. Composing already raised it (the header expands in
+			// place, the clock keeps running); atomic backends raise it here.
+			// It spins through approval and execution, and settles into the
+			// committed header + result below.
+			sink.CallPreview(header)
 
 			// Approval gate: state-changing tools (tool.ApprovalReporter) run
 			// only with the user's consent — once, or for the whole session.
-			// The call header above shows what is being approved.
+			// The widget header above shows what is being approved.
 			if needsApproval(dispatch, tc.Name) && !approved[tc.Name] {
 				choice, aerr := u.Select(ctx, ui.SelectSpec{
 					Title: fmt.Sprintf("%s wants to modify files — allow?", displayToolName(tc.Name)),
@@ -1057,6 +991,8 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.Too
 				}
 				if choice.Cancelled || choice.Index == 2 {
 					const declined = "The user declined this call."
+					sink.ClosePreview()
+					sink.CommitLines("", header)
 					lc := &lineCommitter{commit: sink.CommitLines}
 					printToolResult(lc, declined, true)
 					lc.flush()
@@ -1076,9 +1012,7 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.Too
 
 			toolCtx, cancel := context.WithCancel(ctx)
 			pop := u.PushCancelScope(cancel)
-			stop := u.Busy("Running " + displayToolName(tc.Name))
 			resultText, isError, callErr := dispatch.CallTool(toolCtx, tc.Name, tc.Arguments)
-			stop()
 			pop()
 			cancel()
 			if callErr != nil {
@@ -1086,6 +1020,10 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.Too
 				isError = true
 			}
 
+			// Settle: the widget morphs in place into its final collapsed
+			// form — the spinner disappears as the result writes back.
+			sink.ClosePreview()
+			sink.CommitLines("", header)
 			lc := &lineCommitter{commit: sink.CommitLines}
 			printToolResult(lc, resultText, isError)
 			lc.flush()

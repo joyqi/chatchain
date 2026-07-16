@@ -23,8 +23,12 @@ func (r *recordingSink) BlockPreview(label string) io.WriteCloser {
 	return &recClose{r}
 }
 
-func (r *recordingSink) RelabelPreview(label string) {
-	r.events = append(r.events, "relabel:"+label)
+func (r *recordingSink) CallPreview(label string) {
+	r.events = append(r.events, "call:"+label)
+}
+
+func (r *recordingSink) ClosePreview() {
+	r.events = append(r.events, "settle")
 }
 
 func (r *recordingSink) Done() {}

@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"sync"
+	"time"
 )
 
 // tailKeep is the staging window height: the last N output lines live INSIDE
@@ -39,6 +40,7 @@ type region struct {
 	label   string                              // preview header label ("" = no preview)
 	ptail   []string                            // preview rolling source lines (≤ previewWindow)
 	open    bool                                // preview receiving lines (false once closed/deferred)
+	since   time.Time                           // call preview: lifecycle start (zero = plain preview)
 }
 
 // regionMsg is the display snapshot the model renders.
@@ -47,13 +49,18 @@ type regionMsg struct {
 	residue []string
 	label   string
 	ptail   []string
+	since   time.Time // non-zero: render the "⎿ Ns · ESC" status row and tick
 }
 
 func (r *region) previewRowsLocked() int {
 	if r.label == "" {
 		return 0
 	}
-	return 1 + len(r.ptail)
+	n := 1 + len(r.ptail)
+	if !r.since.IsZero() {
+		n++ // the model-rendered "⎿ elapsed" status row
+	}
+	return n
 }
 
 // consumeResidueLocked lets n freshly displayed rows overwrite the oldest
@@ -83,6 +90,7 @@ func (r *region) snapshotLocked() regionMsg {
 		residue: append([]string{}, r.residue...),
 		label:   r.label,
 		ptail:   append([]string{}, r.ptail...),
+		since:   r.since,
 	}
 }
 
@@ -151,7 +159,9 @@ func joinOverflow(over []string) string {
 // commit flows lines through the window. With a (possibly deferred-closed)
 // preview present, this is the in-place morph: the lines cover the header row
 // first, then the preview rows top-down; preview rows the block's lines don't
-// reach stay as residue for later lines — height constant either way.
+// reach stay as residue for later lines — height constant either way. A call
+// preview's status row contributes a blank placeholder so its vanishing never
+// shrinks the window.
 func (r *region) commit(lines []string) {
 	if len(lines) == 0 {
 		return
@@ -159,14 +169,17 @@ func (r *region) commit(lines []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.label != "" && !r.open {
-		// Deferred preview close: its replacement content has arrived. The
-		// first line takes the header's row; uncovered ptail rows become
-		// residue (an over-long replacement leaves none).
-		if covered := len(lines) - 1; covered < len(r.ptail) {
-			r.residue = append(r.residue, r.ptail[covered:]...)
+		// Deferred preview close: its replacement content has arrived.
+		rows := r.ptail
+		if !r.since.IsZero() {
+			rows = append(append([]string{}, r.ptail...), "")
+		}
+		if covered := len(lines) - 1; covered < len(rows) {
+			r.residue = append(r.residue, rows[covered:]...)
 		}
 		r.label = ""
 		r.ptail = nil
+		r.since = time.Time{}
 	} else {
 		r.consumeResidueLocked(len(lines))
 	}
@@ -178,33 +191,49 @@ func (r *region) commit(lines []string) {
 // openPreview starts a block preview (header + rolling source lines). Opening
 // over an existing preview folds that one into residue — the new header takes
 // the old header's row, the old rows await replacement — so back-to-back
-// previews (consecutive streamed tool calls) never move the composer.
+// previews never move the composer.
 func (r *region) openPreview(label string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.foldOpenLocked(label)
+	r.since = time.Time{}
+	over := r.rebalanceLocked() // header row may steal a tail line
+	r.publishLocked(over)
+}
+
+// openCallPreview ensures the tool-call lifecycle widget: a header plus the
+// model-rendered "⎿ elapsed · ESC" status row. When a call preview is already
+// open this relabels it in place (the clock keeps running — a composing call
+// expanding to its full header); otherwise it fold-opens fresh.
+func (r *region) openCallPreview(label string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.label != "" && !r.since.IsZero() {
+		r.label = label
+		r.open = true
+		r.publishLocked(nil)
+		return
+	}
+	r.foldOpenLocked(label)
+	r.since = time.Now()
+	over := r.rebalanceLocked()
+	r.publishLocked(over)
+}
+
+// foldOpenLocked replaces any current preview with a fresh one, folding the
+// old rows (and a status-row placeholder) into residue.
+func (r *region) foldOpenLocked(label string) {
 	if r.label != "" {
 		r.residue = append(r.residue, r.ptail...)
+		if !r.since.IsZero() {
+			r.residue = append(r.residue, "")
+		}
 	} else {
 		r.consumeResidueLocked(1) // the header row overwrites a residue row
 	}
 	r.label = label
 	r.ptail = nil
 	r.open = true
-	over := r.rebalanceLocked() // header row may steal a tail line
-	r.publishLocked(over)
-}
-
-// relabelPreview swaps an open preview's header text in place (a streamed
-// tool call's name arriving or growing) — a content change on an existing
-// row, zero geometry change.
-func (r *region) relabelPreview(label string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.label == "" || !r.open {
-		return
-	}
-	r.label = label
-	r.publishLocked(nil)
 }
 
 // previewLine appends a raw source line to the rolling preview window.
@@ -246,6 +275,7 @@ func (r *region) dropPreview() {
 	r.ptail = nil
 	r.residue = nil
 	r.open = false
+	r.since = time.Time{}
 	r.publishLocked(nil)
 }
 
@@ -278,5 +308,6 @@ func (r *region) flush() {
 		r.label = ""
 		r.ptail = nil
 	}
+	r.since = time.Time{}
 	r.publishLocked(over)
 }

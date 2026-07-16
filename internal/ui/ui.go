@@ -70,13 +70,16 @@ type ViewSpec struct {
 // StreamSink receives one turn's rendered output: committed lines go above
 // the frame into scrollback; BlockPreview opens the live rolling preview in
 // the frame (raw source lines; Close clears it). Labels render as given —
-// pre-style them (a streamed tool call shows its final committed look).
-// RelabelPreview swaps the open preview's header text in place (a call's
-// name arriving mid-stream). Done ends the turn scope.
+// pre-style them. CallPreview ensures the tool-call lifecycle widget instead:
+// a spinner header over a live "⎿ elapsed · ESC to cancel" row, relabeling in
+// place when one is already open (the clock keeps running). ClosePreview
+// deferred-closes whatever preview is open, so the next commit morphs it away
+// in place. Done ends the turn scope.
 type StreamSink interface {
 	CommitLines(lines ...string)
 	BlockPreview(label string) io.WriteCloser
-	RelabelPreview(label string)
+	CallPreview(label string)
+	ClosePreview()
 	Done()
 }
 

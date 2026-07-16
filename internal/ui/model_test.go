@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -345,6 +346,84 @@ func TestRegionMorphResidue(t *testing.T) {
 	r.dropPreview()
 	if s = last(); len(s.residue) != 0 || s.label != "" {
 		t.Fatalf("dropPreview left residue=%v label=%q", s.residue, s.label)
+	}
+}
+
+// TestRegionCallPreview: the tool-call lifecycle widget — header + live
+// status row — keeps its clock across relabels, and settling (deferred close
+// + the header/result commits) never changes the window height.
+func TestRegionCallPreview(t *testing.T) {
+	var snaps []regionMsg
+	r := &region{emit: func(over []string, snap regionMsg) { snaps = append(snaps, snap) }}
+	rows := func(s regionMsg) int {
+		n := len(s.tail) + len(s.residue)
+		if s.label != "" {
+			n += 1 + len(s.ptail)
+			if !s.since.IsZero() {
+				n++
+			}
+		}
+		return n
+	}
+	last := func() regionMsg { return snaps[len(snaps)-1] }
+
+	r.commit([]string{"p1", "p2", "p3", "p4"})
+	r.openCallPreview("[write_file …]")
+	s := last()
+	if s.since.IsZero() || s.label != "[write_file …]" {
+		t.Fatalf("call preview not raised: %+v", s)
+	}
+	if got := rows(s); got != tailKeep {
+		t.Fatalf("rows with call widget = %d, want %d", got, tailKeep)
+	}
+	started := s.since
+
+	// Expanding the header (composing → full args) keeps the clock running.
+	r.openCallPreview("[write_file path:a.txt]")
+	s = last()
+	if s.label != "[write_file path:a.txt]" || !s.since.Equal(started) {
+		t.Fatalf("ensure should relabel in place keeping the clock: %+v", s)
+	}
+	if got := rows(s); got != tailKeep {
+		t.Fatalf("rows after relabel = %d, want %d", got, tailKeep)
+	}
+
+	// Settle: deferred close + the blank/header commit replaces the widget's
+	// two rows exactly; result lines then flow as normal commits.
+	r.closePreview()
+	r.commit([]string{"", "[write_file path:a.txt]"})
+	s = last()
+	if s.label != "" || !s.since.IsZero() {
+		t.Fatalf("widget should be settled: %+v", s)
+	}
+	if got := rows(s); got != tailKeep {
+		t.Fatalf("rows after settle = %d, want %d (the composer would move)", got, tailKeep)
+	}
+	r.commit([]string{"  ⎿ wrote 1.2 KB"})
+	if got := rows(last()); got != tailKeep {
+		t.Fatalf("rows after result = %d, want %d", got, tailKeep)
+	}
+}
+
+// TestCallPreviewRendering: the widget renders a spinner header over the live
+// "⎿ elapsed" row, with the cancel hint while a cancel scope is active.
+func TestCallPreviewRendering(t *testing.T) {
+	m := newTestModel(t)
+	m = step(t, m, regionMsg{label: "[bash …]", since: time.Now().Add(-3 * time.Second)})
+	got := stripSGR(content(m))
+	if !strings.Contains(got, "[bash …]") {
+		t.Fatalf("widget header missing:\n%s", got)
+	}
+	if !strings.Contains(got, "⎿ 3s") {
+		t.Fatalf("elapsed status row missing:\n%s", got)
+	}
+	if strings.Contains(got, "ESC to cancel") {
+		t.Fatalf("cancel hint without a cancel scope:\n%s", got)
+	}
+
+	m = step(t, m, scopePushMsg{cancel: func() {}})
+	if got := stripSGR(content(m)); !strings.Contains(got, "⎿ 3s · ESC to cancel") {
+		t.Fatalf("cancel hint missing with an active scope:\n%s", got)
 	}
 }
 

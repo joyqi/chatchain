@@ -717,6 +717,17 @@ func (m *model) View() tea.View {
 			b.WriteString(faint + "  " + ansi.Truncate(line, maxInt(4, m.width-4), "…") + sgrReset + "\n")
 		}
 		rowsAbove += 1 + len(m.region.ptail)
+		if !m.region.since.IsZero() {
+			// The call preview's live status row: where the result's "⎿" line
+			// will land, showing elapsed time (spinner ticks re-render it)
+			// and the cancel hint until the tool's output replaces it.
+			status := fmt.Sprintf("⎿ %ds", int(time.Since(m.region.since).Seconds()))
+			if len(m.cancels) > 0 {
+				status += " · ESC to cancel"
+			}
+			b.WriteString(faint + "  " + status + sgrReset + "\n")
+			rowsAbove++
+		}
 	}
 
 	// Type-ahead queue: dim "»" lines above the separator (content side).
