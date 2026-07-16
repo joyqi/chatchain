@@ -49,7 +49,7 @@ Extracted from the SDK sources (versions: openai v3.43.0, anthropic v1.57.0, gen
   round-trip); tool_calls otherwise reconstructed `{id, type:function, function:{name,
   arguments:<json string>}}`.
 - Streaming: `data:` chunks; `choices[].delta.content` → content writer; nonstandard
-  `delta.reasoning` (deepseek) → reasoning writer (parse from raw delta JSON); tool-call
+  thinking deltas under `reasoning` AND `reasoning_content` → reasoning writer; tool-call
   deltas accumulate BY `index` (id/name arrive once, arguments concatenate); usage on the
   final chunk (any chunk with total_tokens>0 wins); `[DONE]` ends, keep draining; finish_reason
   captured. A `stream:true` request answered with a plain JSON body (broken compat server) must
@@ -61,8 +61,10 @@ Extracted from the SDK sources (versions: openai v3.43.0, anthropic v1.57.0, gen
   `response.reasoning_summary_text.delta` → reasoning; completed output items recorded for
   verbatim replay (reasoning items included — compatibility test case before cutover);
   usage from `response.completed`.
-- FIX during port: `response.failed` / `response.incomplete` / `error` events currently fall
-  through silently and surface as bare `io.EOF`; map them to structured errors.
+- FIXED in the port: `response.failed` / `response.incomplete` / `error` events map to
+  structured `*llm.RespFailure` errors (event name + code + message). Pre-port they fell
+  through silently and surfaced as bare `io.EOF`. Pinned by TestOpenResponsesTerminalEvents;
+  the provider still tolerates a late error after content already streamed (old behavior).
 
 ### anthropic (messages)
 - `POST {base}/v1/messages`, `GET {base}/v1/models` (paginate: `after_id=<last_id>` until
@@ -71,8 +73,9 @@ Extracted from the SDK sources (versions: openai v3.43.0, anthropic v1.57.0, gen
   with text/image/document(PDF) blocks, tools, temperature, thinking config (budget_tokens).
 - Streaming SSE event grammar: message_start / content_block_start / content_block_delta
   (text_delta | thinking_delta | input_json_delta) / content_block_stop / message_delta
-  (usage, stop_reason) / ping / error. FIX during port: accumulate content blocks BY INDEX
-  (today's single-accumulator scheme silently corrupts interleaved parallel tool_use).
+  (usage, stop_reason) / ping / error. FIXED in the port: content blocks accumulate BY INDEX
+  (the pre-port single-accumulator scheme silently corrupted interleaved parallel tool_use;
+  pinned by an interleaved-blocks transcript test).
 - Error envelope `{"error":{"type":...,"message":...}}`; 529 overloaded = retryable like 5xx.
 
 ### google (generateContent, both backends)
