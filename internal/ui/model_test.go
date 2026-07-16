@@ -272,6 +272,82 @@ func TestRegionMorph(t *testing.T) {
 	}
 }
 
+// TestRegionMorphResidue: a preview collapsing into FEWER lines than it
+// occupied (the thinking window folding to its one-line marker) must not
+// shrink the window — the uncovered rows stay as residue and later commits
+// consume them top-down.
+func TestRegionMorphResidue(t *testing.T) {
+	var snaps []regionMsg
+	r := &region{emit: func(over []string, snap regionMsg) { snaps = append(snaps, snap) }}
+	rows := func(s regionMsg) int {
+		n := len(s.tail) + len(s.residue)
+		if s.label != "" {
+			n += 1 + len(s.ptail)
+		}
+		return n
+	}
+	last := func() regionMsg { return snaps[len(snaps)-1] }
+
+	// Warm to full height, then a thinking preview takes the window over.
+	r.commit([]string{"p1", "p2", "p3", "p4"})
+	r.openPreview("Thinking")
+	for _, l := range []string{"think1", "think2", "think3"} {
+		r.previewLine(l)
+	}
+	if got := rows(last()); got != tailKeep {
+		t.Fatalf("rows during thinking = %d, want %d", got, tailKeep)
+	}
+
+	// Collapse: one marker line replaces the header; the three thinking rows
+	// become residue — height unchanged, composer must not move.
+	r.closePreview()
+	r.commit([]string{"◇ thought for 3s"})
+	s := last()
+	if s.label != "" || len(s.residue) != 3 || s.residue[0] != "think1" {
+		t.Fatalf("after collapse: label=%q residue=%v, want 3 residue rows", s.label, s.residue)
+	}
+	if got := rows(s); got != tailKeep {
+		t.Fatalf("rows after collapse = %d, want %d (the composer would move)", got, tailKeep)
+	}
+
+	// Later commits overwrite residue top-down, height still constant.
+	r.commit([]string{"", "reply-1"})
+	s = last()
+	if len(s.residue) != 1 || s.residue[0] != "think3" {
+		t.Fatalf("residue after 2 lines = %v, want [think3]", s.residue)
+	}
+	if got := rows(s); got != tailKeep {
+		t.Fatalf("rows mid-consumption = %d, want %d", got, tailKeep)
+	}
+	r.commit([]string{"reply-2", "reply-3"})
+	s = last()
+	if len(s.residue) != 0 {
+		t.Fatalf("residue should be fully consumed, got %v", s.residue)
+	}
+	if got := rows(s); got != tailKeep {
+		t.Fatalf("rows after consumption = %d, want %d", got, tailKeep)
+	}
+
+	// A new preview's header row also consumes a residue row.
+	r.openPreview("Thinking")
+	r.previewLine("t1")
+	r.previewLine("t2")
+	r.closePreview()
+	r.commit([]string{"◇ thought for 1s"}) // residue = [t1 t2]
+	before := rows(last())
+	r.openPreview("rendering code…")
+	s = last()
+	if len(s.residue) != 1 || rows(s) != before {
+		t.Fatalf("openPreview over residue: residue=%v rows=%d, want 1 residue row and %d rows", s.residue, rows(s), before)
+	}
+
+	// dropPreview (turn boundary) clears residue too.
+	r.dropPreview()
+	if s = last(); len(s.residue) != 0 || s.label != "" {
+		t.Fatalf("dropPreview left residue=%v label=%q", s.residue, s.label)
+	}
+}
+
 // TestRegionRendering: the model renders the staging window above the
 // separator — tail as-is, preview dim under a spinner header.
 func TestRegionRendering(t *testing.T) {

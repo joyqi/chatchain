@@ -15,33 +15,38 @@ const tailKeep = 4
 // (Println). A block preview occupies window rows by stealing them (each
 // steal commits one tail line — a growth, never a shrink), and when the block
 // flushes, its rendered lines flow through the same window: the head commits
-// above, the last rows REPLACE the preview in place. The window's height only
-// ever grows to tailKeep and then stays constant, so the composer never pops
-// upward — the bounce class is gone by construction.
+// above, the last rows REPLACE the preview in place. When the replacement is
+// SHORTER than the preview (a reasoning window collapsing to its one-line
+// "thought for Ns" marker), the uncovered preview rows stay put as dim
+// residue and later lines consume them top-down — never entering scrollback.
+// The window's height only ever grows to tailKeep and then stays constant, so
+// the composer never pops upward — the bounce class is gone by construction.
 //
 // The window never closes: at idle it shows the last lines of the previous
 // reply (visually indistinguishable from scrollback); Close flushes it. The
-// only remaining shrink is an interrupted preview (dropPreview), a one-frame
-// artifact on an already-disruptive action.
+// only remaining shrinks are an interrupted preview and end-of-turn residue
+// (both through dropPreview), one-frame artifacts on turn boundaries.
 //
 // All mutations emit Println (overflow) + a regionMsg snapshot to the model
 // under one mutex, so concurrent writers (stream goroutine, MCP reporter)
 // keep global ordering.
 type region struct {
-	mu    sync.Mutex
-	u     *UI
-	emit  func(over []string, snap regionMsg) // test seam; nil = via u.p
-	tail  []string                            // committed-pending lines shown in the frame
-	label string                              // preview header label ("" = no preview)
-	ptail []string                            // preview rolling source lines (≤ previewWindow)
-	open  bool                                // preview receiving lines (false once closed/deferred)
+	mu      sync.Mutex
+	u       *UI
+	emit    func(over []string, snap regionMsg) // test seam; nil = via u.p
+	tail    []string                            // committed-pending lines shown in the frame
+	residue []string                            // stale preview rows awaiting in-place replacement
+	label   string                              // preview header label ("" = no preview)
+	ptail   []string                            // preview rolling source lines (≤ previewWindow)
+	open    bool                                // preview receiving lines (false once closed/deferred)
 }
 
 // regionMsg is the display snapshot the model renders.
 type regionMsg struct {
-	tail  []string
-	label string
-	ptail []string
+	tail    []string
+	residue []string
+	label   string
+	ptail   []string
 }
 
 func (r *region) previewRowsLocked() int {
@@ -51,11 +56,21 @@ func (r *region) previewRowsLocked() int {
 	return 1 + len(r.ptail)
 }
 
-// rebalanceLocked keeps len(tail)+previewRows ≤ tailKeep by overflowing the
-// oldest tail lines; returns the overflow to Println.
+// consumeResidueLocked lets n freshly displayed rows overwrite the oldest
+// residue rows — the in-place replacement that keeps the window height flat.
+func (r *region) consumeResidueLocked(n int) {
+	if n >= len(r.residue) {
+		r.residue = nil
+		return
+	}
+	r.residue = r.residue[n:]
+}
+
+// rebalanceLocked keeps len(tail)+residue+previewRows ≤ tailKeep by
+// overflowing the oldest tail lines; returns the overflow to Println.
 func (r *region) rebalanceLocked() []string {
 	var over []string
-	for len(r.tail)+r.previewRowsLocked() > tailKeep && len(r.tail) > 0 {
+	for len(r.tail)+len(r.residue)+r.previewRowsLocked() > tailKeep && len(r.tail) > 0 {
 		over = append(over, r.tail[0])
 		r.tail = r.tail[1:]
 	}
@@ -64,9 +79,10 @@ func (r *region) rebalanceLocked() []string {
 
 func (r *region) snapshotLocked() regionMsg {
 	return regionMsg{
-		tail:  append([]string{}, r.tail...),
-		label: r.label,
-		ptail: append([]string{}, r.ptail...),
+		tail:    append([]string{}, r.tail...),
+		residue: append([]string{}, r.residue...),
+		label:   r.label,
+		ptail:   append([]string{}, r.ptail...),
 	}
 }
 
@@ -133,8 +149,9 @@ func joinOverflow(over []string) string {
 }
 
 // commit flows lines through the window. With a (possibly deferred-closed)
-// preview present, this is the in-place morph: the preview rows are replaced
-// by the block's last lines, earlier lines overflow above — height constant.
+// preview present, this is the in-place morph: the lines cover the header row
+// first, then the preview rows top-down; preview rows the block's lines don't
+// reach stay as residue for later lines — height constant either way.
 func (r *region) commit(lines []string) {
 	if len(lines) == 0 {
 		return
@@ -142,9 +159,16 @@ func (r *region) commit(lines []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.label != "" && !r.open {
-		// Deferred preview close: its replacement content has arrived.
+		// Deferred preview close: its replacement content has arrived. The
+		// first line takes the header's row; uncovered ptail rows become
+		// residue (an over-long replacement leaves none).
+		if covered := len(lines) - 1; covered < len(r.ptail) {
+			r.residue = append(r.residue, r.ptail[covered:]...)
+		}
 		r.label = ""
 		r.ptail = nil
+	} else {
+		r.consumeResidueLocked(len(lines))
 	}
 	r.tail = append(r.tail, lines...)
 	over := r.rebalanceLocked()
@@ -155,6 +179,7 @@ func (r *region) commit(lines []string) {
 func (r *region) openPreview(label string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.consumeResidueLocked(1) // the header row overwrites a residue row
 	r.label = label
 	r.ptail = nil
 	r.open = true
@@ -172,6 +197,8 @@ func (r *region) previewLine(line string) {
 	r.ptail = append(r.ptail, line)
 	if len(r.ptail) > previewWindow {
 		r.ptail = r.ptail[len(r.ptail)-previewWindow:]
+	} else {
+		r.consumeResidueLocked(1) // a genuinely new row overwrites a residue row
 	}
 	over := r.rebalanceLocked() // growth steals tail lines: commit, never shrink
 	r.publishLocked(over)
@@ -187,16 +214,17 @@ func (r *region) closePreview() {
 	r.open = false
 }
 
-// dropPreview discards a preview outright (interrupted turn): the one shrink
-// this design keeps, on an already-disruptive path.
+// dropPreview discards a preview and any residue outright (interrupted turn,
+// end of turn): the one shrink this design keeps, on turn boundaries.
 func (r *region) dropPreview() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.label == "" {
+	if r.label == "" && len(r.residue) == 0 {
 		return
 	}
 	r.label = ""
 	r.ptail = nil
+	r.residue = nil
 	r.open = false
 	r.publishLocked(nil)
 }
@@ -218,12 +246,14 @@ func (r *region) flushTail() {
 }
 
 // flush commits everything still staged (shutdown: scrollback must hold the
-// full transcript).
+// full transcript). Preview rows and residue are display-only — dropped, not
+// flushed.
 func (r *region) flush() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	over := r.tail
 	r.tail = nil
+	r.residue = nil
 	if r.label != "" {
 		r.label = ""
 		r.ptail = nil

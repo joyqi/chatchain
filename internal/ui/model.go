@@ -693,6 +693,13 @@ func (m *model) View() tea.View {
 		b.WriteString(line + "\n")
 		rowsAbove++
 	}
+	// Residue: stale preview rows a collapsed block didn't cover, kept dim
+	// in place until fresh lines overwrite them (region.go) — the window
+	// height never dips when a thinking block folds into its marker.
+	for _, line := range m.region.residue {
+		b.WriteString(faint + "  " + ansi.Truncate(line, maxInt(4, m.width-4), "…") + sgrReset + "\n")
+		rowsAbove++
+	}
 	if m.region.label != "" {
 		b.WriteString(cyan + spinnerFrames[m.spin%len(spinnerFrames)] + sgrReset +
 			faint + " " + m.region.label + sgrReset + "\n")

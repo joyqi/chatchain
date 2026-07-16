@@ -709,7 +709,8 @@ func reportMCPFailures(mgr *mcpmgr.Manager, u *ui.UI) {
 
 // reasoningPreview renders streaming reasoning as a frame preview (rolling window)
 // collapsing to a "◇ thought for Ns" marker in scrollback — the v2 twin of
-// reasoningStream.
+// reasoningStream. It adopts the already-open "Thinking" preview (opened when
+// the turn started waiting); the clock starts at the first reasoning byte.
 type reasoningPreview struct {
 	pw    io.WriteCloser
 	sink  ui.StreamSink
@@ -717,8 +718,8 @@ type reasoningPreview struct {
 	done  bool
 }
 
-func newReasoningPreview(sink ui.StreamSink) *reasoningPreview {
-	return &reasoningPreview{pw: sink.BlockPreview("Thinking"), sink: sink, start: time.Now()}
+func newReasoningPreview(pw io.WriteCloser, sink ui.StreamSink) *reasoningPreview {
+	return &reasoningPreview{pw: pw, sink: sink, start: time.Now()}
 }
 
 func (r *reasoningPreview) Write(p []byte) (int, error) {
@@ -777,7 +778,11 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w i
 
 	sink.CommitLines("") // blank line opening the assistant's turn
 
-	stop := u.Busy("Thinking...")
+	// The "Thinking" spinner lives in the frame preview above the separator —
+	// the single home for thinking (no status-line busy). Content-first
+	// streams deferred-close it; the first commit then morphs the header row
+	// away in place, so the composer never moves.
+	pw := sink.BlockPreview("Thinking")
 	firstN, readErr = reasonPr.Read(firstChunk)
 	if readErr != nil {
 		readErr = nil
@@ -785,9 +790,9 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w i
 	} else {
 		hasReasoning = true
 	}
-	stop()
 
 	if readErr != nil {
+		pw.Close() // deferred; error output (or sink.Done) reclaims the row
 		<-done
 		if streamErr != nil {
 			return fail(streamErr)
@@ -800,8 +805,10 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w i
 		return markdown.NewWriter(msink), msink
 	}
 
-	if hasReasoning {
-		rv := newReasoningPreview(sink)
+	if !hasReasoning {
+		pw.Close() // deferred close: the first content commit morphs the header away
+	} else {
+		rv := newReasoningPreview(pw, sink)
 		finishRV := func() { rv.finish() } // done-guarded inside
 		defer finishRV()
 		rv.Write(firstChunk[:firstN])
@@ -958,7 +965,10 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provi
 
 	sink.CommitLines("") // blank line opening this round
 
-	stop := u.Busy("Thinking...")
+	// The "Thinking" spinner lives in the frame preview above the separator
+	// (see streamTurn); a text-less tool round deferred-closes it and the
+	// tool-call header commit morphs it away.
+	pw := sink.BlockPreview("Thinking")
 	firstN, readErr = reasonPr.Read(firstChunk)
 	if readErr != nil {
 		readErr = nil
@@ -966,9 +976,9 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provi
 	} else {
 		hasReasoning = true
 	}
-	stop()
 
 	if readErr != nil {
+		pw.Close() // deferred; the next commit (tool header, error) reclaims the row
 		<-done
 		if interrupted() || streamErr != nil {
 			return fail(streamErr)
@@ -984,8 +994,10 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provi
 		return markdown.NewWriter(msink), msink
 	}
 
-	if hasReasoning {
-		rv := newReasoningPreview(sink)
+	if !hasReasoning {
+		pw.Close() // deferred close: the first content commit morphs the header away
+	} else {
+		rv := newReasoningPreview(pw, sink)
 		finishRV := func() { rv.finish() }
 		defer finishRV()
 		rv.Write(firstChunk[:firstN])
