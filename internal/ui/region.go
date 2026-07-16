@@ -175,11 +175,18 @@ func (r *region) commit(lines []string) {
 	r.publishLocked(over)
 }
 
-// openPreview starts a block preview (header + rolling source lines).
+// openPreview starts a block preview (header + rolling source lines). Opening
+// over an existing preview folds that one into residue — the new header takes
+// the old header's row, the old rows await replacement — so back-to-back
+// previews (consecutive streamed tool calls) never move the composer.
 func (r *region) openPreview(label string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.consumeResidueLocked(1) // the header row overwrites a residue row
+	if r.label != "" {
+		r.residue = append(r.residue, r.ptail...)
+	} else {
+		r.consumeResidueLocked(1) // the header row overwrites a residue row
+	}
 	r.label = label
 	r.ptail = nil
 	r.open = true

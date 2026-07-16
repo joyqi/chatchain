@@ -801,33 +801,95 @@ func formatByteSize(n int64) string {
 	}
 }
 
-// watchToolComposing surfaces "the model is streaming a tool call" in the
-// status line — a large write_file call is otherwise dead air, since tool
-// calls render only once complete. Deltas drive the shared phase controller
-// (with a byte meter); the returned cleanup detaches the observer.
-func watchToolComposing(phases *turnPhases, tp provider.ToolProvider) func() {
+// composeLineWidth chunks streamed tool-call arguments (usually one endless
+// JSON line) into display rows for the rolling preview.
+const composeLineWidth = 80
+
+// lineChunker re-lines a newline-free stream into fixed-width display rows.
+type lineChunker struct {
+	width int
+	buf   []byte
+	emit  func(line string)
+}
+
+func (c *lineChunker) add(s string) {
+	c.buf = append(c.buf, s...)
+	// Strictly > width: the boundary byte must exist to test, and a buffer
+	// ending exactly at width may end mid-rune (delta boundaries are
+	// arbitrary) — flush() handles the true end of the stream.
+	for len(c.buf) > c.width {
+		cut := c.width
+		for cut > 0 && !isUTF8Start(c.buf[cut]) {
+			cut--
+		}
+		if cut == 0 {
+			break
+		}
+		c.emit(string(c.buf[:cut]))
+		c.buf = append(c.buf[:0], c.buf[cut:]...)
+	}
+}
+
+func (c *lineChunker) flush() {
+	if len(c.buf) > 0 {
+		c.emit(string(c.buf))
+		c.buf = nil
+	}
+}
+
+func isUTF8Start(b byte) bool { return b&0xC0 != 0x80 }
+
+// watchToolComposing stages a streaming tool call in the frame's rolling
+// preview — the same surface reasoning and markdown blocks render through —
+// so a large write_file call scrolls live instead of being dead air. When the
+// round ends the deferred-closed preview morphs IN PLACE into the committed
+// collapsed tool-call header (the residue mechanics keep the height flat).
+// The returned cleanup detaches the observer and deferred-closes the preview;
+// call it after the stream goroutine has finished.
+func watchToolComposing(phases *turnPhases, sink ui.StreamSink, tp provider.ToolProvider) func() {
 	obs, ok := tp.(provider.ToolCallStreamObserver)
 	if !ok {
 		return func() {}
 	}
 	var mu sync.Mutex
-	var last string
-	meter := newBusyMeter(phases.u)
+	var pw io.WriteCloser
+	var current string
+	var chunker *lineChunker
 	obs.SetToolCallObserver(func(name, delta string) {
+		if delta == "" {
+			return // atomic backends (google) have nothing to stage
+		}
 		mu.Lock()
 		defer mu.Unlock()
-		label := "Composing tool call"
+		if pw == nil || (name != "" && current != "" && name != current) {
+			if pw != nil {
+				chunker.flush()
+				pw.Close() // folds into the next preview (region residue)
+			}
+			phases.end() // the preview takes over from the status spinner
+			label := "Calling " + displayToolName(name)
+			if name == "" {
+				label = "Calling tool"
+			}
+			w := sink.BlockPreview(label)
+			pw = w
+			chunker = &lineChunker{width: composeLineWidth, emit: func(line string) { w.Write([]byte(line + "\n")) }}
+		}
 		if name != "" {
-			label += " — " + displayToolName(name)
+			current = name
 		}
-		if label != last {
-			last = label
-			meter.reset()
-		}
-		phases.set(label)
-		meter.add(len(delta))
+		chunker.add(delta)
 	})
-	return func() { obs.SetToolCallObserver(nil) }
+	return func() {
+		obs.SetToolCallObserver(nil)
+		mu.Lock()
+		defer mu.Unlock()
+		if pw != nil {
+			chunker.flush()
+			pw.Close() // deferred: the tool-call header commit morphs it away
+			pw = nil
+		}
+	}
 }
 
 // streamTurn renders one provider stream through the ui sink: busy spinner
@@ -1062,7 +1124,7 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provi
 	phases := newTurnPhases(u)
 	defer phases.end()
 	defer watchPhases(ctx, phases)()
-	defer watchToolComposing(phases, tp)()
+	defer watchToolComposing(phases, sink, tp)()
 
 	firstN, readErr = reasonPr.Read(firstChunk)
 	if readErr != nil {

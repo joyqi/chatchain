@@ -348,6 +348,40 @@ func TestRegionMorphResidue(t *testing.T) {
 	}
 }
 
+// TestRegionPreviewOverPreview: opening a preview over an existing one folds
+// the old rows into residue (back-to-back streamed tool calls) — height flat.
+func TestRegionPreviewOverPreview(t *testing.T) {
+	var snaps []regionMsg
+	r := &region{emit: func(over []string, snap regionMsg) { snaps = append(snaps, snap) }}
+	rows := func(s regionMsg) int {
+		n := len(s.tail) + len(s.residue)
+		if s.label != "" {
+			n += 1 + len(s.ptail)
+		}
+		return n
+	}
+
+	r.commit([]string{"p1", "p2", "p3", "p4"})
+	r.openPreview("Calling write_file")
+	for _, l := range []string{"a1", "a2", "a3"} {
+		r.previewLine(l)
+	}
+	before := rows(snaps[len(snaps)-1])
+
+	r.closePreview()
+	r.openPreview("Calling bash")
+	s := snaps[len(snaps)-1]
+	if s.label != "Calling bash" || len(s.ptail) != 0 {
+		t.Fatalf("new preview wrong: label=%q ptail=%v", s.label, s.ptail)
+	}
+	if len(s.residue) != 3 || s.residue[0] != "a1" {
+		t.Fatalf("old preview rows should fold into residue, got %v", s.residue)
+	}
+	if got := rows(s); got != before {
+		t.Fatalf("rows across preview swap = %d, want %d", got, before)
+	}
+}
+
 // TestRegionRendering: the model renders the staging window above the
 // separator — tail as-is, preview dim under a spinner header.
 func TestRegionRendering(t *testing.T) {
