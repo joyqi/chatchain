@@ -194,8 +194,9 @@ Besides MCP servers, ChatChain ships built-in tools grouped into named
 **toolsets** that you enable per provider in the config file. A toolset is
 enabled by listing it under that provider's `tools:` key; the value is the
 set's shared configuration, and an empty value uses its defaults. Available
-sets: `command` (running programs), `code` (reading, searching, and editing
-project files), and `agent` (skill activation; auto-enabled by agent mode).
+sets: `shell` (running bash commands, sandboxed), `code` (reading, searching,
+and editing project files), and `agent` (skill activation; auto-enabled by
+agent mode).
 
 ```yaml
 providers:
@@ -204,39 +205,42 @@ providers:
     key: sk-ant-xxx
     model: claude-sonnet-4-20250514
     tools:
-      command:               # allow only these programs
-        - git
-        - ssh
-        - "py*"              # globs are supported (matches python, pytest, …)
+      shell:                 # empty → sandboxed, network blocked
+      code:
 
   openai:
     key: sk-official
     model: gpt-4o
     tools:
-      command:               # empty → any program is allowed
+      shell:
+        network: true        # allow network inside the sandbox
+        write: [~/go/pkg]    # extra sandbox-writable paths
 ```
 
-#### `command` — `run_command`
+#### `shell` — `bash`
 
-Lets the model run commands on your machine and returns their combined
-stdout/stderr. The allow list contains **program names** (`argv[0]`), each matched
-as a glob against the program and its basename — so `git` permits every `git`
-subcommand, and `py*` permits `python`, `python3`, `pytest`, … An empty list
-permits any program.
+Lets the model run real bash command lines — pipes, redirects, `&&` chaining,
+heredocs — and returns their combined stdout/stderr. The model calls it with
+`command` (required) and an optional `cwd` (defaults to the project root).
 
-The model calls it with `command` (required), and optional `stdin` and `cwd`.
+Safety model — the same one Claude Code and Codex CLI use:
 
-Safety model:
+- **OS sandbox by default.** On macOS commands run under Seatbelt
+  (`sandbox-exec`, built into the system); on Linux under
+  [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`, if
+  installed). Inside the sandbox, file **writes are confined to the project
+  root plus temp/cache directories** (add more via `write:`), and **network
+  access is blocked** unless `network: true`.
+- **Sandboxed calls run without prompting.** Where no sandbox is available
+  (Windows, Linux without bwrap) or with `sandbox: off`, every call instead
+  asks for confirmation in the chat (allow once / allow for this session /
+  deny), and non-interactive `-m` runs reject it — set `auto_run: true` to
+  waive that.
+- Output is capped at 32 KB and 512 lines (head + tail kept, middle elided,
+  bounded even while streaming). Each call is capped at **10 minutes**; while a command runs, the status-line spinner
+  shows the elapsed time — press **ESC** (or Ctrl+C) to terminate it.
 
-- **No shell.** Commands are split into `argv` and executed directly. Shell
-  metacharacters (`| & ; > < * $VAR` …) are **not** interpreted — they become
-  literal arguments, so an allow-listed program can never be used to launch a
-  second command (e.g. `git log; rm -rf ~` runs `git` with the literal args
-  `log;`, `rm`, … and never invokes `rm`).
-- The allow list is your trust boundary: listing an interpreter (`bash`, `sh`,
-  `python`, …) effectively grants broad execution — that is your choice.
-- Each call is capped at **10 minutes**. While a command runs, the status-line
-  spinner shows the elapsed time; press **ESC** (or Ctrl+C) to terminate it.
+Design: docs/design/shell-toolset.md
 
 #### `code` — coding tools
 
@@ -244,8 +248,8 @@ The coding loop: `glob` and `grep` locate files (`.git`, `.gitignore` matches,
 and binaries excluded), `list_dir` explores, `read_file` returns line-numbered
 content, and `edit_file` (exact, unique string replacement) / `write_file`
 change files. Everything is confined to the **project root** (the git root of
-the working directory). Verification — builds, tests — goes through
-`run_command`, so enable the `command` set alongside.
+the working directory). Verification — builds, tests — goes through the
+`shell` set's `bash`, so enable it alongside.
 
 Safety model:
 
@@ -306,7 +310,7 @@ higher wins):
 Discovered skills are advertised to the model as a name + description catalog
 inside the overlay; the model activates one by calling `load_skill` with the
 skill's name, reads files the skill references through the same tool's `file`
-argument, and runs bundled scripts through `run_command` (enable the `command`
+argument, and runs bundled scripts through `bash` (enable the `shell`
 toolset for the provider if your skills need scripts). Invalid skills are
 skipped with a warning, never fatal.
 

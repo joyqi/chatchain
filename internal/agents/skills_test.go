@@ -176,7 +176,7 @@ func TestSkillsCatalog(t *testing.T) {
 	}
 	got := skillsCatalog(skills)
 	for _, want := range []string{
-		skillsCatalogInstruction, // activate via load_skill, scripts via run_command
+		skillsCatalogInstruction, // activate via load_skill, scripts via bash
 		"<available_skills>", "</available_skills>",
 		"<name>alpha</name>", "<description>does alpha things</description>",
 		"<name>beta</name>",
@@ -189,8 +189,8 @@ func TestSkillsCatalog(t *testing.T) {
 	if strings.Contains(got, "SKILL.md") {
 		t.Errorf("catalog should not carry paths:\n%s", got)
 	}
-	if !strings.Contains(skillsCatalogInstruction, "load_skill") || !strings.Contains(skillsCatalogInstruction, "run_command") {
-		t.Error("instruction sentence should mention load_skill and run_command")
+	if !strings.Contains(skillsCatalogInstruction, "load_skill") || !strings.Contains(skillsCatalogInstruction, "bash") {
+		t.Error("instruction sentence should mention load_skill and bash")
 	}
 }
 

@@ -12,7 +12,7 @@ func TestDisplayToolName(t *testing.T) {
 		// the first-"__" split lands on the real server/tool boundary.
 		{"url-named server", "mcp__https_mcp_example_com_sse__search", "https_mcp_example_com_sse:search"},
 		{"tool part keeps double underscore", "mcp__srv__take__screenshot", "srv:take__screenshot"},
-		{"built-in unchanged", "run_command", "run_command"},
+		{"built-in unchanged", "bash", "bash"},
 		{"raw name from old session unchanged", "get_file_contents", "get_file_contents"},
 		{"degenerate empty server unchanged", "mcp____x", "mcp____x"},
 		{"degenerate empty tool unchanged", "mcp__srv__", "mcp__srv__"},

@@ -66,7 +66,7 @@ func TestLastRounds(t *testing.T) {
 func TestEchoRounds(t *testing.T) {
 	msgs := []provider.Message{
 		{Role: "user", Content: "first question", Attachments: []provider.Attachment{{Filename: "a.png"}, {Filename: "b.pdf"}}},
-		{Role: "assistant", ToolCalls: []provider.ToolCall{{Name: "run_command"}}},
+		{Role: "assistant", ToolCalls: []provider.ToolCall{{Name: "bash"}}},
 		{Role: "tool", Content: "output 1"},
 		{Role: "tool", Content: "output 2"},
 		{Role: "assistant", Content: "final answer", Reasoning: "secret thinking"},

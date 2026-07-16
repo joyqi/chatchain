@@ -118,7 +118,7 @@ func (l *loadSkill) resolve(name string) (agents.Skill, string) {
 
 // serveInstructions returns the skill's SKILL.md body prefixed with a header
 // naming the skill and its directory — the model needs the directory to run
-// bundled scripts through run_command and to name files for "file" reads.
+// bundled scripts through the bash tool and to name files for "file" reads.
 func (l *loadSkill) serveInstructions(sk agents.Skill, args map[string]any) (string, bool, error) {
 	data, errText := readCapped(sk.Path)
 	if errText != "" {

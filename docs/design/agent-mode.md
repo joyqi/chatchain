@@ -63,9 +63,10 @@ Per the Agent Skills spec (https://agentskills.io/specification):
 - **Levels 2/3**: activation is exactly that — the model calls `load_skill`
   with the skill's name (getting the SKILL.md body plus the skill's
   directory), reads referenced files through the same tool's `file` argument,
-  and runs bundled scripts through the existing `run_command` tool (the
-  spec's own script guidance — `uv run`, `npx`, `go run` — is argv-shaped, so
-  the argv-only run_command decision stands).
+  and runs bundled scripts through the shell set's `bash` tool (which runs
+  OS-sandboxed where the platform supports it — see
+  docs/design/shell-toolset.md; this superseded the earlier argv-only
+  run_command design).
 - The skills catalog participates in the same mtime-based freshness check as
   AGENTS.md: the probe stats the discovery roots (add/remove detection) AND
   each discovered skill's SKILL.md (in-place description edits are detected
@@ -77,9 +78,9 @@ Per the Agent Skills spec (https://agentskills.io/specification):
 Built-in tools are grouped into named **toolsets** (one source file per set in
 `tool/`, named after it): a provider's `tools:` config keys are set names, and
 each set decodes one shared config instance for all its tools. Current sets:
-`command` (run_command; config = allowed program globs) and `agent`
-(load_skill; no settings yet). Future sets slot in the same way (`code` for
-editing, `web` for browse/search). Agent mode auto-registers the `agent` set;
+`shell` (bash; sandboxed execution — docs/design/shell-toolset.md), `code`
+(file tools — docs/design/code-toolset.md), and `agent` (load_skill; no
+settings yet). Future sets slot in the same way (`web` for browse/search). Agent mode auto-registers the `agent` set;
 a `tools:` entry may still declare it explicitly (the configured instance
 wins).
 
@@ -90,7 +91,7 @@ general-purpose `read_file`, which could read anything on the machine):
   relative to the skill's directory), optional `offset`/`limit` line window.
 - Without `file`: returns the SKILL.md body (frontmatter consumed) headed by
   the skill's name and directory — the directory is what the model passes to
-  `run_command` for bundled scripts.
+  the `bash` tool for bundled scripts.
 - With `file`: serves a file bundled in the skill's directory; absolute paths
   and `..` escapes are rejected (symlink escapes wait for the P2
   workspace-trust pass). Size cap + output truncation with a continuation

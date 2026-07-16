@@ -191,9 +191,9 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 			if needsApproval(dispatch, tc.Name) {
 				*history = append(*history, provider.Message{
 					Role: "tool",
-					Content: fmt.Sprintf("%s was not executed: it modifies files and requires interactive approval, "+
+					Content: fmt.Sprintf("%s was not executed: it requires interactive approval, "+
 						"which is unavailable in this non-interactive run. Set the toolset's auto-approve option "+
-						"(e.g. tools.code.auto_write: true) to permit it here.", tc.Name),
+						"(tools.code.auto_write / tools.shell.auto_run) to permit it here.", tc.Name),
 					ToolCallID:   tc.ID,
 					ToolCallName: tc.Name,
 					IsError:      true,

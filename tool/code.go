@@ -22,7 +22,7 @@ import (
 
 // The "code" toolset: the locate → read → edit loop for programming
 // (docs/design/code-toolset.md). Verification runs through the command set's
-// run_command — this set never executes anything. All paths are jailed to the
+// bash — this set never executes anything. All paths are jailed to the
 // project root; the mutating tools (edit_file, write_file) require
 // interactive approval unless auto_write is configured, and refuse to touch a
 // file the model has not read in its current on-disk state.

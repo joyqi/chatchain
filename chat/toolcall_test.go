@@ -16,8 +16,8 @@ func TestToolCallHeader(t *testing.T) {
 		tc   provider.ToolCall
 		want string
 	}{
-		{"single arg", provider.ToolCall{Name: "run_command", Arguments: map[string]any{"command": "git status"}}, "[run_command command:git status]"},
-		{"keys sorted", provider.ToolCall{Name: "run_command", Arguments: map[string]any{"command": "git", "cwd": "/tmp", "stdin": "hi"}}, "[run_command command:git cwd:/tmp stdin:hi]"},
+		{"single arg", provider.ToolCall{Name: "bash", Arguments: map[string]any{"command": "git status"}}, "[bash command:git status]"},
+		{"keys sorted", provider.ToolCall{Name: "bash", Arguments: map[string]any{"command": "git", "cwd": "/tmp", "stdin": "hi"}}, "[bash command:git cwd:/tmp stdin:hi]"},
 		{"no args", provider.ToolCall{Name: "ping"}, "[ping]"},
 		{"newline collapsed", provider.ToolCall{Name: "x", Arguments: map[string]any{"a": "l1\nl2"}}, "[x a:l1 l2]"},
 	}

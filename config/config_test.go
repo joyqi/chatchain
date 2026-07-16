@@ -19,13 +19,13 @@ providers:
     key: sk-ant-xxx
     model: claude-sonnet-4
     tools:
-      run_command:
+      shell:
         - git
         - ssh
   openai:
     key: sk-official
     tools:
-      run_command:
+      shell:
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -33,11 +33,11 @@ providers:
 
 	cfg := Load(path)
 
-	// claude: run_command present with a populated list.
+	// claude: shell present with a populated list.
 	_, pc := cfg.Get("claude")
-	node, ok := pc.Tools["run_command"]
+	node, ok := pc.Tools["shell"]
 	if !ok {
-		t.Fatal("claude: run_command should be present")
+		t.Fatal("claude: shell should be present")
 	}
 	var allow []string
 	if err := node.Decode(&allow); err != nil {
@@ -47,10 +47,10 @@ providers:
 		t.Fatalf("allow = %v, want %v", allow, want)
 	}
 
-	// openai: run_command present but empty (key exists → enabled, defaults).
+	// openai: shell present but empty (key exists → enabled, defaults).
 	_, pc = cfg.Get("openai")
-	if _, ok := pc.Tools["run_command"]; !ok {
-		t.Fatal("openai: run_command key should be present even when empty")
+	if _, ok := pc.Tools["shell"]; !ok {
+		t.Fatal("openai: shell key should be present even when empty")
 	}
 
 	// A provider without a tools block has no enabled tools.

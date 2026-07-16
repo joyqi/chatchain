@@ -62,7 +62,7 @@ Wire names are unique because:
 - lossy or truncated tool segments carry a hash of the unsanitized
   composition.
 
-Built-in tools (`run_command`) are **not** prefixed; the `mcp__` prefix
+Built-in tools (`bash`) are **not** prefixed; the `mcp__` prefix
 guarantees they can never collide with MCP tools, so `tool.Merge`'s
 first-wins policy stays untouched. As a guardrail, `Manager.addServer` still
 checks `toolIndex` before registering: a duplicate wire name (unreachable

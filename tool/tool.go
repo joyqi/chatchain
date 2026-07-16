@@ -5,10 +5,10 @@
 // Each toolset is registered in the sets table by name. A provider's `tools:`
 // config maps a set name to the set's shared raw config; the set factory
 // decodes that one config instance and hands it to every tool it constructs
-// (an empty value means defaults). Current sets: "command" (run_command) and
-// "agent" (load_skill). The Registry aggregates the enabled tools behind the
-// Dispatcher surface, and Merge combines several dispatchers (e.g. built-ins
-// + an MCP manager) into one.
+// (an empty value means defaults). Current sets: "shell" (bash), "code"
+// (file tools), and "agent" (load_skill). The Registry aggregates the enabled
+// tools behind the Dispatcher surface, and Merge combines several dispatchers
+// (e.g. built-ins + an MCP manager) into one.
 package tool
 
 import (
@@ -65,13 +65,13 @@ type Env struct {
 type SetFactory func(env Env, node yaml.Node) ([]Tool, error)
 
 // sets is the central registry of built-in toolsets, one source file per set,
-// named after it (command.go, agent.go, code.go). Adding a set = a file with
+// named after it (shell.go, agent.go, code.go). Adding a set = a file with
 // its factory and one line here; growing a set = its factory returns one more
 // Tool. Future candidate: "web" (browse/search).
 var sets = map[string]SetFactory{
-	"command": newCommandSet,
-	"agent":   newAgentSet,
-	"code":    newCodeSet,
+	"shell": newShellSet,
+	"agent": newAgentSet,
+	"code":  newCodeSet,
 }
 
 // Registry holds the enabled built-in tools and satisfies Dispatcher.

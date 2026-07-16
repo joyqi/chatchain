@@ -14,7 +14,7 @@ const mcpWirePrefix = "mcp__"
 // server/tool separator; everything after it is the tool part, preserved
 // verbatim. Both segments shown are the sanitized wire forms (underscores
 // instead of e.g. hyphens, plus a hash suffix on lossy tool names), which is
-// acceptable for display. Any other name — built-in tools like run_command,
+// acceptable for display. Any other name — built-in tools like bash,
 // raw names replayed from pre-namespacing sessions, or a degenerate wire name
 // with an empty segment — is returned unchanged.
 func displayToolName(name string) string {

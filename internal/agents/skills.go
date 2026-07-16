@@ -202,7 +202,7 @@ func SkillSourceTag(path, root string) string {
 // catalog entry into an active skill.
 const skillsCatalogInstruction = "To use a skill, call the load_skill tool with the skill's name and follow " +
 	"the instructions it returns; read files the skill references by calling load_skill again with the " +
-	"\"file\" argument, and run its bundled scripts with run_command."
+	"\"file\" argument, and run its bundled scripts with the bash tool."
 
 // skillsCatalogCap bounds the rendered catalog like agentsChainCap bounds the
 // AGENTS.md chain: the number of discovered skills is unbounded, the system

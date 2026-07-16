@@ -76,7 +76,7 @@ Rationale:
 - A zero-yield turn is dropped entirely: a dangling user message would break
   providers with role-alternation constraints, and there is nothing of value.
 - Completed tool rounds are never hidden: their side effects (e.g.
-  `run_command`) already happened; hiding them from the model is worse than an
+  `bash`) already happened; hiding them from the model is worse than an
   odd history shape. Implementations must verify each provider's request
   builder tolerates a history ending in tool results followed by a new user
   message (merge if needed).

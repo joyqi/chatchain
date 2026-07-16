@@ -1,10 +1,10 @@
-# The code toolset — locate → read → edit, verified by run_command
+# The code toolset — locate → read → edit, verified by the shell set's bash
 
 The `code` built-in toolset gives the model the minimal coding loop used by
 every mainstream coding agent (Claude Code, Codex CLI, Gemini CLI, Aider):
 **locate** (glob/grep/list_dir) → **read** (read_file) → **edit**
 (edit_file/write_file). The **verify** step is deliberately not part of this
-set — builds and tests run through the `command` set's argv-only run_command,
+set — builds and tests run through the `shell` set's sandboxed bash tool,
 so execution policy stays in one place.
 
 ## Survey conclusions adopted
