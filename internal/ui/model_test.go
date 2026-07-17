@@ -388,19 +388,26 @@ func TestRegionCallPreview(t *testing.T) {
 		t.Fatalf("rows after relabel = %d, want %d", got, tailKeep)
 	}
 
-	// Settle: deferred close + the blank/header commit replaces the widget's
-	// two rows exactly; result lines then flow as normal commits.
+	// Settle: deferred close + the single header commit takes the spinner
+	// row; the status row leaves a blank placeholder consumed by the result.
 	r.closePreview()
-	r.commit([]string{"", "[write_file path:a.txt]"})
+	r.commit([]string{"[write_file path:a.txt]"})
 	s = last()
 	if s.label != "" || !s.since.IsZero() {
 		t.Fatalf("widget should be settled: %+v", s)
+	}
+	if len(s.residue) != 1 || s.residue[0] != "" {
+		t.Fatalf("status row should leave a blank placeholder, got residue=%q", s.residue)
 	}
 	if got := rows(s); got != tailKeep {
 		t.Fatalf("rows after settle = %d, want %d (the composer would move)", got, tailKeep)
 	}
 	r.commit([]string{"  ⎿ wrote 1.2 KB"})
-	if got := rows(last()); got != tailKeep {
+	s = last()
+	if len(s.residue) != 0 {
+		t.Fatalf("result line should consume the placeholder, got %q", s.residue)
+	}
+	if got := rows(s); got != tailKeep {
 		t.Fatalf("rows after result = %d, want %d", got, tailKeep)
 	}
 }
