@@ -184,6 +184,21 @@ func splitRows(lines []string) []string {
 	return out
 }
 
+// oneRow collapses embedded line breaks into spaces. Every frame row the
+// model renders — the preview label, its rolling source lines, the status-row
+// detail — is counted as exactly one visual line in rowsAbove (the composer
+// cursor offset); a newline smuggled in by a producer would desync the frame
+// anchor just like an unsplit multi-line commit. splitRows guards the tail;
+// this guards the preview-side entries, which are single-row by definition.
+func oneRow(s string) string {
+	if !strings.ContainsAny(s, "\r\n") {
+		return s
+	}
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return strings.ReplaceAll(s, "\r", " ")
+}
+
 // chunkOverflow splits lines into batches of at most max(2, h/2) lines.
 func chunkOverflow(over []string, h int) [][]string {
 	if len(over) == 0 {
@@ -273,7 +288,7 @@ func (r *region) openCallPreview(label string) {
 	defer r.mu.Unlock()
 	debugRegion("openCallPreview %q ensure=%v", label, r.label != "" && !r.since.IsZero())
 	if r.label != "" && !r.since.IsZero() {
-		r.label = label
+		r.label = oneRow(label)
 		r.open = true
 		r.publishLocked(nil)
 		return
@@ -294,7 +309,7 @@ func (r *region) setCallDetail(detail string) {
 	if r.label == "" || r.since.IsZero() || !r.open {
 		return
 	}
-	r.detail = detail
+	r.detail = oneRow(detail)
 	r.publishLocked(nil)
 }
 
@@ -309,7 +324,7 @@ func (r *region) foldOpenLocked(label string) {
 	} else {
 		r.consumeResidueLocked(1) // the header row overwrites a residue row
 	}
-	r.label = label
+	r.label = oneRow(label)
 	r.ptail = nil
 	r.open = true
 }
@@ -321,7 +336,7 @@ func (r *region) previewLine(line string) {
 	if !r.open {
 		return
 	}
-	r.ptail = append(r.ptail, line)
+	r.ptail = append(r.ptail, oneRow(line))
 	if len(r.ptail) > previewWindow {
 		r.ptail = r.ptail[len(r.ptail)-previewWindow:]
 	} else {

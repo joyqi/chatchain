@@ -19,6 +19,36 @@ func TestRegionCommitSplitsEmbeddedNewlines(t *testing.T) {
 	}
 }
 
+// The one-row invariant on the preview side: labels (fresh open AND the
+// in-place relabel), rolling preview lines, and the status-row detail are
+// each rendered — and counted in the cursor offset — as exactly one frame
+// row, so embedded line breaks collapse to spaces on entry.
+func TestRegionPreviewEntriesCollapseToOneRow(t *testing.T) {
+	r := &region{emit: func([]string, regionMsg) {}}
+
+	r.openCallPreview("[bash\ncommand:a]") // fresh open
+	if r.label != "[bash command:a]" {
+		t.Fatalf("fresh label = %q", r.label)
+	}
+	r.openCallPreview("[bash\r\ncommand:b]") // ensure branch: relabel in place
+	if r.label != "[bash command:b]" {
+		t.Fatalf("relabel = %q", r.label)
+	}
+	r.setCallDetail("1.2k\ntokens")
+	if r.detail != "1.2k tokens" {
+		t.Fatalf("detail = %q", r.detail)
+	}
+
+	r.openPreview("rendering\ntable…") // plain preview label
+	if r.label != "rendering table…" {
+		t.Fatalf("plain label = %q", r.label)
+	}
+	r.previewLine("|a|\n|b|")
+	if len(r.ptail) != 1 || r.ptail[0] != "|a| |b|" {
+		t.Fatalf("ptail = %q", r.ptail)
+	}
+}
+
 // Replays the region op sequence of a full two-round tool turn (thinking
 // widget → pending call raise → settle → results → next round) and pins the
 // scrollback stream (overflow ∪ final tail): exactly one blank separator per
