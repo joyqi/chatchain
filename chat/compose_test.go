@@ -5,26 +5,222 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"chatchain/provider"
 )
 
-// composeSink records the call-preview lifecycle.
-type composeSink struct{ events []string }
+// recSurface records the transcript's surface calls in order.
+type recSurface struct{ events []string }
 
-func (s *composeSink) CommitLines(lines ...string) {
-	s.events = append(s.events, "commit:"+strings.Join(lines, "|"))
+func (s *recSurface) PrintLines(lines ...string) {
+	s.events = append(s.events, "print:"+strings.Join(lines, "|"))
 }
-func (s *composeSink) Done() {}
-func (s *composeSink) BlockPreview(label string) io.WriteCloser {
-	s.events = append(s.events, "open:"+label)
-	return nil
+func (s *recSurface) UserBlock(display string) { s.events = append(s.events, "user:"+display) }
+func (s *recSurface) CallPreview(label string) { s.events = append(s.events, "call:"+label) }
+func (s *recSurface) CallDetail(detail string) { s.events = append(s.events, "detail:"+detail) }
+func (s *recSurface) ClosePreview()            { s.events = append(s.events, "settle") }
+
+func (s *recSurface) joined() string { return strings.Join(s.events, "\n") }
+
+// The spacing contract: every block opens with exactly one blank separator;
+// the widget pays it when first raised (header expansion is free, results
+// join the widget's block); a settled widget re-raised is a new block.
+func TestTranscriptSpacing(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, newTokenCounter())
+
+	tr.user("hello")
+	start := time.Now()
+	m := tr.openThinking()
+	m.add("some reasoning text")
+	tr.settleThinking(start)
+	content := tr.contentBlock()
+	content("The reply.")
+	tr.openCall("[a …]")
+	tr.openCall("[a full]") // same widget: no extra separator
+	tr.settleCall("[a full]")
+	tr.toolLines("  ⎿ ok")
+	tr.openCall("[b …]") // settled → new block, one separator
+	tr.settleCall("[b]")
+	content2 := tr.contentBlock()
+	content2("Done.")
+
+	want := []string{
+		"print:", "user:hello",
+		"print:", "call:" + DimStyle.Sprint("Thinking"),
+		"detail:" + formatTokensShort(tokenCount("some reasoning text")) + " tokens",
+		"settle", "print:" + dim("◇ thought for <1s"),
+		"print:", "print:The reply.",
+		"print:", "call:[a …]", "call:[a full]",
+		"settle", "print:[a full]", "print:  ⎿ ok",
+		"print:", "call:[b …]",
+		"settle", "print:[b]",
+		"print:", "print:Done.",
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
 }
-func (s *composeSink) CallPreview(label string) {
-	s.events = append(s.events, "call:"+label)
+
+// tokenCount mirrors the meter's estimator for test expectations.
+func tokenCount(s string) int { return newTokenCounter().count(s) }
+
+// Interior blanks pass through once more content follows; trailing blanks are
+// dropped — a block can never export them for a neighbor to lean on.
+func TestTranscriptBlankLatch(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.echo([]string{"❯ hi", "", "line-1", "", "", "line-2", "", ""})
+	tr.user("next")
+
+	want := []string{
+		"print:",
+		"print:❯ hi||line-1|||line-2", // interior blanks intact, trailing dropped
+		"print:", "user:next",
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
 }
-func (s *composeSink) ClosePreview() {
-	s.events = append(s.events, "settle")
+
+// Consecutive notices (and errors) group into one block; a different kind in
+// between starts fresh. Content re-opens after an async interleave.
+func TestTranscriptGrouping(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.notice("AGENTS.md reloaded (%d files)", 2)
+	tr.notice("Skills reloaded (%d skill(s))", 3)
+	tr.error("⚠ MCP %s failed: %s", "srv", "boom")
+	tr.notice("Context compacted")
+
+	content := tr.contentBlock()
+	content("streaming…")
+	tr.error("⚠ MCP %s failed: %s", "other", "late") // async interleave
+	content("more content")                           // same closure re-opens
+
+	want := []string{
+		"print:", "print:" + DimStyle.Sprint("AGENTS.md reloaded (2 files)"),
+		"print:" + DimStyle.Sprint("Skills reloaded (3 skill(s))"),
+		"print:", "print:" + ErrorStyle.Sprint("⚠ MCP srv failed: boom"),
+		"print:", "print:" + DimStyle.Sprint("Context compacted"),
+		"print:", "print:streaming…",
+		"print:", "print:" + ErrorStyle.Sprint("⚠ MCP other failed: late"),
+		"print:", "print:more content",
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
+// Providers can stream tool-call deltas while the reasoning pipe is still
+// open (thinking → tool_use with no text): the observer's openCall must not
+// hijack the thinking widget — the call is remembered and raised at settle,
+// in lifecycle order, with its own separator and a fresh clock.
+func TestThinkingComposingInterleave(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.user("do it")
+	tr.openThinking()
+	tr.openCall("[write_file …]") // observer fires mid-thought: queued
+	tr.openCall("[bash …]")       // label change while queued: last wins
+	tr.settleThinking(time.Now())
+	tr.openCall("[bash cmd:ls]") // toolLoop expands the raised widget
+	tr.settleCall("[bash cmd:ls]")
+	tr.toolLines("  ⎿ ok")
+
+	want := []string{
+		"print:", "user:do it",
+		"print:", "call:" + DimStyle.Sprint("Thinking"),
+		"settle", "print:" + dim("◇ thought for <1s"),
+		"print:", "call:[bash …]", // the pending call raised at settle
+		"call:[bash cmd:ls]", // expansion: no separator
+		"settle", "print:[bash cmd:ls]", "print:  ⎿ ok",
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
+// A widget dropped unsettled (interrupted turn) leaves its separator with
+// nothing under it; the next block reuses that orphan instead of stacking a
+// second blank.
+func TestOrphanedWidgetSeparatorReuse(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.user("x")
+	tr.openCall("[bash …]") // separator paid, widget raised
+	tr.resetTurn()          // turn died; sink.Done dropped the widget
+	tr.notice("Interrupted.")
+	tr.user("next") // normal turn afterwards pays its own separator again
+
+	want := []string{
+		"print:", "user:x",
+		"print:", "call:[bash …]",
+		"print:" + DimStyle.Sprint("Interrupted."), // no extra separator
+		"print:", "user:next",
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
+// An async error interleaving between a widget's raise and its settle forces
+// the settle (and result lines) to re-open the block — the header never glues
+// to the stranger.
+func TestSettleReopensAfterInterleave(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.openCall("[bash …]")
+	tr.error("⚠ MCP srv failed: boom") // async reporter mid-execution
+	tr.settleCall("[bash cmd:ls]")
+	tr.toolLines("  ⎿ ok")
+
+	want := []string{
+		"print:", "call:[bash …]",
+		"print:", "print:" + ErrorStyle.Sprint("⚠ MCP srv failed: boom"),
+		"print:", "settle", "print:[bash cmd:ls]", "print:  ⎿ ok",
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
+// fatih/color's Fprintf places the SGR reset AFTER a trailing newline in the
+// format string, so a styled "…\n" write ends with a reset-only line; the
+// committer must glue it back so no spurious blank row reaches the transcript
+// (seen live as a double blank between a tool result and the next thinking
+// marker).
+func TestLineCommitterGluesTrailingReset(t *testing.T) {
+	var got []string
+	lc := &lineCommitter{commit: func(lines ...string) { got = append(got, lines...) }}
+	lc.Write([]byte("\x1b[2m  ⎿ /Users/joyqi\n\x1b[0m")) // color.Fprintf's exact shape
+	lc.flush()
+
+	want := []string{"\x1b[2m  ⎿ /Users/joyqi\x1b[0m"}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("committed %q, want %q", got, want)
+	}
+}
+
+func TestFormatTokensShort(t *testing.T) {
+	for n, want := range map[int]string{
+		0:         "0",
+		842:       "842",
+		1000:      "1k",
+		1234:      "1.2k",
+		56400:     "56.4k",
+		1_100_000: "1.1m",
+	} {
+		if got := formatTokensShort(n); got != want {
+			t.Errorf("formatTokensShort(%d) = %q, want %q", n, got, want)
+		}
+	}
 }
 
 // fakeObserverTP is a ToolProvider whose only job is handing back the
@@ -36,15 +232,15 @@ func (f *fakeObserverTP) StreamChatWithTools(context.Context, []provider.Message
 	return "", "", nil, nil
 }
 
-// While arguments stream, only the lifecycle widget is raised — once per
-// label change, no argument text staged; the block separator lands on the
-// first raise (staging spacing = settled spacing); atomic (empty-delta)
-// notifications are ignored, and cleanup detaches the observer without
-// settling the widget (toolLoop owns that).
+// While arguments stream, only the lifecycle widget is raised — separator on
+// the first raise, once per label change, no argument text staged; atomic
+// (empty-delta) notifications are ignored; cleanup detaches the observer
+// without settling the widget (toolLoop owns that).
 func TestWatchToolComposing(t *testing.T) {
-	sink := &composeSink{}
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
 	tp := &fakeObserverTP{}
-	cleanup := watchToolComposing(newTurnPhases(nil), newTurnRender(sink), tp)
+	cleanup := watchToolComposing(newTurnPhases(nil), tr, tp)
 	if tp.fn == nil {
 		t.Fatal("observer not installed")
 	}
@@ -57,46 +253,15 @@ func TestWatchToolComposing(t *testing.T) {
 	cleanup()
 
 	want := []string{
-		"commit:", // the block separator, paid once at the first raise
+		"print:", // the block separator, paid once at the first raise
 		"call:" + composingLabel(""),
 		"call:" + composingLabel("write_file"),
 		"call:" + composingLabel("bash"),
 	}
-	if got := strings.Join(sink.events, "\n"); got != strings.Join(want, "\n") {
+	if got := s.joined(); got != strings.Join(want, "\n") {
 		t.Fatalf("events:\n%s\nwant:\n%s", got, strings.Join(want, "\n"))
 	}
 	if tp.fn != nil {
 		t.Fatal("cleanup should detach the observer")
-	}
-}
-
-// turnRender pins the spacing contract: one separator before every block —
-// the tool-call widget pays it when first raised (not at settle), header
-// expansion is free, and the result lines join the widget's block.
-func TestTurnRenderSpacing(t *testing.T) {
-	sink := &composeSink{}
-	r := newTurnRender(sink)
-
-	r.openBlock()
-	sink.CommitLines("◇ thought for 3s")
-	r.openCall("[a …]")
-	r.openCall("[a full]") // same open widget: no extra separator
-	r.settleCall("[a full]")
-	sink.CommitLines("  ⎿ ok")
-	r.openCall("[b …]") // widget settled → a new block, one separator
-	r.settleCall("[b]")
-	r.openBlock() // e.g. the final text reply
-	sink.CommitLines("done")
-
-	want := []string{
-		"commit:", "commit:◇ thought for 3s",
-		"commit:", "call:[a …]", "call:[a full]",
-		"settle", "commit:[a full]", "commit:  ⎿ ok",
-		"commit:", "call:[b …]",
-		"settle", "commit:[b]",
-		"commit:", "commit:done",
-	}
-	if got := strings.Join(sink.events, "\n"); got != strings.Join(want, "\n") {
-		t.Fatalf("events:\n%s\nwant:\n%s", got, strings.Join(want, "\n"))
 	}
 }

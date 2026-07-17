@@ -11,21 +11,9 @@ type streamSink struct {
 	u *UI
 }
 
-func (s *streamSink) CommitLines(lines ...string) {
-	s.u.region.commit(lines)
-}
-
 func (s *streamSink) BlockPreview(label string) io.WriteCloser {
 	s.u.region.openPreview(label)
 	return &previewWriter{u: s.u}
-}
-
-func (s *streamSink) CallPreview(label string) {
-	s.u.region.openCallPreview(label)
-}
-
-func (s *streamSink) ClosePreview() {
-	s.u.region.closePreview()
 }
 
 func (s *streamSink) Done() {

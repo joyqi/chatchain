@@ -230,6 +230,7 @@ func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Mess
 					acc.name += tc.Function.Name
 				}
 				if tc.Function.Arguments != "" {
+					closeReasoning() // thinking is over once tool args stream
 					acc.args.WriteString(tc.Function.Arguments)
 					p.notifyToolDelta(acc.name, tc.Function.Arguments)
 				}

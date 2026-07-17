@@ -79,13 +79,18 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 	for _, warn := range overlay.Warnings() {
 		DimStyle.Printf("⚠ %s\n", warn)
 	}
+	echoed := false
 	if len(importedHistory) > 0 {
 		if msgs := lastRounds(history, resumeEchoRounds); len(msgs) > 0 {
 			fmt.Println()
 			echoRounds(os.Stdout, msgs)
+			echoed = true
 		}
 	}
-	fmt.Println()
+	if !echoed {
+		fmt.Println() // one blank between the banner and the frame; a resume
+		// echo already ends with its round separator
+	}
 
 	// ---- Program phase: the facade owns the terminal from here on.
 	// Mirror v1's title hygiene: push the terminal's title stack now (plain
@@ -104,8 +109,13 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 	}
 	pushStatus()
 
+	// The transcript is the ONLY writer to the chat area from here on: every
+	// block (input, thinking, content, tool calls, notices, echoes) declares
+	// itself and the transcript alone spaces them (transcript.go).
+	tr := newTranscript(u, budget.counter)
+
 	if mgr != nil {
-		go reportMCPFailures(mgr, u)
+		go reportMCPFailures(mgr, tr, u)
 	}
 
 	ctx := context.Background()
@@ -116,8 +126,8 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 	}
 	var pendingAttachments []provider.Attachment
 
-	printErr := func(format string, a ...any) { u.PrintLines(ErrorStyle.Sprintf(format, a...)) }
-	printDim := func(format string, a ...any) { u.PrintLines(DimStyle.Sprintf(format, a...)) }
+	printErr := func(format string, a ...any) { tr.error(format, a...) }
+	printDim := func(format string, a ...any) { tr.notice(format, a...) }
 
 	var titleWG sync.WaitGroup
 	titled := len(importedHistory) > 0
@@ -191,7 +201,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 	interruptTurn := func(watermark int, partial, partialReasoning string) {
 		var persist bool
 		history, persist = finalizeInterrupt(history, watermark, partial, partialReasoning)
-		u.PrintLines("", DimStyle.Sprint("Interrupted."), "")
+		tr.notice("Interrupted.")
 		if persist {
 			persistTurn()
 			maybeTitle()
@@ -240,7 +250,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 	if p.Model() == "" {
 		// v1 offered the pick at startup; ESC defers — the first message
 		// re-prompts lazily (ensureModel).
-		ensureModel(ctx, u, p, sw)
+		ensureModel(ctx, u, tr, p, sw)
 		pushStatus()
 	}
 
@@ -470,14 +480,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			if msgs := lastRounds(history, resumeEchoRounds); len(msgs) > 0 {
 				var buf strings.Builder
 				echoRounds(&buf, msgs)
-				// Keep exactly one trailing blank: the next user block's
-				// separator comes from the block above it (live turns get it
-				// from the reply's trailing blank — the echo must end the
-				// same way, or the first input after a resume butts against
-				// the replayed history).
-				lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
-				u.PrintLines("")
-				u.PrintLines(append(lines, "")...)
+				tr.echo(strings.Split(strings.TrimRight(buf.String(), "\n"), "\n"))
 			}
 			pushStatus()
 			continue
@@ -500,7 +503,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				}
 				arg = exportFileName(sw.Title(), sw.ID(), format, time.Now())
 			}
-			lc := &lineCommitter{commit: u.PrintLines}
+			lc := &lineCommitter{commit: tr.noticeLines}
 			exportChat(lc, arg, sw, history, p)
 			lc.flush()
 			continue
@@ -579,9 +582,9 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 		}
 
 		// ---- message path ----
-		u.UserBlock(in.Display)
+		tr.user(in.Display)
 
-		if p.Model() == "" && !ensureModel(ctx, u, p, sw) {
+		if p.Model() == "" && !ensureModel(ctx, u, tr, p, sw) {
 			continue
 		}
 
@@ -628,15 +631,16 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			history = history[:hist0] // tool rounds append; reset per attempt
 			var err error
 			if isToolProvider && len(tools) > 0 {
-				reply, thinking, err = toolLoop(turnCtx, u, sink, tp, dispatch, &history, tools, sendOverlay, approved)
+				reply, thinking, err = toolLoop(turnCtx, u, sink, tr, tp, dispatch, &history, tools, sendOverlay, approved)
 			} else {
-				reply, thinking, err = streamTurn(turnCtx, u, sink, func(w io.Writer, r io.WriteCloser) (string, string, error) {
+				reply, thinking, err = streamTurn(turnCtx, u, sink, tr, func(w io.Writer, r io.WriteCloser) (string, string, error) {
 					return p.StreamChat(turnCtx, agents.ComposeSendHistory(history, sendOverlay), w, r)
 				})
 			}
 			return err
 		})
-		sink.Done() // closes any leaked preview + pops the turn scope
+		sink.Done()    // closes any leaked preview + pops the turn scope
+		tr.resetTurn() // a dropped widget's separator is reclaimed by the next block
 		cancelTurn()
 
 		if errors.Is(retryErr, errInterrupted) {
@@ -645,12 +649,10 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 		}
 		if retryErr != nil {
 			printErr("Error: %v", retryErr)
-			u.PrintLines("")
 			history = history[:hist0-1]
 			continue
 		}
 
-		u.PrintLines("")
 		history = append(history, provider.Message{Role: "assistant", Content: reply, Reasoning: thinking})
 		persistTurn()
 		budget.update(p, history)
@@ -660,7 +662,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 }
 
 // ensureModel is the lazy model picker for the v2 path.
-func ensureModel(ctx context.Context, u *ui.UI, p provider.Provider, sw *SessionWriter) bool {
+func ensureModel(ctx context.Context, u *ui.UI, tr *transcript, p provider.Provider, sw *SessionWriter) bool {
 	stop := u.Busy("Fetching available models...")
 	models, err := p.ListModels(ctx)
 	stop()
@@ -670,7 +672,7 @@ func ensureModel(ctx context.Context, u *ui.UI, p provider.Provider, sw *Session
 		// Listing unavailable (no such API, or it errored): fall back to a
 		// manual model-name input.
 		if err != nil {
-			u.PrintLines(ErrorStyle.Sprintf("Fetching models failed: %v", err))
+			tr.error("Fetching models failed: %v", err)
 		}
 		r, serr := u.Tabbed(ctx, ui.TabbedSpec{Panels: []ui.Panel{{
 			Title: "Model", Kind: ui.PanelInput,
@@ -692,13 +694,13 @@ func ensureModel(ctx context.Context, u *ui.UI, p provider.Provider, sw *Session
 	}
 	p.SetModel(name)
 	sw.SetModel(name)
-	u.PrintLines(DimStyle.Sprintf("Using model: %s", name))
+	tr.notice("Using model: %s", name)
 	return true
 }
 
 // reportMCPFailures relays background MCP connect failures into scrollback,
 // stopping when the Program exits.
-func reportMCPFailures(mgr *mcpmgr.Manager, u *ui.UI) {
+func reportMCPFailures(mgr *mcpmgr.Manager, tr *transcript, u *ui.UI) {
 	events := mgr.Events()
 	for {
 		select {
@@ -709,7 +711,7 @@ func reportMCPFailures(mgr *mcpmgr.Manager, u *ui.UI) {
 			if s.Connected {
 				continue
 			}
-			u.PrintLines(ErrorStyle.Sprintf("⚠ MCP %s failed: %s", s.Name, strings.SplitN(s.Err, "\n", 2)[0]))
+			tr.error("⚠ MCP %s failed: %s", s.Name, strings.SplitN(s.Err, "\n", 2)[0])
 		case <-u.Done():
 			return
 		}
@@ -770,32 +772,6 @@ func watchPhases(ctx context.Context, phases *turnPhases) func() {
 	return func() { rep.setHandlers(nil, nil) }
 }
 
-// busyMeter counts streamed bytes into the status line's busy detail,
-// throttled so high-frequency deltas don't flood the program queue.
-type busyMeter struct {
-	u    *ui.UI
-	n    int64
-	last time.Time
-}
-
-func newBusyMeter(u *ui.UI) *busyMeter { return &busyMeter{u: u} }
-
-func (m *busyMeter) reset() { m.n, m.last = 0, time.Time{} }
-
-func (m *busyMeter) Write(p []byte) (int, error) {
-	m.add(len(p))
-	return len(p), nil
-}
-
-func (m *busyMeter) add(n int) {
-	m.n += int64(n)
-	if time.Since(m.last) < 150*time.Millisecond {
-		return
-	}
-	m.last = time.Now()
-	m.u.BusyDetail(formatByteSize(m.n))
-}
-
 func formatByteSize(n int64) string {
 	switch {
 	case n >= 1<<20:
@@ -824,7 +800,7 @@ func composingLabel(name string) string {
 // the widget is the whole display. toolLoop later expands the header to its
 // full form (the clock keeps running) and the result commit settles it. The
 // returned cleanup detaches the observer; the widget deliberately persists.
-func watchToolComposing(phases *turnPhases, rTurn *turnRender, tp provider.ToolProvider) func() {
+func watchToolComposing(phases *turnPhases, tr *transcript, tp provider.ToolProvider) func() {
 	obs, ok := tp.(provider.ToolCallStreamObserver)
 	if !ok {
 		return func() {}
@@ -843,7 +819,7 @@ func watchToolComposing(phases *turnPhases, rTurn *turnRender, tp provider.ToolP
 		}
 		last = label
 		phases.end() // the widget takes over from the status spinner
-		rTurn.openCall(label)
+		tr.openCall(label)
 	})
 	return func() { obs.SetToolCallObserver(nil) }
 }
@@ -854,7 +830,7 @@ func watchToolComposing(phases *turnPhases, rTurn *turnRender, tp provider.ToolP
 // content/reasoning writers and returns its final (reply, thinking, err).
 // A ctx cancel (ESC/Ctrl+C via the ui scope) maps to errInterrupted with the
 // partials the user actually saw — same contract as streamResponse.
-func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w io.Writer, r io.WriteCloser) (string, string, error)) (string, string, error) {
+func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, call func(w io.Writer, r io.WriteCloser) (string, string, error)) (string, string, error) {
 	reasonPr, reasonPw := io.Pipe()
 	contentPr, contentPw := io.Pipe()
 	var reply, thinking string
@@ -884,13 +860,8 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w i
 	var readErr error
 	hasReasoning := false
 
-	// Block spacing is the arbiter's job (render.go): every block opens with
-	// its separator, never trailing ad-hoc blanks.
-	rTurn := newTurnRender(sink)
-
-	// Live turn state renders in the status line — one fixed row, so phase
-	// changes never move the composer. Reasoning text is not rendered live;
-	// it folds into the "◇ thought for Ns" scrollback marker.
+	// Status-line phases cover the pre-output window (sending/waiting); once
+	// anything renders, the transcript's widgets and blocks take over.
 	phases := newTurnPhases(u)
 	defer phases.end()
 	defer watchPhases(ctx, phases)()
@@ -912,18 +883,17 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w i
 	}
 
 	newContent := func() (*markdown.Writer, *uiMDSink) {
-		msink := newUIMDSink(sink, u.Width)
+		msink := newUIMDSink(sink, tr.contentBlock(), u.Width)
 		return markdown.NewWriter(msink), msink
 	}
 
 	if hasReasoning {
 		start := time.Now()
-		phases.set("Thinking")
-		meter := newBusyMeter(u)
-		meter.add(firstN)
+		phases.end() // the thinking widget takes over from the status spinner
+		meter := tr.openThinking()
+		meter.add(string(firstChunk[:firstN]))
 		io.Copy(meter, reasonPr) // count only; the tee already keeps the text
-		rTurn.openBlock()
-		sink.CommitLines(dim(fmt.Sprintf("%s thought for %s", reasoningSymbol, reasoningElapsed(start))))
+		tr.settleThinking(start)
 
 		firstN, readErr = contentPr.Read(firstChunk)
 		if readErr != nil {
@@ -932,7 +902,6 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w i
 				return fail(streamErr)
 			}
 			// Reasoning-only response: render the reasoning as the answer.
-			rTurn.openBlock()
 			mdw, msink := newContent()
 			mdw.Write([]byte(thinking))
 			mdw.Flush()
@@ -942,7 +911,6 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w i
 	}
 
 	phases.end() // streaming output is its own progress from here
-	rTurn.openBlock()
 	mdw, msink := newContent()
 	mdw.Write(firstChunk[:firstN])
 	io.Copy(mdw, contentPr)
@@ -959,14 +927,11 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, call func(w i
 // toolLoop is the v2 twin of executeWithTools: rounds of streaming +
 // tool execution rendered through the ui frame (Busy labels instead of the
 // stderr spinner; per-tool cancel scopes instead of raw-mode watches).
-func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, approved map[string]bool) (string, string, error) {
-	// Block spacing across the whole turn — every round's blocks share one
-	// arbiter (render.go), so consecutive rounds never stack separators.
-	rTurn := newTurnRender(sink)
+func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, approved map[string]bool) (string, string, error) {
 	// No round cap: the user is the brake (ESC cancels the turn; approval
 	// gates cover mutating tools) — industry parity with the major CLIs.
 	for {
-		content, reasoning, toolCalls, err := streamToolRound(ctx, u, sink, rTurn, tp, agents.ComposeSendHistory(*history, overlay), tools)
+		content, reasoning, toolCalls, err := streamToolRound(ctx, u, sink, tr, tp, agents.ComposeSendHistory(*history, overlay), tools)
 		if err != nil {
 			return content, reasoning, err
 		}
@@ -988,7 +953,7 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.Too
 			// place, the clock keeps running); atomic backends raise it here.
 			// It spins through approval and execution, and settles into the
 			// committed header + result below.
-			rTurn.openCall(header)
+			tr.openCall(header)
 
 			// Approval gate: state-changing tools (tool.ApprovalReporter) run
 			// only with the user's consent — once, or for the whole session.
@@ -1003,8 +968,8 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.Too
 				}
 				if choice.Cancelled || choice.Index == 2 {
 					const declined = "The user declined this call."
-					rTurn.settleCall(header)
-					lc := &lineCommitter{commit: sink.CommitLines}
+					tr.settleCall(header)
+					lc := &lineCommitter{commit: tr.toolLines}
 					printToolResult(lc, declined, true)
 					lc.flush()
 					*history = append(*history, provider.Message{
@@ -1033,8 +998,8 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.Too
 
 			// Settle: the widget morphs in place into its final collapsed
 			// form — the spinner disappears as the result writes back.
-			rTurn.settleCall(header)
-			lc := &lineCommitter{commit: sink.CommitLines}
+			tr.settleCall(header)
+			lc := &lineCommitter{commit: tr.toolLines}
 			printToolResult(lc, resultText, isError)
 			lc.flush()
 
@@ -1055,7 +1020,7 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tp provider.Too
 
 // streamToolRound is the v2 twin of streamToolRound (interactive only —
 // Once keeps the v1 quiet path).
-func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, rTurn *turnRender, tp provider.ToolProvider, history []provider.Message, tools []provider.ToolDef) (string, string, []provider.ToolCall, error) {
+func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, history []provider.Message, tools []provider.ToolDef) (string, string, []provider.ToolCall, error) {
 	reasonPr, reasonPw := io.Pipe()
 	contentPr, contentPw := io.Pipe()
 	var content, reasoning string
@@ -1063,6 +1028,15 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, rTurn *t
 	var streamErr error
 	var contentBuf, reasonBuf strings.Builder
 	done := make(chan struct{})
+
+	// Phase reporting and the composing observer install BEFORE the stream
+	// goroutine exists: SetToolCallObserver writes an unguarded provider
+	// field, so the install must happen-before the goroutine that reads it.
+	// Cleanups run after <-done (every return path passes it).
+	phases := newTurnPhases(u)
+	defer phases.end()
+	defer watchPhases(ctx, phases)()
+	defer watchToolComposing(phases, tr, tp)()
 
 	go func() {
 		defer close(done)
@@ -1086,16 +1060,6 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, rTurn *t
 	var readErr error
 	hasReasoning := false
 
-	// Live round state in the status line (see streamTurn), plus the
-	// tool-call composing watcher: a large streamed tool call would
-	// otherwise be dead air until it completes. Block separators are the
-	// turn arbiter's job (render.go). Cleanups run after <-done (every
-	// return path passes it), so the observer goroutine is finished.
-	phases := newTurnPhases(u)
-	defer phases.end()
-	defer watchPhases(ctx, phases)()
-	defer watchToolComposing(phases, rTurn, tp)()
-
 	firstN, readErr = reasonPr.Read(firstChunk)
 	if readErr != nil {
 		readErr = nil
@@ -1116,18 +1080,17 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, rTurn *t
 	}
 
 	newContent := func() (*markdown.Writer, *uiMDSink) {
-		msink := newUIMDSink(sink, u.Width)
+		msink := newUIMDSink(sink, tr.contentBlock(), u.Width)
 		return markdown.NewWriter(msink), msink
 	}
 
 	if hasReasoning {
 		start := time.Now()
-		phases.set("Thinking")
-		meter := newBusyMeter(u)
-		meter.add(firstN)
+		phases.end() // the thinking widget takes over from the status spinner
+		meter := tr.openThinking()
+		meter.add(string(firstChunk[:firstN]))
 		io.Copy(meter, reasonPr) // count only; the tee already keeps the text
-		rTurn.openBlock()
-		sink.CommitLines(dim(fmt.Sprintf("%s thought for %s", reasoningSymbol, reasoningElapsed(start))))
+		tr.settleThinking(start)
 
 		firstN, readErr = contentPr.Read(firstChunk)
 		if readErr != nil {
@@ -1139,7 +1102,6 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, rTurn *t
 				return content, reasoning, toolCalls, nil
 			}
 			// Reasoning-only response: render the reasoning as the answer.
-			rTurn.openBlock()
 			mdw, msink := newContent()
 			mdw.Write([]byte(reasoning))
 			mdw.Flush()
@@ -1150,7 +1112,6 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, rTurn *t
 
 	if firstN > 0 {
 		phases.end() // streaming output is its own progress from here
-		rTurn.openBlock()
 		mdw, msink := newContent()
 		mdw.Write(firstChunk[:firstN])
 		io.Copy(mdw, contentPr)

@@ -67,21 +67,29 @@ type ViewSpec struct {
 	Height int // visible rows; 0 = min(len(Lines), 15)
 }
 
-// StreamSink receives one turn's rendered output: committed lines go above
-// the frame into scrollback; BlockPreview opens the live rolling preview in
-// the frame (raw source lines; Close clears it). Labels render as given —
-// pre-style them. CallPreview ensures the tool-call lifecycle widget instead:
-// a spinner header over a live "⎿ elapsed · ESC to cancel" row, relabeling in
-// place when one is already open (the clock keeps running). ClosePreview
-// deferred-closes whatever preview is open, so the next commit morphs it away
-// in place. Done ends the turn scope.
+// StreamSink is a turn's scope handle plus the markdown renderer's preview
+// seam: BlockPreview opens the live rolling preview in the frame (raw source
+// lines; Close clears it; labels render as given — pre-style them), and Done
+// ends the turn scope. Committed lines flow through the chat transcript
+// (ui.PrintLines); the lifecycle-widget verbs (CallPreview/CallDetail/
+// ClosePreview) live on UI itself.
 type StreamSink interface {
-	CommitLines(lines ...string)
 	BlockPreview(label string) io.WriteCloser
-	CallPreview(label string)
-	ClosePreview()
 	Done()
 }
+
+// CallPreview ensures the lifecycle widget: a spinner header over a live
+// "⎿ [detail ·] elapsed · ESC to cancel" row. When a call widget is already
+// open this relabels it in place (clock and detail keep running); otherwise
+// it fold-opens fresh.
+func (u *UI) CallPreview(label string) { u.region.openCallPreview(label) }
+
+// CallDetail updates the widget's live status-row prefix ("1.2k tokens").
+func (u *UI) CallDetail(detail string) { u.region.setCallDetail(detail) }
+
+// ClosePreview deferred-closes whatever preview is open: the next committed
+// lines morph it away in place.
+func (u *UI) ClosePreview() { u.region.closePreview() }
 
 // UI is the facade handle. Safe for concurrent use.
 type UI struct {

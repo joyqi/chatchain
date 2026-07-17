@@ -719,13 +719,18 @@ func (m *model) View() tea.View {
 		rowsAbove += 1 + len(m.region.ptail)
 		if !m.region.since.IsZero() {
 			// The call preview's live status row: where the result's "⎿" line
-			// will land, showing elapsed time (spinner ticks re-render it)
-			// and the cancel hint until the tool's output replaces it.
-			status := fmt.Sprintf("⎿ %ds", int(time.Since(m.region.since).Seconds()))
+			// will land, showing the caller's detail ("1.2k tokens") and the
+			// elapsed time (spinner ticks re-render it), plus the cancel hint
+			// until the tool's output replaces it.
+			status := "⎿ "
+			if m.region.detail != "" {
+				status += m.region.detail + " · "
+			}
+			status += fmt.Sprintf("%ds", int(time.Since(m.region.since).Seconds()))
 			if len(m.cancels) > 0 {
 				status += " · ESC to cancel"
 			}
-			b.WriteString(faint + "  " + status + sgrReset + "\n")
+			b.WriteString(faint + "  " + ansi.Truncate(status, maxInt(4, m.width-4), "…") + sgrReset + "\n")
 			rowsAbove++
 		}
 	}

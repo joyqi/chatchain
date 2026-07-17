@@ -23,14 +23,6 @@ func (r *recordingSink) BlockPreview(label string) io.WriteCloser {
 	return &recClose{r}
 }
 
-func (r *recordingSink) CallPreview(label string) {
-	r.events = append(r.events, "call:"+label)
-}
-
-func (r *recordingSink) ClosePreview() {
-	r.events = append(r.events, "settle")
-}
-
 func (r *recordingSink) Done() {}
 
 type recClose struct{ r *recordingSink }
@@ -44,7 +36,7 @@ func (c *recClose) Close() error                { c.r.events = append(c.r.events
 // pushes the frame back in one hop instead of row-by-row.
 func TestUIMDSinkBatchesLines(t *testing.T) {
 	rec := &recordingSink{}
-	s := newUIMDSink(rec, func() int { return 80 })
+	s := newUIMDSink(rec, rec.CommitLines, func() int { return 80 })
 
 	// A rendered 4-line block arriving in one Write (flushTable's Fprintln).
 	if _, err := s.Write([]byte("r1\nr2\nr3\nr4\n")); err != nil {

@@ -291,7 +291,7 @@ func TestRegionMorphResidue(t *testing.T) {
 
 	// Warm to full height, then a thinking preview takes the window over.
 	r.commit([]string{"p1", "p2", "p3", "p4"})
-	r.openPreview("Thinking")
+	r.openPreview("rendering table…")
 	for _, l := range []string{"think1", "think2", "think3"} {
 		r.previewLine(l)
 	}
@@ -330,7 +330,7 @@ func TestRegionMorphResidue(t *testing.T) {
 	}
 
 	// A new preview's header row also consumes a residue row.
-	r.openPreview("Thinking")
+	r.openPreview("rendering table…")
 	r.previewLine("t1")
 	r.previewLine("t2")
 	r.closePreview()
@@ -378,11 +378,24 @@ func TestRegionCallPreview(t *testing.T) {
 	}
 	started := s.since
 
-	// Expanding the header (composing → full args) keeps the clock running.
+	// The live detail lands on the status row without touching the height.
+	r.setCallDetail("0.4k tokens")
+	s = last()
+	if s.detail != "0.4k tokens" {
+		t.Fatalf("detail not recorded: %+v", s)
+	}
+	if got := rows(s); got != tailKeep {
+		t.Fatalf("rows after detail = %d, want %d", got, tailKeep)
+	}
+
+	// Expanding the header (composing → full args) keeps the clock and detail.
 	r.openCallPreview("[write_file path:a.txt]")
 	s = last()
 	if s.label != "[write_file path:a.txt]" || !s.since.Equal(started) {
 		t.Fatalf("ensure should relabel in place keeping the clock: %+v", s)
+	}
+	if s.detail != "0.4k tokens" {
+		t.Fatalf("ensure should keep the detail: %+v", s)
 	}
 	if got := rows(s); got != tailKeep {
 		t.Fatalf("rows after relabel = %d, want %d", got, tailKeep)
@@ -391,10 +404,11 @@ func TestRegionCallPreview(t *testing.T) {
 	// Settle: deferred close + the single header commit takes the spinner
 	// row; the status row leaves a blank placeholder consumed by the result.
 	r.closePreview()
+	r.setCallDetail("late") // after the deferred close: no-op
 	r.commit([]string{"[write_file path:a.txt]"})
 	s = last()
-	if s.label != "" || !s.since.IsZero() {
-		t.Fatalf("widget should be settled: %+v", s)
+	if s.label != "" || !s.since.IsZero() || s.detail != "" {
+		t.Fatalf("widget should be settled with detail cleared: %+v", s)
 	}
 	if len(s.residue) != 1 || s.residue[0] != "" {
 		t.Fatalf("status row should leave a blank placeholder, got residue=%q", s.residue)
@@ -431,6 +445,12 @@ func TestCallPreviewRendering(t *testing.T) {
 	m = step(t, m, scopePushMsg{cancel: func() {}})
 	if got := stripSGR(content(m)); !strings.Contains(got, "⎿ 3s · ESC to cancel") {
 		t.Fatalf("cancel hint missing with an active scope:\n%s", got)
+	}
+
+	// The live detail rides the status row ahead of the elapsed time.
+	m = step(t, m, regionMsg{label: "[bash …]", since: time.Now().Add(-3 * time.Second), detail: "1.2k tokens"})
+	if got := stripSGR(content(m)); !strings.Contains(got, "⎿ 1.2k tokens · 3s · ESC to cancel") {
+		t.Fatalf("detail missing from the status row:\n%s", got)
 	}
 }
 
@@ -886,17 +906,17 @@ func TestBusyInStatusLine(t *testing.T) {
 	before := content(m)
 	rowsBefore := strings.Count(before, "\n")
 
-	m = step(t, m, busyOnMsg{label: "Thinking..."})
+	m = step(t, m, busyOnMsg{label: "Compacting context…"})
 	during := content(m)
 	if strings.Count(during, "\n") != rowsBefore {
 		t.Fatalf("busy ON changed the frame height:\n%s", during)
 	}
-	if !strings.Contains(during, "Thinking...") {
+	if !strings.Contains(during, "Compacting context…") {
 		t.Fatalf("busy label not in the status line:\n%s", during)
 	}
 	// The label sits on the SAME row as the model/ctx status.
 	for _, line := range strings.Split(stripSGR(during), "\n") {
-		if strings.Contains(line, "Thinking...") && !strings.Contains(line, "ctx") {
+		if strings.Contains(line, "Compacting context…") && !strings.Contains(line, "ctx") {
 			t.Fatalf("busy not on the status row: %q", line)
 		}
 	}
@@ -906,7 +926,7 @@ func TestBusyInStatusLine(t *testing.T) {
 	if strings.Count(after, "\n") != rowsBefore {
 		t.Fatal("busy OFF changed the frame height")
 	}
-	if strings.Contains(after, "Thinking...") {
+	if strings.Contains(after, "Compacting context…") {
 		t.Fatal("busy label not cleared")
 	}
 }
@@ -926,7 +946,7 @@ func TestBusyDetail(t *testing.T) {
 	}
 
 	// A new phase clears the previous detail.
-	m = step(t, m, busyOnMsg{label: "Thinking"})
+	m = step(t, m, busyOnMsg{label: "Compacting context…"})
 	if got := stripSGR(content(m)); strings.Contains(got, "4.2 KB") {
 		t.Fatalf("stale detail survived a phase change:\n%s", got)
 	}

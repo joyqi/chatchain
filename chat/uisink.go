@@ -4,22 +4,26 @@ import (
 	"io"
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"chatchain/internal/ui"
 )
 
-// uiMDSink adapts a ui.StreamSink to markdown.Sink for the interactive loop: the
+// uiMDSink adapts the ui to markdown.Sink for the interactive loop: the
 // renderer's committed output is line-buffered and lands in scrollback via
-// CommitLines; block previews pass straight through; the layout width is the
-// ui's live width. flush commits any final partial line (call it after
+// commit (the transcript's content block, which owns the spacing); block
+// previews pass straight through to the sink; the layout width is the ui's
+// live width. flush commits any final partial line (call it after
 // markdown.Writer.Flush).
 type uiMDSink struct {
-	sink  ui.StreamSink
-	width func() int
-	buf   []byte
+	sink   ui.StreamSink
+	commit func(lines ...string)
+	width  func() int
+	buf    []byte
 }
 
-func newUIMDSink(sink ui.StreamSink, width func() int) *uiMDSink {
-	return &uiMDSink{sink: sink, width: width}
+func newUIMDSink(sink ui.StreamSink, commit func(lines ...string), width func() int) *uiMDSink {
+	return &uiMDSink{sink: sink, commit: commit, width: width}
 }
 
 // Write commits every complete line in the chunk as ONE CommitLines batch —
@@ -46,7 +50,7 @@ func (s *uiMDSink) Write(p []byte) (int, error) {
 		s.buf = s.buf[i+1:]
 	}
 	if len(lines) > 0 {
-		s.sink.CommitLines(lines...)
+		s.commit(lines...)
 	}
 	return len(p), nil
 }
@@ -54,7 +58,7 @@ func (s *uiMDSink) Write(p []byte) (int, error) {
 // flush commits a trailing partial line left in the buffer.
 func (s *uiMDSink) flush() {
 	if len(s.buf) > 0 {
-		s.sink.CommitLines(string(s.buf))
+		s.commit(string(s.buf))
 		s.buf = nil
 	}
 }
@@ -70,8 +74,8 @@ func (s *uiMDSink) BlockPreview(label string) io.WriteCloser {
 }
 
 // lineCommitter is an io.Writer that buffers formatted output and commits it
-// as lines through commit (sink.CommitLines or ui.PrintLines) — the v2 shape
-// for helpers that print multi-line output into an io.Writer.
+// as lines through commit (a transcript verb: toolLines, noticeLines) — the
+// v2 shape for helpers that print multi-line output into an io.Writer.
 type lineCommitter struct {
 	commit func(lines ...string)
 	buf    strings.Builder
@@ -83,12 +87,25 @@ func (l *lineCommitter) Write(p []byte) (int, error) {
 }
 
 // flush commits everything buffered (split on newlines, trailing newline
-// dropped) as one batch.
+// dropped) as one batch. fatih/color's Fprintf wraps the SGR reset AROUND a
+// trailing newline in the format string ("\x1b[2m…\n\x1b[0m"), leaving
+// reset-only "lines" that would render as spurious blank rows — any
+// escape-only line is glued back onto its predecessor so every committed line
+// stays self-contained.
 func (l *lineCommitter) flush() {
 	s := strings.TrimSuffix(l.buf.String(), "\n")
 	l.buf.Reset()
 	if s == "" {
 		return
 	}
-	l.commit(strings.Split(s, "\n")...)
+	lines := strings.Split(s, "\n")
+	out := lines[:0]
+	for _, ln := range lines {
+		if len(out) > 0 && ln != "" && ansi.Strip(ln) == "" {
+			out[len(out)-1] += ln
+			continue
+		}
+		out = append(out, ln)
+	}
+	l.commit(out...)
 }

@@ -43,6 +43,7 @@ type region struct {
 	ptail   []string                            // preview rolling source lines (≤ previewWindow)
 	open    bool                                // preview receiving lines (false once closed/deferred)
 	since   time.Time                           // call preview: lifecycle start (zero = plain preview)
+	detail  string                              // call preview: live status-row prefix ("1.2k tokens")
 }
 
 // regionMsg is the display snapshot the model renders.
@@ -51,7 +52,8 @@ type regionMsg struct {
 	residue []string
 	label   string
 	ptail   []string
-	since   time.Time // non-zero: render the "⎿ Ns · ESC" status row and tick
+	since   time.Time // non-zero: render the "⎿ [detail ·] Ns · ESC" row and tick
+	detail  string
 }
 
 func (r *region) previewRowsLocked() int {
@@ -93,6 +95,7 @@ func (r *region) snapshotLocked() regionMsg {
 		label:   r.label,
 		ptail:   append([]string{}, r.ptail...),
 		since:   r.since,
+		detail:  r.detail,
 	}
 }
 
@@ -107,6 +110,9 @@ func (r *region) snapshotLocked() regionMsg {
 // /session resume echo. Half the screen per Println keeps headroom for the
 // occasional line that still wraps.
 func (r *region) publishLocked(over []string) {
+	if len(over) > 0 {
+		debugRegion("  overflow %q", over)
+	}
 	over = r.sanitizeOverflow(over)
 	if r.emit != nil {
 		r.emit(over, r.snapshotLocked())
@@ -199,6 +205,7 @@ func (r *region) commit(lines []string) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	debugRegion("commit %q label=%q open=%v residue=%d", lines, r.label, r.open, len(r.residue))
 	if r.label != "" && !r.open {
 		// Deferred preview close: its replacement content has arrived.
 		rows := r.ptail
@@ -211,6 +218,7 @@ func (r *region) commit(lines []string) {
 		r.label = ""
 		r.ptail = nil
 		r.since = time.Time{}
+		r.detail = ""
 	} else {
 		r.consumeResidueLocked(len(lines))
 	}
@@ -233,12 +241,14 @@ func (r *region) openPreview(label string) {
 }
 
 // openCallPreview ensures the tool-call lifecycle widget: a header plus the
-// model-rendered "⎿ elapsed · ESC" status row. When a call preview is already
-// open this relabels it in place (the clock keeps running — a composing call
-// expanding to its full header); otherwise it fold-opens fresh.
+// model-rendered "⎿ [detail ·] elapsed · ESC" status row. When a call preview
+// is already open this relabels it in place (the clock and detail keep
+// running — a composing call expanding to its full header); otherwise it
+// fold-opens fresh with a cleared detail.
 func (r *region) openCallPreview(label string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	debugRegion("openCallPreview %q ensure=%v", label, r.label != "" && !r.since.IsZero())
 	if r.label != "" && !r.since.IsZero() {
 		r.label = label
 		r.open = true
@@ -247,8 +257,22 @@ func (r *region) openCallPreview(label string) {
 	}
 	r.foldOpenLocked(label)
 	r.since = time.Now()
+	r.detail = ""
 	over := r.rebalanceLocked()
 	r.publishLocked(over)
+}
+
+// setCallDetail updates the call preview's live status-row prefix ("1.2k
+// tokens"); a no-op unless a call preview is up and still receiving — a
+// throttled meter update racing the settle must not resurrect the row.
+func (r *region) setCallDetail(detail string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.label == "" || r.since.IsZero() || !r.open {
+		return
+	}
+	r.detail = detail
+	r.publishLocked(nil)
 }
 
 // foldOpenLocked replaces any current preview with a fresh one, folding the
@@ -291,6 +315,7 @@ func (r *region) previewLine(line string) {
 func (r *region) closePreview() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	debugRegion("closePreview label=%q", r.label)
 	r.open = false
 }
 
@@ -299,6 +324,7 @@ func (r *region) closePreview() {
 func (r *region) dropPreview() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	debugRegion("dropPreview label=%q residue=%d", r.label, len(r.residue))
 	if r.label == "" && len(r.residue) == 0 {
 		return
 	}

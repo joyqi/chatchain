@@ -148,12 +148,53 @@ call sites that hardcode `os.Stdout` (`newMarkdownWriter(os.Stdout)` at
 streamResponse/streamToolRound ×4, `reasoningStream` ×1) — the extraction is
 not done until every constructor takes the sink.
 
-Reasoning (3-line window + "◇ thought for Ns" collapse) fits the same shape:
-BlockPreview("Thinking") + a CommitLines for the marker.
+Reasoning fit the same shape in P1 (a BlockPreview rolling window folding to
+the "◇ thought for Ns" marker); since 2026-07-17 it renders as the transcript
+layer's lifecycle widget instead — see "The transcript layer" below.
 
 **P1 lands against the OLD UI** (a StreamView-backed sink), zero behavior
 change, tests green — it is valuable standalone and is the executable proof
 of the seam.
+
+## The transcript layer (2026-07-17)
+
+`chat/transcript.go` is the single writer to the chat area — every block
+(user input, thinking, markdown content, tool calls with results, notices,
+errors, resume echoes) declares itself there, and the transcript alone
+spaces them:
+
+- **one blank separator opens every block**, paid at block OPEN, so the
+  staging view of a lifecycle widget is spaced exactly like the settled
+  scrollback it morphs into; consecutive notices/errors group into one block;
+- **interior blanks defer through a pending latch** and a block's trailing
+  blanks are dropped — no block can export trailing blanks for a neighbor to
+  lean on (the fragility class behind the resume-echo regression);
+- it owns the lifecycle-widget verbs: tool calls ("⠋ [name …]" over
+  "⎿ elapsed · ESC to cancel", header expanding in place, settled by the
+  header commit) and thinking ("⠋ Thinking" over "⎿ 1.2k tokens · Ns · ESC",
+  tiktoken-metered per delta, folding to "◇ thought for Ns"). Reasoning text
+  itself never renders.
+
+The status line keeps only the pre-output phases (Sending request with
+upload progress, Waiting for the model). `ui.UI` exposes the widget verbs
+(CallPreview/CallDetail/ClosePreview); `StreamSink` shrank to the turn-scope
+handle plus the markdown preview seam (BlockPreview/Done). Direct
+`u.PrintLines` writes from chat code are an architecture violation —
+everything goes through the transcript.
+
+Two supporting contracts:
+
+- **committed lines are SGR-self-contained.** fatih/color's Fprintf wraps
+  the reset AROUND a trailing newline ("\x1b[2m…\n\x1b[0m"), so naive line
+  splitting yields reset-only "lines" that render as spurious blank rows
+  (seen live as a double blank between a tool result and the next thinking
+  marker). `lineCommitter.flush` glues escape-only lines back onto their
+  predecessor; the transcript's blank latch can then stay display-naive.
+- **`CHATCHAIN_DEBUG_REGION=<file>`** traces every region op (commit /
+  openCallPreview / closePreview / dropPreview + overflow batches). Spacing
+  faults that sit in a producer or the renderer are invisible to region unit
+  tests — the live op trace is how you localize which layer emitted a stray
+  row.
 
 ## Concurrency contract
 

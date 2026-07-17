@@ -229,6 +229,7 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 			fmt.Fprint(w, evt.Delta)
 			full += evt.Delta
 		case "response.function_call_arguments.delta":
+			closeReasoning() // thinking is over once tool args stream
 			getPendingArgs(evt.ItemID).WriteString(evt.Delta)
 			p.notifyToolDelta("", evt.Delta)
 		case "response.function_call_arguments.done":
