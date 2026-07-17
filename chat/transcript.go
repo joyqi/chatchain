@@ -93,17 +93,23 @@ func (t *transcript) resetTurn() {
 
 // pushLocked commits lines into the current block, deferring interior blank
 // lines until more content follows (a block never ends with trailing blanks).
+// Entries with embedded newlines (a provider error carrying its JSON body)
+// are expanded first: the latch needs line granularity, and downstream row
+// accounting (region tail, frame anchor, cursor) assumes one row per line.
 func (t *transcript) pushLocked(lines []string) {
 	out := make([]string, 0, len(lines)+t.pending)
-	for _, ln := range lines {
-		if strings.TrimSpace(ln) == "" {
-			t.pending++
-			continue
+	for _, chunk := range lines {
+		for _, ln := range strings.Split(chunk, "\n") {
+			ln = strings.TrimSuffix(ln, "\r")
+			if strings.TrimSpace(ln) == "" {
+				t.pending++
+				continue
+			}
+			for ; t.pending > 0; t.pending-- {
+				out = append(out, "")
+			}
+			out = append(out, ln)
 		}
-		for ; t.pending > 0; t.pending-- {
-			out = append(out, "")
-		}
-		out = append(out, ln)
 	}
 	if len(out) > 0 {
 		t.u.PrintLines(out...)

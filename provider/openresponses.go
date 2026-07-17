@@ -106,13 +106,34 @@ func (p *OpenResponsesProvider) buildRequest(messages []Message) *llm.RespReques
 				// If raw output items are available, replay them verbatim.
 				// This preserves provider-specific fields (e.g. kimi reasoning items).
 				// Skip "message" type items — some APIs (kimi) reject them on replay.
+				// function_call items replay WITHOUT their `id`: OpenAI
+				// validates the prefix ("Expected an ID that begins with
+				// 'fc'"), Bedrock-backed gateways reuse one id across
+				// parallel calls (duplicate-block rejections), and blobs
+				// persisted by older builds carry a call_-prefixed rewrite —
+				// the optional field only causes harm; call_id alone pairs
+				// the call with its function_call_output.
 				if raw, ok := msg.RawContent.(*openResponsesRawOutput); ok && raw != nil {
 					for _, item := range raw.items {
 						var peek struct {
 							Type string `json:"type"`
 						}
-						if json.Unmarshal(item, &peek) == nil && peek.Type == "message" {
+						if json.Unmarshal(item, &peek) != nil {
+							req.Input = append(req.Input, item)
 							continue
+						}
+						switch peek.Type {
+						case "message":
+							continue
+						case "function_call":
+							var obj map[string]json.RawMessage
+							if json.Unmarshal(item, &obj) == nil {
+								delete(obj, "id")
+								if reencoded, err := json.Marshal(obj); err == nil {
+									req.Input = append(req.Input, json.RawMessage(reencoded))
+									continue
+								}
+							}
 						}
 						req.Input = append(req.Input, item)
 					}
@@ -303,31 +324,10 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 				Arguments: args,
 			})
 		}
-		// Rewrite function_call items in the raw replay so each has a
-		// unique `id`. Bedrock reuses the same id for parallel calls,
-		// which some downstream validators reject as duplicate blocks.
-		// Substituting id := call_id keeps ids unique while preserving
-		// the call_id used to match function_call_output.
-		fixedRaw := make([]json.RawMessage, 0, len(rawOutputItems))
-		for _, item := range rawOutputItems {
-			var peek struct {
-				Type string `json:"type"`
-			}
-			if json.Unmarshal(item, &peek) == nil && peek.Type == "function_call" {
-				var obj map[string]json.RawMessage
-				if json.Unmarshal(item, &obj) == nil {
-					if callIDRaw, ok := obj["call_id"]; ok {
-						obj["id"] = callIDRaw
-						if reencoded, err := json.Marshal(obj); err == nil {
-							fixedRaw = append(fixedRaw, reencoded)
-							continue
-						}
-					}
-				}
-			}
-			fixedRaw = append(fixedRaw, item)
-		}
-		p.lastRawOutput = &openResponsesRawOutput{items: fixedRaw}
+		// Raw items are recorded VERBATIM; the id hygiene for replay
+		// (stripping function_call ids) happens in buildRequest, so it also
+		// heals blobs persisted by older builds that rewrote id := call_id.
+		p.lastRawOutput = &openResponsesRawOutput{items: rawOutputItems}
 		return full, thinkFull, toolCalls, nil
 	}
 

@@ -162,6 +162,28 @@ func (r *region) screenWidth() int {
 	return int(r.u.width.Load())
 }
 
+// splitRows expands entries with embedded newlines into one entry per row.
+// All window bookkeeping (tail height, rebalance, overflow row counts — and
+// through them the frame anchor and the composer cursor) assumes one visual
+// row per entry; a multi-line entry silently desyncs them all.
+func splitRows(lines []string) []string {
+	clean := true
+	for _, ln := range lines {
+		if strings.ContainsRune(ln, '\n') {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return lines
+	}
+	out := make([]string, 0, len(lines)+4)
+	for _, ln := range lines {
+		out = append(out, strings.Split(ln, "\n")...)
+	}
+	return out
+}
+
 // chunkOverflow splits lines into batches of at most max(2, h/2) lines.
 func chunkOverflow(over []string, h int) [][]string {
 	if len(over) == 0 {
@@ -203,6 +225,7 @@ func (r *region) commit(lines []string) {
 	if len(lines) == 0 {
 		return
 	}
+	lines = splitRows(lines)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	debugRegion("commit %q label=%q open=%v residue=%d", lines, r.label, r.open, len(r.residue))

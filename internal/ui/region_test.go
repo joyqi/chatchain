@@ -5,6 +5,20 @@ import (
 	"testing"
 )
 
+// A committed entry with embedded newlines must expand to one tail entry per
+// visual row: all window bookkeeping (tail height, rebalance, overflow) — and
+// through it the frame anchor and the composer cursor — assumes one row per
+// entry. Seen live: a provider error's multi-line JSON body committed as one
+// string pushed the real cursor rows up into the error text.
+func TestRegionCommitSplitsEmbeddedNewlines(t *testing.T) {
+	r := &region{emit: func([]string, regionMsg) {}}
+	r.commit([]string{"Error: 400 {\n  \"message\": \"bad\"\n}"})
+	want := []string{"Error: 400 {", "  \"message\": \"bad\"", "}"}
+	if len(r.tail) != 3 || r.tail[0] != want[0] || r.tail[1] != want[1] || r.tail[2] != want[2] {
+		t.Fatalf("tail = %q, want %q", r.tail, want)
+	}
+}
+
 // Replays the region op sequence of a full two-round tool turn (thinking
 // widget → pending call raise → settle → results → next round) and pins the
 // scrollback stream (overflow ∪ final tail): exactly one blank separator per

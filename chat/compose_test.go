@@ -191,6 +191,28 @@ func TestSettleReopensAfterInterleave(t *testing.T) {
 	}
 }
 
+// A provider error carries its multi-line JSON body in ONE string; the
+// transcript must expand embedded newlines so the blank latch works at line
+// granularity and downstream row accounting (frame anchor, cursor) stays
+// true — with trailing newlines latched away, not committed.
+func TestTranscriptSplitsEmbeddedNewlines(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.error("Error: %s", "400 Bad Request {\n  \"message\": \"bad\",\n  \"code\": \"x\"\n}\n")
+	tr.user("next")
+
+	styled := ErrorStyle.Sprint("Error: 400 Bad Request {\n  \"message\": \"bad\",\n  \"code\": \"x\"\n}\n")
+	rows := strings.Split(strings.TrimSuffix(styled, "\n"), "\n")
+	want := []string{
+		"print:", "print:" + strings.Join(rows, "|"),
+		"print:", "user:next",
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%q\n\nwant:\n%q", got, strings.Join(want, "\n"))
+	}
+}
+
 // fatih/color's Fprintf places the SGR reset AFTER a trailing newline in the
 // format string, so a styled "…\n" write ends with a reset-only line; the
 // committer must glue it back so no spurious blank row reaches the transcript

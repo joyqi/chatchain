@@ -122,6 +122,9 @@ func TestOpenResponsesGoldenRequest(t *testing.T) {
 	if fc["type"] != "function_call" || fc["call_id"] != "call_1" || fc["name"] != "f" {
 		t.Fatalf("input[2] = %v (want the replayed function_call; message items must be skipped)", fc)
 	}
+	if _, hasID := fc["id"]; hasID {
+		t.Fatalf("input[2] = %v: function_call id must be STRIPPED on replay (OpenAI requires fc_-prefixed ids and rejects the legacy call_-prefixed rewrite; Bedrock gateways reuse ids across parallel calls)", fc)
+	}
 	// tool result
 	fco := input[3].(map[string]any)
 	if fco["type"] != "function_call_output" || fco["call_id"] != "call_1" || fco["output"] != "result" {
@@ -228,8 +231,8 @@ func TestOpenResponsesStreamTranscript(t *testing.T) {
 		t.Fatalf("usage = %d/%d/%v", in, out, ok)
 	}
 
-	// Raw replay: every completed item recorded in order, function_call ids
-	// rewritten to their call_id (unique ids for downstream validators).
+	// Raw record: every completed item recorded in order, VERBATIM — id
+	// hygiene happens at replay time (buildRequest strips function_call ids).
 	rawJSON, err := p.MarshalRawContent(p.LastRawContent())
 	if err != nil {
 		t.Fatal(err)
@@ -244,11 +247,11 @@ func TestOpenResponsesStreamTranscript(t *testing.T) {
 	if items[1]["type"] != "message" {
 		t.Fatalf("message item missing from raw record: %v", items[1])
 	}
-	if items[2]["id"] != "call_1" || items[2]["call_id"] != "call_1" || items[2]["name"] != "lookup" {
-		t.Fatalf("function_call id not rewritten to call_id: %v", items[2])
+	if items[2]["id"] != "fc_1" || items[2]["call_id"] != "call_1" || items[2]["name"] != "lookup" {
+		t.Fatalf("function_call item not verbatim: %v", items[2])
 	}
-	if items[3]["id"] != "call_2" || items[3]["call_id"] != "call_2" {
-		t.Fatalf("second function_call id not rewritten: %v", items[3])
+	if items[3]["id"] != "fc_1" || items[3]["call_id"] != "call_2" {
+		t.Fatalf("second function_call item not verbatim (upstream id reuse must be preserved at record time): %v", items[3])
 	}
 }
 
