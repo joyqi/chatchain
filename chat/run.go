@@ -470,8 +470,14 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			if msgs := lastRounds(history, resumeEchoRounds); len(msgs) > 0 {
 				var buf strings.Builder
 				echoRounds(&buf, msgs)
+				// Keep exactly one trailing blank: the next user block's
+				// separator comes from the block above it (live turns get it
+				// from the reply's trailing blank — the echo must end the
+				// same way, or the first input after a resume butts against
+				// the replayed history).
+				lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 				u.PrintLines("")
-				u.PrintLines(strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")...)
+				u.PrintLines(append(lines, "")...)
 			}
 			pushStatus()
 			continue

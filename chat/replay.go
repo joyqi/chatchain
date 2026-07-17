@@ -76,16 +76,20 @@ func echoRounds(w io.Writer, msgs []provider.Message) {
 			}
 			flushTools()
 			// One-shot markdown render: Write consumes complete lines and Flush
-			// emits the trailing partial line without a newline, so close the
-			// last line explicitly (the live loop does the same after a stream).
+			// may leave the trailing line unterminated — close it only when
+			// needed, so the round separator is exactly one blank line (the
+			// live loop's spacing).
 			tw := 100
 			if width, _, werr := term.GetSize(int(os.Stdout.Fd())); werr == nil && width > 0 {
 				tw = width
 			}
-			mdw := markdown.NewWriterTo(w, tw)
+			lw := &lastByteWriter{w: w}
+			mdw := markdown.NewWriterTo(lw, tw)
 			mdw.Write([]byte(strings.TrimRight(msg.Content, "\n")))
 			mdw.Flush()
-			fmt.Fprintln(w)
+			if lw.last != '\n' {
+				fmt.Fprintln(w)
+			}
 			if msg.Interrupted {
 				DimStyle.Fprintln(w, "(interrupted)")
 			}
@@ -95,6 +99,20 @@ func echoRounds(w io.Writer, msgs []provider.Message) {
 		}
 	}
 	flushTools()
+}
+
+// lastByteWriter tracks the final byte written, so the replay can tell an
+// already-terminated markdown render from a dangling partial line.
+type lastByteWriter struct {
+	w    io.Writer
+	last byte
+}
+
+func (l *lastByteWriter) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		l.last = p[len(p)-1]
+	}
+	return l.w.Write(p)
 }
 
 // printUserBlock renders a user message as a stack of full-width reversed

@@ -4,6 +4,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // tailKeep is the staging window height: the last N output lines live INSIDE
@@ -105,6 +107,7 @@ func (r *region) snapshotLocked() regionMsg {
 // /session resume echo. Half the screen per Println keeps headroom for the
 // occasional line that still wraps.
 func (r *region) publishLocked(over []string) {
+	over = r.sanitizeOverflow(over)
 	if r.emit != nil {
 		r.emit(over, r.snapshotLocked())
 		return
@@ -115,6 +118,27 @@ func (r *region) publishLocked(over []string) {
 	r.u.p.Send(r.snapshotLocked())
 }
 
+// sanitizeOverflow trims one column off any line whose display width is an
+// exact multiple of the screen width. bubbletea's insertAbove counts such a
+// line as one row taller than it renders (offset += lineWidth/w, but the
+// terminal's deferred wrap fits k·w columns on k rows, not k+1) — every such
+// line entering scrollback over-scrolls the screen by one and leaves a ghost
+// copy of a frame row behind (user blocks, markdown rules, and table borders
+// are all exactly full-width). Seen as duplicated turns after a /session
+// resume echo.
+func (r *region) sanitizeOverflow(over []string) []string {
+	w := r.screenWidth()
+	if w <= 1 {
+		return over
+	}
+	for i, ln := range over {
+		if lw := ansi.StringWidth(ln); lw > 0 && lw%w == 0 {
+			over[i] = ansi.Truncate(ln, lw-1, "")
+		}
+	}
+	return over
+}
+
 func (r *region) screenHeight() int {
 	if r.u == nil {
 		return 24
@@ -123,6 +147,13 @@ func (r *region) screenHeight() int {
 		return h
 	}
 	return 24
+}
+
+func (r *region) screenWidth() int {
+	if r.u == nil {
+		return 0
+	}
+	return int(r.u.width.Load())
 }
 
 // chunkOverflow splits lines into batches of at most max(2, h/2) lines.

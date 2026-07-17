@@ -237,7 +237,14 @@ func (u *UI) SetSlashCommands(cmds []string) { u.p.Send(setCommandsMsg(append([]
 
 // Tabbed opens a multi-tab surface below the composer (Tab switches panels,
 // Enter commits ALL tabs, ESC/q cancels) and blocks until it resolves.
+//
+// The staging tail flushes to scrollback first: opening a surface grows the
+// frame by the panel height, and — exactly like a resize reflow — the rows
+// the frame previously occupied can be left behind as ghost copies. Flushing
+// shrinks the ghostable surface to the separator (the resize mitigation,
+// region.flushTail); the mailbox is FIFO, so the flush lands before the open.
 func (u *UI) Tabbed(ctx context.Context, spec TabbedSpec) (TabbedResult, error) {
+	u.region.flushTail()
 	reply := make(chan TabbedResult, 1)
 	u.p.Send(tabbedOpenMsg{spec: spec, reply: reply})
 	select {
