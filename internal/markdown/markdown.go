@@ -285,15 +285,7 @@ func (m *Writer) Write(p []byte) (int, error) {
 		}
 
 		if isTableLine(line) {
-			if len(m.tableRows) == 0 {
-				m.tableView = m.w.BlockPreview("rendering table…")
-			}
-			cells := parseTableCells(line)
-			m.tableRows = append(m.tableRows, cells)
-			m.tableSeps = append(m.tableSeps, isTableSeparator(cells))
-			if m.tableView != nil {
-				io.WriteString(m.tableView, line+"\n")
-			}
+			m.tableConsume(line)
 			continue
 		}
 
@@ -402,6 +394,22 @@ func (m *Writer) Flush() {
 		return
 	}
 	if len(m.tableRows) > 0 {
+		if len(m.buf) > 0 {
+			// A partial trailing line that is itself a table row (the stream
+			// ended mid-table, no final newline) still belongs to the table —
+			// flushing first would render the table without it and print the
+			// raw "| … |" below the box.
+			line := string(m.buf)
+			m.buf = nil
+			if isTableLine(line) {
+				m.tableConsume(line)
+				m.flushTable()
+				return
+			}
+			m.flushTable()
+			m.emitText(m.highlightLine(line))
+			return
+		}
 		m.flushTable()
 	}
 	if len(m.buf) > 0 {
@@ -1463,6 +1471,20 @@ func codeStyleName() string { return codeTheme }
 // lipgloss/table. If the table would exceed terminal width, columns are
 // shrunk (water-filling) and cell text wraps within the cell across multiple
 // visual lines.
+// tableConsume buffers one table row — parsed cells plus its separator flag —
+// opening the live preview on the first row and feeding it the raw line.
+func (m *Writer) tableConsume(line string) {
+	if len(m.tableRows) == 0 {
+		m.tableView = m.w.BlockPreview("rendering table…")
+	}
+	cells := parseTableCells(line)
+	m.tableRows = append(m.tableRows, cells)
+	m.tableSeps = append(m.tableSeps, isTableSeparator(cells))
+	if m.tableView != nil {
+		io.WriteString(m.tableView, line+"\n")
+	}
+}
+
 func (m *Writer) flushTable() error {
 	if m.tableView != nil {
 		m.tableView.Close() // clear the live preview before emitting the table

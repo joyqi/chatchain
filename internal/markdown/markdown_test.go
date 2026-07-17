@@ -119,6 +119,30 @@ func TestTableRender(t *testing.T) {
 	}
 }
 
+// TestTableFlushOnUnterminated: a stream ending mid-table (the final row has
+// no trailing newline) must fold that row into the rendered table — not close
+// the table without it and print the raw "| … |" below the box.
+func TestTableFlushOnUnterminated(t *testing.T) {
+	color.NoColor = false
+	src := "| Name | Code |\n|------|------|\n| Euro | EUR |\n| Aussie | AUD |"
+	var out strings.Builder
+	m := newTestWriter(&out)
+	m.Write([]byte(src))
+	m.Flush()
+	got := visible(out.String())
+
+	if !strings.Contains(got, "Aussie") || !strings.Contains(got, "AUD") {
+		t.Errorf("unterminated final row missing from the table:\n%s", got)
+	}
+	if strings.Contains(got, "| Aussie") {
+		t.Errorf("final row leaked as raw markdown below the table:\n%s", got)
+	}
+	// The row landed INSIDE the box: no content after the closing border.
+	if i := strings.LastIndex(got, "└"); i >= 0 && strings.Contains(got[i:], "AUD") {
+		t.Errorf("final row rendered outside the closing border:\n%s", got)
+	}
+}
+
 // TestTableAlignsEmojiAndCJK renders a table mixing plain wide emoji (🌍),
 // VS16 emoji sequences (🌪️ ⚖️ ✈️ 🏛️ — a base char plus U+FE0F, which
 // terminals draw 2 columns wide), CJK, and ASCII, and asserts the borders
