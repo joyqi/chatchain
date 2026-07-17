@@ -143,6 +143,47 @@ func TestTableFlushOnUnterminated(t *testing.T) {
 	}
 }
 
+// TestFlushPartialLineDispatch pins the unified Flush contract: the final
+// partial line (no trailing newline) runs through the SAME dispatch as a
+// terminated line, so every construct renders instead of leaking raw markdown
+// — the drift class behind the table-last-row bug.
+func TestFlushPartialLineDispatch(t *testing.T) {
+	color.NoColor = false
+	render := func(src string) string {
+		var out strings.Builder
+		m := newTestWriter(&out)
+		m.Write([]byte(src))
+		m.Flush()
+		return visible(out.String())
+	}
+
+	// A final partial heading renders styled, not as raw "#" text.
+	if got := render("body\n\n# Done"); strings.Contains(got, "# Done") || !strings.Contains(got, "Done") {
+		t.Errorf("partial heading leaked raw:\n%s", got)
+	}
+	// A final partial list marker opens (and closes) a list: bullet rendered.
+	if got := render("intro\n\n- item"); !strings.Contains(got, "• item") {
+		t.Errorf("partial list item not rendered as a bullet:\n%s", got)
+	}
+	// A final partial one-line display formula renders as math, not raw "$$".
+	if got := render("see:\n\n$$x^2$$"); strings.Contains(got, "$$") {
+		t.Errorf("partial display math leaked raw:\n%s", got)
+	}
+	// A final partial closing fence ends the code block — no literal backticks.
+	if got := render("```go\nfmt.Println(1)\n```"); strings.Contains(got, "```") {
+		t.Errorf("partial closing fence leaked into the code block:\n%s", got)
+	}
+	// A final partial OPENING fence starts an empty block that closes clean —
+	// no raw backticks, no crash.
+	if got := render("text\n\n```go"); strings.Contains(got, "```") {
+		t.Errorf("partial opening fence leaked raw:\n%s", got)
+	}
+	// A final partial quote line still renders with the quote bar.
+	if got := render("> quoted"); !strings.Contains(got, "│") || strings.Contains(got, ">") {
+		t.Errorf("partial quote line not framed:\n%s", got)
+	}
+}
+
 // TestTableAlignsEmojiAndCJK renders a table mixing plain wide emoji (🌍),
 // VS16 emoji sequences (🌪️ ⚖️ ✈️ 🏛️ — a base char plus U+FE0F, which
 // terminals draw 2 columns wide), CJK, and ASCII, and asserts the borders

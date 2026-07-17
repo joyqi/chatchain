@@ -178,257 +178,197 @@ func (m *Writer) Write(p []byte) (int, error) {
 		}
 		line := string(m.buf[:idx])
 		m.buf = m.buf[idx+1:]
-
-		// Fenced code block: buffer until the closing fence, then highlight once.
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
-			if m.inFence {
-				m.inFence = false
-				if err := m.flushCode(); err != nil {
-					return len(p), err
-				}
-			} else {
-				if len(m.tableRows) > 0 {
-					if err := m.flushTable(); err != nil {
-						return len(p), err
-					}
-				}
-				// A fence inside a list is out of scope: flush the list first.
-				if m.inList {
-					if err := m.finishList(); err != nil {
-						return len(p), err
-					}
-				}
-				// A fence ends any open quote block, mirroring the list case.
-				if m.inQuote {
-					if err := m.flushQuote(); err != nil {
-						return len(p), err
-					}
-				}
-				m.inFence = true
-				m.fenceLang = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "```"))
-				m.codeLines = nil
-				m.codeView = m.w.BlockPreview(codeLabel(m.fenceLang))
-			}
-			continue
-		}
-		if m.inFence {
-			m.codeLines = append(m.codeLines, line)
-			if m.codeView != nil {
-				io.WriteString(m.codeView, line+"\n")
-			}
-			continue
-		}
-
-		// A buffering list block consumes marker lines, indented continuation
-		// text, and one held blank line; anything else flushes the block and
-		// falls through to be processed normally.
-		if m.inList {
-			consumed, err := m.listConsume(line)
-			if err != nil {
-				return len(p), err
-			}
-			if consumed {
-				continue
-			}
-		}
-
-		// A buffering quote block consumes consecutive quote lines; the first
-		// non-quote line flushes it and falls through to be processed normally.
-		if m.inQuote {
-			if isQuoteLine(line) {
-				m.quoteAppend(line)
-				continue
-			}
-			if err := m.flushQuote(); err != nil {
-				return len(p), err
-			}
-		}
-
-		// A buffering display-math block consumes lines until its closing fence
-		// ("$$" or "\]"), then renders the 2D layout. Placed after the quote
-		// check and before the table check, mirroring the fenced-code block.
-		if m.inMath {
-			if mathtext.IsDisplayClose(line) {
-				if err := m.flushMath(); err != nil {
-					return len(p), err
-				}
-			} else {
-				m.mathAppend(line)
-			}
-			continue
-		}
-
-		// Open a display-math block: a bare "$$"/"\[" fence starts a buffered
-		// multi-line block, while a complete one-line "$$…$$"/"\[…\]" renders at
-		// once. Either form first flushes a pending table/list (a display formula
-		// is its own block unit); the quote path already flushed above.
-		if body, oneLine, ok := mathtext.DisplayOpen(line); ok {
-			if len(m.tableRows) > 0 {
-				if err := m.flushTable(); err != nil {
-					return len(p), err
-				}
-			}
-			if m.inList {
-				if err := m.finishList(); err != nil {
-					return len(p), err
-				}
-			}
-			if oneLine {
-				m.mathLines = []string{body}
-				if err := m.flushMath(); err != nil {
-					return len(p), err
-				}
-			} else {
-				m.startMath()
-			}
-			continue
-		}
-
-		if isTableLine(line) {
-			m.tableConsume(line)
-			continue
-		}
-
-		if len(m.tableRows) > 0 {
-			if err := m.flushTable(); err != nil {
-				return len(p), err
-			}
-		}
-
-		if isListLine(line) {
-			m.startList(line)
-			continue
-		}
-
-		if isQuoteLine(line) {
-			m.startQuote(line)
-			continue
-		}
-
-		// Plain path: classify the line for the spacing state machine. A blank
-		// collapses; a heading or horizontal rule is a block-level element
-		// bounded by one blank line above and below; anything else is a
-		// paragraph line that stays adjacent to its neighbours.
-		switch {
-		case strings.TrimSpace(line) == "":
-			if err := m.emitBlank(); err != nil {
-				return len(p), err
-			}
-		case isBlockLine(line):
-			if err := m.beginBlock(); err != nil {
-				return len(p), err
-			}
-			if _, err := io.WriteString(m.w, m.highlightLine(line)+"\n"); err != nil {
-				return len(p), err
-			}
-			m.endBlock()
-		default:
-			if err := m.emitText(m.highlightLine(line)); err != nil {
-				return len(p), err
-			}
+		if err := m.consumeLine(line); err != nil {
+			return len(p), err
 		}
 	}
 
 	return len(p), nil
 }
 
-// Flush writes any remaining buffered content.
-func (m *Writer) Flush() {
+// consumeLine dispatches one complete line through the block state machine.
+// It is the single home of every "does this line belong to the open block"
+// decision: Write feeds it terminated lines, Flush feeds it the final partial
+// line — so the two paths can never disagree on block affinity.
+func (m *Writer) consumeLine(line string) error {
+	// Fenced code block: buffer until the closing fence, then highlight once.
+	if strings.HasPrefix(strings.TrimSpace(line), "```") {
+		if m.inFence {
+			m.inFence = false
+			if err := m.flushCode(); err != nil {
+				return err
+			}
+		} else {
+			if len(m.tableRows) > 0 {
+				if err := m.flushTable(); err != nil {
+					return err
+				}
+			}
+			// A fence inside a list is out of scope: flush the list first.
+			if m.inList {
+				if err := m.finishList(); err != nil {
+					return err
+				}
+			}
+			// A fence ends any open quote block, mirroring the list case.
+			if m.inQuote {
+				if err := m.flushQuote(); err != nil {
+					return err
+				}
+			}
+			m.inFence = true
+			m.fenceLang = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "```"))
+			m.codeLines = nil
+			m.codeView = m.w.BlockPreview(codeLabel(m.fenceLang))
+		}
+		return nil
+	}
 	if m.inFence {
-		// Unterminated code block: emit what we buffered.
-		if len(m.buf) > 0 {
-			m.codeLines = append(m.codeLines, string(m.buf))
-			m.buf = nil
+		m.codeLines = append(m.codeLines, line)
+		if m.codeView != nil {
+			io.WriteString(m.codeView, line+"\n")
 		}
-		m.inFence = false
-		m.flushCode()
-		return
+		return nil
 	}
-	if m.inMath {
-		// Unterminated display-math block: render what we buffered (a partial
-		// trailing line still inside the block continues it).
-		if len(m.buf) > 0 {
-			line := string(m.buf)
-			m.buf = nil
-			if !mathtext.IsDisplayClose(line) {
-				m.mathAppend(line)
-			}
-		}
-		m.flushMath()
-		return
-	}
+
+	// A buffering list block consumes marker lines, indented continuation
+	// text, and one held blank line; anything else flushes the block and
+	// falls through to be processed normally.
 	if m.inList {
-		if len(m.buf) > 0 {
-			// A partial trailing line may still belong to the list.
-			line := string(m.buf)
-			m.buf = nil
-			if consumed, _ := m.listConsume(line); consumed {
-				m.finishList()
-				return
-			}
-			// listConsume flushed the block; emit the trailing partial line
-			// through emitText so the block→paragraph boundary blank is honored
-			// and lastUnit stays consistent.
-			m.emitText(m.highlightLine(line))
-			return
+		consumed, err := m.listConsume(line)
+		if err != nil {
+			return err
 		}
-		m.finishList()
-		return
+		if consumed {
+			return nil
+		}
 	}
+
+	// A buffering quote block consumes consecutive quote lines; the first
+	// non-quote line flushes it and falls through to be processed normally.
 	if m.inQuote {
-		if len(m.buf) > 0 {
-			// A partial trailing line still inside the quote continues it;
-			// anything else flushes the quote and prints on its own.
-			line := string(m.buf)
-			m.buf = nil
-			if isQuoteLine(line) {
-				m.quoteAppend(line)
-				m.flushQuote()
-				return
-			}
-			m.flushQuote()
-			m.emitText(m.highlightLine(line))
-			return
+		if isQuoteLine(line) {
+			m.quoteAppend(line)
+			return nil
 		}
-		m.flushQuote()
-		return
+		if err := m.flushQuote(); err != nil {
+			return err
+		}
 	}
+
+	// A buffering display-math block consumes lines until its closing fence
+	// ("$$" or "\]"), then renders the 2D layout. Placed after the quote
+	// check and before the table check, mirroring the fenced-code block.
+	if m.inMath {
+		if mathtext.IsDisplayClose(line) {
+			if err := m.flushMath(); err != nil {
+				return err
+			}
+		} else {
+			m.mathAppend(line)
+		}
+		return nil
+	}
+
+	// Open a display-math block: a bare "$$"/"\[" fence starts a buffered
+	// multi-line block, while a complete one-line "$$…$$"/"\[…\]" renders at
+	// once. Either form first flushes a pending table/list (a display formula
+	// is its own block unit); the quote path already flushed above.
+	if body, oneLine, ok := mathtext.DisplayOpen(line); ok {
+		if len(m.tableRows) > 0 {
+			if err := m.flushTable(); err != nil {
+				return err
+			}
+		}
+		if m.inList {
+			if err := m.finishList(); err != nil {
+				return err
+			}
+		}
+		if oneLine {
+			m.mathLines = []string{body}
+			if err := m.flushMath(); err != nil {
+				return err
+			}
+		} else {
+			m.startMath()
+		}
+		return nil
+	}
+
+	if isTableLine(line) {
+		m.tableConsume(line)
+		return nil
+	}
+
 	if len(m.tableRows) > 0 {
-		if len(m.buf) > 0 {
-			// A partial trailing line that is itself a table row (the stream
-			// ended mid-table, no final newline) still belongs to the table —
-			// flushing first would render the table without it and print the
-			// raw "| … |" below the box.
-			line := string(m.buf)
-			m.buf = nil
-			if isTableLine(line) {
-				m.tableConsume(line)
-				m.flushTable()
-				return
-			}
-			m.flushTable()
-			m.emitText(m.highlightLine(line))
-			return
+		if err := m.flushTable(); err != nil {
+			return err
 		}
-		m.flushTable()
 	}
+
+	if isListLine(line) {
+		m.startList(line)
+		return nil
+	}
+
+	if isQuoteLine(line) {
+		m.startQuote(line)
+		return nil
+	}
+
+	// Plain path: classify the line for the spacing state machine. A blank
+	// collapses; a heading or horizontal rule is a block-level element
+	// bounded by one blank line above and below; anything else is a
+	// paragraph line that stays adjacent to its neighbours.
+	switch {
+	case strings.TrimSpace(line) == "":
+		if err := m.emitBlank(); err != nil {
+			return err
+		}
+	case isBlockLine(line):
+		if err := m.beginBlock(); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(m.w, m.highlightLine(line)+"\n"); err != nil {
+			return err
+		}
+		m.endBlock()
+	default:
+		if err := m.emitText(m.highlightLine(line)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Flush renders whatever is still buffered at end of stream. The trailing
+// partial line is final by definition, so it runs through consumeLine exactly
+// like a terminated line — Flush holds no affinity logic of its own (a
+// hand-maintained copy drifted for years: tables dropped their last row,
+// headings/math/list markers in a final partial line printed raw). Any block
+// left open is then closed: fence/math/list/quote are mutually exclusive
+// (opening one flushes the others), and a table that survived dispatch closes
+// after them.
+func (m *Writer) Flush() {
 	if len(m.buf) > 0 {
 		line := string(m.buf)
 		m.buf = nil
-		// A single quote line with no trailing newline (a whole reply that is
-		// just "> x", or an interrupted stream) never triggered startQuote in
-		// the Write loop, so route it through the quote block here — otherwise
-		// highlightLine, which no longer styles quotes, would print the raw ">".
-		if isQuoteLine(line) {
-			m.startQuote(line)
-			m.flushQuote()
-			return
-		}
-		// A trailing partial plain line: route through emitText so a preceding
-		// block gets its separating blank and lastUnit stays consistent. A
-		// heading/rule as the final partial line is rare; treat it as text
-		// (no closing blank is meaningful at EOF anyway).
-		m.emitText(m.highlightLine(line))
+		m.consumeLine(line)
+	}
+	switch {
+	case m.inFence:
+		m.inFence = false
+		m.flushCode()
+	case m.inMath:
+		m.flushMath()
+	case m.inList:
+		m.finishList()
+	case m.inQuote:
+		m.flushQuote()
+	}
+	if len(m.tableRows) > 0 {
+		m.flushTable()
 	}
 }
 
