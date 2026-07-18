@@ -57,7 +57,8 @@ type transcript struct {
 	pending     int    // deferred block-interior blank lines
 	callUp      bool   // lifecycle widget raised (its block separator already paid)
 	thinkingUp  bool   // the thinking widget owns the (single) widget slot
-	pendingCall string // tool call announced while thinking; raised at settle
+	contentOpen bool   // a markdown content block is streaming (renderer may hold buffered lines)
+	pendingCall string // tool call announced while thinking/content streams; raised at close
 	orphanSep   bool   // a dropped widget's separator awaits reuse by the next block
 }
 
@@ -66,12 +67,15 @@ func newTranscript(u transcriptSurface, tokens *tokenCounter) *transcript {
 }
 
 // beginLocked opens a new block: the previous block's deferred blanks die,
-// one separator is paid — unless a dropped widget left its separator behind,
-// in which case that orphaned blank serves as this block's.
+// one separator is paid — unless a dropped widget left its separator behind
+// (the orphaned blank serves as this block's), or this is the session's FIRST
+// block: the environment above it (banner, pre-loop prompt, resume echo)
+// always ends with exactly one blank of its own.
 func (t *transcript) beginLocked(kind blockKind) {
 	t.pending = 0
+	first := t.last == blockNone
 	t.last = kind
-	if t.orphanSep {
+	if first || t.orphanSep {
 		t.orphanSep = false
 		return
 	}
@@ -88,7 +92,7 @@ func (t *transcript) resetTurn() {
 	if t.callUp || t.thinkingUp {
 		t.orphanSep = true
 	}
-	t.callUp, t.thinkingUp, t.pendingCall = false, false, ""
+	t.callUp, t.thinkingUp, t.contentOpen, t.pendingCall = false, false, false, ""
 }
 
 // pushLocked commits lines into the current block, deferring interior blank
@@ -152,6 +156,51 @@ func (t *transcript) echo(lines []string) {
 	t.pushLocked(lines)
 }
 
+// beginRound clears the streaming-phase guards at the top of a stream round:
+// a round that died mid-stream (retry, provider error) may have leaked
+// thinkingUp/contentOpen, which would silently defer the next round's widget
+// forever.
+func (t *transcript) beginRound() {
+	t.mu.Lock()
+	t.thinkingUp, t.contentOpen = false, false
+	t.mu.Unlock()
+}
+
+// markContent marks the content block open. The provider's content writer
+// calls it on the FIRST content byte — on the stream goroutine, so the mark
+// happens-before any tool-call delta that follows on that same goroutine;
+// waiting for the turn goroutine's openContent would leave a window where a
+// text delta and a tool delta arriving in one network read raise the widget
+// ahead of the content (the inversion this deferral exists to prevent).
+func (t *transcript) markContent() {
+	t.mu.Lock()
+	t.contentOpen = true
+	t.mu.Unlock()
+}
+
+// openContent marks a markdown content block as streaming and returns its
+// committer. While it is open, a tool call announced by the stream observer
+// is only remembered: the renderer may still hold whole buffered blocks (a
+// trailing table flushes only at stream end), and raising the widget first
+// would invert block order — the widget's separator lands, then the buffered
+// content re-opens after it (seen live as a double blank above the content
+// and the widget glued below it). closeContent raises the deferred call.
+func (t *transcript) openContent() func(lines ...string) {
+	t.mu.Lock()
+	t.contentOpen = true
+	t.mu.Unlock()
+	return t.contentBlock()
+}
+
+// closeContent ends the streaming content block (call after the renderer's
+// final flush) and raises a tool call deferred while it was open.
+func (t *transcript) closeContent() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.contentOpen = false
+	t.raisePendingLocked()
+}
+
 // contentBlock returns the committer for one markdown content block. The
 // block opens lazily on the first line, and re-opens (new separator) if an
 // async block — an MCP failure notice — interleaved since.
@@ -176,7 +225,7 @@ func (t *transcript) contentBlock() func(lines ...string) {
 func (t *transcript) openCall(label string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.thinkingUp {
+	if t.thinkingUp || t.contentOpen {
 		t.pendingCall = label
 		return
 	}
@@ -249,12 +298,22 @@ func (t *transcript) settleThinking(start time.Time) {
 	}
 	t.u.ClosePreview()
 	t.pushLocked([]string{dim(fmt.Sprintf("%s thought for %s", reasoningSymbol, reasoningElapsed(start)))})
-	if label := t.pendingCall; label != "" {
-		t.pendingCall = ""
-		t.callUp = true
-		t.beginLocked(blockToolCall)
-		t.u.CallPreview(label)
+	t.raisePendingLocked()
+}
+
+// raisePendingLocked raises a tool call deferred while the thinking widget or
+// a streaming content block owned the slot, in lifecycle order. A no-op while
+// the other guard is still up (thinking settles before content opens, but an
+// async close must not raise into a live thinking widget).
+func (t *transcript) raisePendingLocked() {
+	label := t.pendingCall
+	if label == "" || t.thinkingUp || t.contentOpen {
+		return
 	}
+	t.pendingCall = ""
+	t.callUp = true
+	t.beginLocked(blockToolCall)
+	t.u.CallPreview(label)
 }
 
 // thinkingMeter counts streamed reasoning into the widget's status row:

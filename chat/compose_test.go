@@ -47,7 +47,7 @@ func TestTranscriptSpacing(t *testing.T) {
 	content2("Done.")
 
 	want := []string{
-		"print:", "user:hello",
+		"user:hello",
 		"print:", "call:" + DimStyle.Sprint("Thinking"),
 		"detail:" + formatTokensShort(tokenCount("some reasoning text")) + " tokens",
 		"settle", "print:" + dim("◇ thought for <1s"),
@@ -76,7 +76,6 @@ func TestTranscriptBlankLatch(t *testing.T) {
 	tr.user("next")
 
 	want := []string{
-		"print:",
 		"print:❯ hi||line-1|||line-2", // interior blanks intact, trailing dropped
 		"print:", "user:next",
 	}
@@ -99,10 +98,10 @@ func TestTranscriptGrouping(t *testing.T) {
 	content := tr.contentBlock()
 	content("streaming…")
 	tr.error("⚠ MCP %s failed: %s", "other", "late") // async interleave
-	content("more content")                           // same closure re-opens
+	content("more content")                          // same closure re-opens
 
 	want := []string{
-		"print:", "print:" + DimStyle.Sprint("AGENTS.md reloaded (2 files)"),
+		"print:" + DimStyle.Sprint("AGENTS.md reloaded (2 files)"),
 		"print:" + DimStyle.Sprint("Skills reloaded (3 skill(s))"),
 		"print:", "print:" + ErrorStyle.Sprint("⚠ MCP srv failed: boom"),
 		"print:", "print:" + DimStyle.Sprint("Context compacted"),
@@ -133,12 +132,108 @@ func TestThinkingComposingInterleave(t *testing.T) {
 	tr.toolLines("  ⎿ ok")
 
 	want := []string{
-		"print:", "user:do it",
+		"user:do it",
 		"print:", "call:" + DimStyle.Sprint("Thinking"),
 		"settle", "print:" + dim("◇ thought for <1s"),
 		"print:", "call:[bash …]", // the pending call raised at settle
 		"call:[bash cmd:ls]", // expansion: no separator
 		"settle", "print:[bash cmd:ls]", "print:  ⎿ ok",
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
+// The markdown renderer buffers whole blocks (a trailing table flushes only
+// when its stream ends), so the observer's openCall can arrive BEFORE the
+// content's final lines commit. The call must defer until closeContent —
+// otherwise the widget's separator lands first and the buffered content
+// re-opens after it: a double blank above the content and the widget glued
+// below it (the live-reported shape).
+func TestContentComposingInterleave(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.user("table then tool")
+	tr.openThinking()
+	tr.settleThinking(time.Now())
+	content := tr.openContent()
+	content("intro line")
+	tr.openCall("[bash …]")       // observer fires; the table is still buffered
+	content("| a | b |", "| 1 |") // renderer flush: same block, no re-open
+	tr.openCall("[bash cmd:pwd]") // label refresh while deferred: last wins
+	tr.closeContent()             // content over → the widget raises NOW
+	tr.settleCall("[bash cmd:pwd]")
+	tr.toolLines("  ⎿ /root")
+
+	want := []string{
+		"user:table then tool",
+		"print:", "call:" + DimStyle.Sprint("Thinking"),
+		"settle", "print:" + dim("◇ thought for <1s"),
+		"print:", "print:intro line",
+		"print:| a | b ||| 1 |",         // committed into the SAME content block
+		"print:", "call:[bash cmd:pwd]", // raised at closeContent, one separator
+		"settle", "print:[bash cmd:pwd]", "print:  ⎿ /root",
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
+// The race guard: markContent runs on the stream goroutine at the FIRST
+// content byte, so an openCall arriving before the turn goroutine's
+// openContent still defers — content-before-tools order survives a text
+// delta and a tool delta landing in one network read.
+func TestMarkContentBeatsObserver(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.beginRound()
+	tr.markContent()        // stream goroutine: first content byte
+	tr.openCall("[bash …]") // observer, before openContent ran: must defer
+	content := tr.openContent()
+	content("the text")
+	tr.closeContent()
+
+	want := []string{
+		"print:the text", // first block: no separator
+		"print:", "call:[bash …]",
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
+// A round that died mid-stream leaks its guards; beginRound clears them so
+// the next round's widget is not silently deferred forever.
+func TestBeginRoundClearsStaleGuards(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.markContent() // round 1 died after content started
+	tr.beginRound()  // round 2 (retry) begins
+	tr.openCall("[bash …]")
+
+	want := []string{"call:[bash …]"}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
+// closeContent with no deferred call is a no-op; openCall after the close
+// raises immediately (the tool-call-only round shape).
+func TestCloseContentWithoutPendingCall(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	content := tr.openContent()
+	content("reply")
+	tr.closeContent()
+	tr.openCall("[bash …]")
+
+	want := []string{
+		"print:reply",
+		"print:", "call:[bash …]",
 	}
 	if got := s.joined(); got != strings.Join(want, "\n") {
 		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
@@ -159,7 +254,7 @@ func TestOrphanedWidgetSeparatorReuse(t *testing.T) {
 	tr.user("next") // normal turn afterwards pays its own separator again
 
 	want := []string{
-		"print:", "user:x",
+		"user:x",
 		"print:", "call:[bash …]",
 		"print:" + DimStyle.Sprint("Interrupted."), // no extra separator
 		"print:", "user:next",
@@ -182,7 +277,7 @@ func TestSettleReopensAfterInterleave(t *testing.T) {
 	tr.toolLines("  ⎿ ok")
 
 	want := []string{
-		"print:", "call:[bash …]",
+		"call:[bash …]",
 		"print:", "print:" + ErrorStyle.Sprint("⚠ MCP srv failed: boom"),
 		"print:", "settle", "print:[bash cmd:ls]", "print:  ⎿ ok",
 	}
@@ -205,7 +300,7 @@ func TestTranscriptSplitsEmbeddedNewlines(t *testing.T) {
 	styled := ErrorStyle.Sprint("Error: 400 Bad Request {\n  \"message\": \"bad\",\n  \"code\": \"x\"\n}\n")
 	rows := strings.Split(strings.TrimSuffix(styled, "\n"), "\n")
 	want := []string{
-		"print:", "print:" + strings.Join(rows, "|"),
+		"print:" + strings.Join(rows, "|"),
 		"print:", "user:next",
 	}
 	if got := s.joined(); got != strings.Join(want, "\n") {
@@ -262,7 +357,7 @@ func TestWatchToolComposing(t *testing.T) {
 	s := &recSurface{}
 	tr := newTranscript(s, nil)
 	tp := &fakeObserverTP{}
-	cleanup := watchToolComposing(newTurnPhases(nil), tr, tp)
+	cleanup := watchToolComposing(newTurnPhases(nil), tr, tp, nil)
 	if tp.fn == nil {
 		t.Fatal("observer not installed")
 	}
@@ -275,8 +370,7 @@ func TestWatchToolComposing(t *testing.T) {
 	cleanup()
 
 	want := []string{
-		"print:", // the block separator, paid once at the first raise
-		"call:" + composingLabel(""),
+		"call:" + composingLabel(""), // first block: the environment owns the boundary blank
 		"call:" + composingLabel("write_file"),
 		"call:" + composingLabel("bash"),
 	}

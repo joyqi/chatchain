@@ -800,7 +800,7 @@ func composingLabel(name string) string {
 // the widget is the whole display. toolLoop later expands the header to its
 // full form (the clock keeps running) and the result commit settles it. The
 // returned cleanup detaches the observer; the widget deliberately persists.
-func watchToolComposing(phases *turnPhases, tr *transcript, tp provider.ToolProvider) func() {
+func watchToolComposing(phases *turnPhases, tr *transcript, tp provider.ToolProvider, onFirst func()) func() {
 	obs, ok := tp.(provider.ToolCallStreamObserver)
 	if !ok {
 		return func() {}
@@ -813,6 +813,9 @@ func watchToolComposing(phases *turnPhases, tr *transcript, tp provider.ToolProv
 		}
 		mu.Lock()
 		defer mu.Unlock()
+		if last == "" && onFirst != nil {
+			onFirst() // first delta: the caller ends the content stream early
+		}
 		label := composingLabel(name)
 		if label == last {
 			return
@@ -1018,6 +1021,39 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 	}
 }
 
+// contentTap is the content writer handed to the provider (stream goroutine
+// only): every byte lands in the history buffer; bytes flow to the render
+// pipe until the observer cuts it at the first tool delta, and anything after
+// the cut spills — the round renders the spill after the stream so interleaved
+// trailing text stays VISIBLE (pre-deferral it rendered, misordered; silently
+// dropping it would show the model text in history the user never saw). The
+// first byte marks the transcript's content block open — on this goroutine,
+// happens-before any tool delta that follows.
+type contentTap struct {
+	pw     *io.PipeWriter
+	buf    *strings.Builder
+	mark   func()
+	marked bool
+	closed bool
+	spill  strings.Builder
+}
+
+func (c *contentTap) Write(p []byte) (int, error) {
+	if !c.marked {
+		c.marked = true
+		c.mark()
+	}
+	c.buf.Write(p)
+	if !c.closed {
+		if _, err := c.pw.Write(p); err == nil {
+			return len(p), nil
+		}
+		c.closed = true
+	}
+	c.spill.Write(p)
+	return len(p), nil
+}
+
 // streamToolRound is the v2 twin of streamToolRound (interactive only —
 // Once keeps the v1 quiet path).
 func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, history []provider.Message, tools []provider.ToolDef) (string, string, []provider.ToolCall, error) {
@@ -1029,6 +1065,23 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *tran
 	var contentBuf, reasonBuf strings.Builder
 	done := make(chan struct{})
 
+	tr.beginRound() // a failed prior round may have leaked streaming guards
+	tap := &contentTap{pw: contentPw, buf: &contentBuf, mark: tr.markContent}
+
+	// renderSpill commits content the model streamed AFTER its first tool
+	// delta (the tap cut the render pipe there). It lands below the raised
+	// widget — misordered like the pre-deferral behavior, but visible.
+	renderSpill := func() {
+		if tap.spill.Len() == 0 {
+			return
+		}
+		msink := newUIMDSink(sink, tr.contentBlock(), u.Width)
+		mdw := markdown.NewWriter(msink)
+		mdw.Write([]byte(tap.spill.String()))
+		mdw.Flush()
+		msink.flush()
+	}
+
 	// Phase reporting and the composing observer install BEFORE the stream
 	// goroutine exists: SetToolCallObserver writes an unguarded provider
 	// field, so the install must happen-before the goroutine that reads it.
@@ -1036,14 +1089,21 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *tran
 	phases := newTurnPhases(u)
 	defer phases.end()
 	defer watchPhases(ctx, phases)()
-	defer watchToolComposing(phases, tr, tp)()
+	// On the first composing delta the content stream is over for this round
+	// (models emit text before tool calls): closing the content pipe makes the
+	// renderer's io.Copy return NOW, so buffered blocks (a trailing table)
+	// flush and closeContent raises the deferred widget promptly — instead of
+	// after the full arg stream. Later provider writes to the closed pipe are
+	// dropped (fmt.Fprint discards the error; history uses the provider's own
+	// accumulator).
+	defer watchToolComposing(phases, tr, tp, func() { contentPw.Close() })()
 
 	go func() {
 		defer close(done)
 		defer contentPw.Close()
 		defer reasonPw.Close()
 		content, reasoning, toolCalls, streamErr = tp.StreamChatWithTools(ctx, history, tools,
-			io.MultiWriter(contentPw, &contentBuf),
+			tap,
 			teeWriteCloser{io.MultiWriter(reasonPw, &reasonBuf), reasonPw})
 	}()
 
@@ -1074,13 +1134,14 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *tran
 			return fail(streamErr)
 		}
 		if len(toolCalls) > 0 { // tool calls with no text
+			renderSpill()
 			return content, reasoning, toolCalls, nil
 		}
 		return fail(readErr)
 	}
 
 	newContent := func() (*markdown.Writer, *uiMDSink) {
-		msink := newUIMDSink(sink, tr.contentBlock(), u.Width)
+		msink := newUIMDSink(sink, tr.openContent(), u.Width)
 		return markdown.NewWriter(msink), msink
 	}
 
@@ -1099,6 +1160,7 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *tran
 				return fail(streamErr)
 			}
 			if len(toolCalls) > 0 {
+				renderSpill()
 				return content, reasoning, toolCalls, nil
 			}
 			// Reasoning-only response: render the reasoning as the answer.
@@ -1106,6 +1168,7 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *tran
 			mdw.Write([]byte(reasoning))
 			mdw.Flush()
 			msink.flush()
+			tr.closeContent()
 			return reasoning, reasoning, nil, nil
 		}
 	}
@@ -1117,6 +1180,7 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *tran
 		io.Copy(mdw, contentPr)
 		mdw.Flush()
 		msink.flush()
+		tr.closeContent()
 	} else {
 		io.Copy(io.Discard, contentPr)
 	}
@@ -1125,6 +1189,7 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *tran
 	if interrupted() || streamErr != nil {
 		return fail(streamErr)
 	}
+	renderSpill()
 	return content, reasoning, toolCalls, nil
 }
 
