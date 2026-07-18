@@ -151,6 +151,7 @@ providers:
     model: gpt-5.2
     system_file: ${chatchainHome}/prompts/reviewer.md  # prompt from a file (inline `system` wins)
     effort: high             # default reasoning effort: low|medium|high|xhigh|max
+    mcp_servers: [github]    # load only these MCP servers; [] = none; key absent = all
 
   claude:
     type: anthropic

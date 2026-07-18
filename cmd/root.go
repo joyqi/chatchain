@@ -131,8 +131,12 @@ var rootCmd = &cobra.Command{
 		// REPL and auto-enables the agent toolset (load_skill) everywhere.
 		agentMode := agentFlag || pc.Agent
 
-		// Build MCP server configs from CLI flags + config file
-		mcpConfigs := buildMCPConfigs(cfg)
+		// Build MCP server configs from CLI flags + config file (the
+		// provider's mcp_servers key selects the config-file subset).
+		mcpConfigs, mcpErr := buildMCPConfigs(cfg, pc)
+		if mcpErr != nil {
+			return mcpErr
+		}
 		// MCP connection logging was tied to the removed -v flag; keep it off.
 		var logf mcpmgr.LogFunc
 
@@ -432,11 +436,16 @@ func buildDispatcher(pc config.ProviderConfig, mgr *mcpmgr.Manager, agent bool, 
 	return tool.Merge(parts...)
 }
 
-func buildMCPConfigs(cfg *config.Config) []mcpmgr.ServerConfig {
+func buildMCPConfigs(cfg *config.Config, pc config.ProviderConfig) ([]mcpmgr.ServerConfig, error) {
 	var configs []mcpmgr.ServerConfig
 
-	// From config file
-	for name, sc := range cfg.MCPServers {
+	// From config file, filtered by the provider's mcp_servers selection.
+	// --mcp flag servers always load: an explicit flag outranks config.
+	selected, err := cfg.MCPServersFor(pc)
+	if err != nil {
+		return nil, err
+	}
+	for name, sc := range selected {
 		configs = append(configs, mcpmgr.ServerConfig{
 			Name:    name,
 			Command: sc.Command,
@@ -452,7 +461,7 @@ func buildMCPConfigs(cfg *config.Config) []mcpmgr.ServerConfig {
 		configs = append(configs, mcpmgr.ParseMCPFlag(flag))
 	}
 
-	return configs
+	return configs, nil
 }
 
 func Execute() {

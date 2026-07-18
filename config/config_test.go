@@ -140,3 +140,52 @@ func TestLoadExpandsProviderVars(t *testing.T) {
 		t.Errorf("effort = %q", pc.Effort)
 	}
 }
+
+// The provider mcp_servers key: absent = all servers, empty list = none,
+// names = exactly that subset, unknown name = loud error. The nil-vs-empty
+// distinction must survive YAML decoding.
+func TestMCPServersFor(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "c.yaml")
+	os.WriteFile(cfgPath, []byte(`
+providers:
+  all:
+    type: openai
+  none:
+    type: openai
+    mcp_servers: []
+  some:
+    type: openai
+    mcp_servers: [fs]
+  typo:
+    type: openai
+    mcp_servers: [nope]
+mcp_servers:
+  fs:
+    command: fs-server
+  gh:
+    url: https://x/sse
+`), 0o644)
+	cfg := Load(cfgPath)
+
+	_, pc := cfg.Get("all")
+	if got, err := cfg.MCPServersFor(pc); err != nil || len(got) != 2 {
+		t.Fatalf("absent key: %d servers, %v (want all 2)", len(got), err)
+	}
+	_, pc = cfg.Get("none")
+	if got, err := cfg.MCPServersFor(pc); err != nil || len(got) != 0 {
+		t.Fatalf("empty list: %d servers, %v (want 0)", len(got), err)
+	}
+	_, pc = cfg.Get("some")
+	got, err := cfg.MCPServersFor(pc)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("subset: %d servers, %v (want 1)", len(got), err)
+	}
+	if got["fs"].Command != "fs-server" {
+		t.Fatalf("subset picked the wrong server: %+v", got)
+	}
+	_, pc = cfg.Get("typo")
+	if _, err := cfg.MCPServersFor(pc); err == nil {
+		t.Fatal("unknown name must error, not silently skip")
+	}
+}

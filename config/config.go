@@ -26,6 +26,10 @@ type ProviderConfig struct {
 	// support it: low|medium|high|xhigh|max ("" = provider default). A
 	// resumed session's own effort still overrides it.
 	Effort string `yaml:"effort"`
+	// MCPServers selects which of the top-level mcp_servers this provider
+	// loads, by name. nil (key absent) = all of them; an empty list = none;
+	// names must exist in the top-level map (a typo fails loudly).
+	MCPServers []string `yaml:"mcp_servers"`
 	// Agent enables agent mode for this provider (docs/design/agent-mode.md).
 	// yaml.v3 decodes the YAML 1.1 truthy spellings (true/yes/on) natively.
 	Agent         bool   `yaml:"agent"`
@@ -144,4 +148,23 @@ func (pc ProviderConfig) ResolveSystem() (string, error) {
 		return "", fmt.Errorf("system_file: %w", err)
 	}
 	return string(data), nil
+}
+
+// MCPServersFor returns the top-level MCP servers the given provider config
+// selects: all of them when the provider's mcp_servers key is absent, none
+// for an explicit empty list, and exactly the named subset otherwise — an
+// unknown name is an error, not a silent skip.
+func (c *Config) MCPServersFor(pc ProviderConfig) (map[string]MCPServerConfig, error) {
+	if pc.MCPServers == nil {
+		return c.MCPServers, nil
+	}
+	out := make(map[string]MCPServerConfig, len(pc.MCPServers))
+	for _, name := range pc.MCPServers {
+		sc, ok := c.MCPServers[name]
+		if !ok {
+			return nil, fmt.Errorf("mcp_servers: %q is not defined under the top-level mcp_servers", name)
+		}
+		out[name] = sc
+	}
+	return out, nil
 }
