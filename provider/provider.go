@@ -82,6 +82,17 @@ type Tunable interface {
 	Effort() string
 }
 
+// ValidEffort reports whether level is a recognized reasoning-effort value
+// ("" = provider default). The canonical list — the /model Effort tab and the
+// config's effort key both validate against it.
+func ValidEffort(level string) bool {
+	switch level {
+	case "", "low", "medium", "high", "xhigh", "max":
+		return true
+	}
+	return false
+}
+
 // ToolCallStreamObserver is an optional interface: providers report tool-call
 // arguments while the model is still streaming them, so the chat layer can
 // show progress (a large write_file call is otherwise dead air — tool calls

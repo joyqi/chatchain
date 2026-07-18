@@ -94,3 +94,49 @@ providers:
 		}
 	}
 }
+
+// system_file: inline system wins; otherwise the file's contents are the
+// prompt; a configured but unreadable file is a hard error.
+func TestResolveSystem(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "sys.md")
+	os.WriteFile(f, []byte("You are terse.\n"), 0o644)
+
+	if got, err := (ProviderConfig{System: "inline", SystemFile: f}).ResolveSystem(); err != nil || got != "inline" {
+		t.Fatalf("inline should win: %q, %v", got, err)
+	}
+	if got, err := (ProviderConfig{SystemFile: f}).ResolveSystem(); err != nil || got != "You are terse.\n" {
+		t.Fatalf("file read: %q, %v", got, err)
+	}
+	if _, err := (ProviderConfig{SystemFile: filepath.Join(dir, "missing.md")}).ResolveSystem(); err == nil {
+		t.Fatal("missing system_file must error, not silently blank the prompt")
+	}
+	if got, err := (ProviderConfig{}).ResolveSystem(); err != nil || got != "" {
+		t.Fatalf("neither set: %q, %v", got, err)
+	}
+}
+
+// Provider key/url/system_file expand ${…} variables at load time.
+func TestLoadExpandsProviderVars(t *testing.T) {
+	t.Setenv("CFG_TEST_KEY", "sk-expanded")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "c.yaml")
+	os.WriteFile(cfgPath, []byte(
+		"providers:\n  d:\n    type: openai\n    key: ${env:CFG_TEST_KEY}\n    url: ${env:CFG_TEST_KEY}/v1\n    system_file: ${chatchainHome}/sys.md\n    effort: high\n"), 0o644)
+
+	cfg := Load(cfgPath)
+	_, pc := cfg.Get("d")
+	if pc.Key != "sk-expanded" {
+		t.Errorf("key = %q", pc.Key)
+	}
+	if pc.URL != "sk-expanded/v1" {
+		t.Errorf("url = %q", pc.URL)
+	}
+	home, _ := os.UserHomeDir()
+	if want := filepath.Join(home, ".chatchain", "sys.md"); pc.SystemFile != want {
+		t.Errorf("system_file = %q, want %q", pc.SystemFile, want)
+	}
+	if pc.Effort != "high" {
+		t.Errorf("effort = %q", pc.Effort)
+	}
+}

@@ -75,9 +75,11 @@ var rootCmd = &cobra.Command{
 			}
 		}
 		if !cmd.Flags().Changed("system") && systemPrompt == "" {
-			if pc.System != "" {
-				systemPrompt = pc.System
+			sys, serr := pc.ResolveSystem()
+			if serr != nil {
+				return serr
 			}
+			systemPrompt = sys
 		}
 
 		if apiKey == "" {
@@ -114,6 +116,14 @@ var rootCmd = &cobra.Command{
 		p, err := provider.New(providerType, apiKey, baseURL, model, temp, reqLog.HTTPClient())
 		if err != nil {
 			return err
+		}
+		if pc.Effort != "" {
+			if !provider.ValidEffort(pc.Effort) {
+				return fmt.Errorf("config effort %q: want low|medium|high|xhigh|max", pc.Effort)
+			}
+			if tun, ok := p.(provider.Tunable); ok {
+				tun.SetEffort(pc.Effort)
+			}
 		}
 
 		// Agent mode is explicitly opt-in: the --agent flag or the provider's

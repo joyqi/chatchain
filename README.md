@@ -140,10 +140,17 @@ providers:
 
   deepseek:                  # custom alias
     type: openai             # underlying provider type
-    key: sk-deepseek-xxx
+    key: ${env:DEEPSEEK_KEY} # key/url/system_file expand ${…} variables
     url: https://api.deepseek.com/v1
     model: deepseek-chat
     system: "You are a helpful coding assistant"
+
+  reviewer:
+    type: openresponses
+    key: sk-xxx
+    model: gpt-5.2
+    system_file: ${chatchainHome}/prompts/reviewer.md  # prompt from a file (inline `system` wins)
+    effort: high             # default reasoning effort: low|medium|high|xhigh|max
 
   claude:
     type: anthropic
@@ -162,14 +169,15 @@ mcp_servers:
       Authorization: "Bearer ${env:GITHUB_TOKEN}"
 ```
 
-#### MCP Variable Expansion
+#### Variable Expansion
 
-MCP server config values (`command`, `args`, `url`, `env`, `headers`) support VS Code-style variable expansion:
+Provider config values (`key`, `url`, `system_file`) and MCP server values (`command`, `args`, `url`, `env`, `headers`) support VS Code-style variable expansion:
 
 | Variable | Expands to |
 |----------|-----------|
 | `${workspaceFolder}` / `${cwd}` | Current working directory |
 | `${userHome}` | User home directory |
+| `${chatchainHome}` | chatchain's global directory (`~/.chatchain`) |
 | `${pathSeparator}` / `${/}` | OS path separator (`/` or `\`) |
 | `${env:VAR}` | Value of environment variable `VAR` |
 

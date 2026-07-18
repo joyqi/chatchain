@@ -1,19 +1,31 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"chatchain/internal/vars"
 )
 
 // ProviderConfig holds per-provider settings from the config file.
 type ProviderConfig struct {
-	Type   string `yaml:"type"`
-	Key    string `yaml:"key"`
-	URL    string `yaml:"url"`
-	Model  string `yaml:"model"`
-	System string `yaml:"system"`
+	Type  string `yaml:"type"`
+	Key   string `yaml:"key"`
+	URL   string `yaml:"url"`
+	Model string `yaml:"model"`
+	// System is an inline system prompt; SystemFile reads it from a file
+	// instead (inline wins when both are set). Key, URL, and SystemFile
+	// expand ${…} variables (internal/vars): ${userHome}, ${chatchainHome},
+	// ${cwd}, ${env:VAR}, …
+	System     string `yaml:"system"`
+	SystemFile string `yaml:"system_file"`
+	// Effort is the default reasoning-effort level for providers that
+	// support it: low|medium|high|xhigh|max ("" = provider default). A
+	// resumed session's own effort still overrides it.
+	Effort string `yaml:"effort"`
 	// Agent enables agent mode for this provider (docs/design/agent-mode.md).
 	// yaml.v3 decodes the YAML 1.1 truthy spellings (true/yes/on) natively.
 	Agent         bool   `yaml:"agent"`
@@ -106,6 +118,9 @@ func (c *Config) loadFile(path string) {
 		return
 	}
 	for name, pc := range fc.Providers {
+		pc.Key = vars.Expand(pc.Key)
+		pc.URL = vars.Expand(pc.URL)
+		pc.SystemFile = vars.Expand(pc.SystemFile)
 		c.Providers[name] = pc
 	}
 	if c.MCPServers == nil && len(fc.MCPServers) > 0 {
@@ -114,4 +129,19 @@ func (c *Config) loadFile(path string) {
 	for name, sc := range fc.MCPServers {
 		c.MCPServers[name] = sc
 	}
+}
+
+// ResolveSystem returns the provider's system prompt: the inline System text,
+// or the contents of SystemFile when only the file is configured. A
+// configured file that cannot be read is a hard error — a silently empty
+// system prompt is worse than failing loudly.
+func (pc ProviderConfig) ResolveSystem() (string, error) {
+	if pc.System != "" || pc.SystemFile == "" {
+		return pc.System, nil
+	}
+	data, err := os.ReadFile(pc.SystemFile)
+	if err != nil {
+		return "", fmt.Errorf("system_file: %w", err)
+	}
+	return string(data), nil
 }
