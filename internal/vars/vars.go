@@ -17,7 +17,7 @@ var pattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 //
 //	${workspaceFolder}, ${cwd}  — current working directory
 //	${userHome}                 — user home directory
-//	${chatchainHome}            — chatchain's global directory (~/.chatchain)
+//	${appHome}            — chatchain's global directory (~/.chatchain)
 //	${pathSeparator}, ${/}      — OS path separator
 //	${env:VAR}                  — environment variable VAR
 //
@@ -48,7 +48,7 @@ func resolve(name string) (string, bool) {
 		if home, err := os.UserHomeDir(); err == nil {
 			return home, true
 		}
-	case "chatchainHome":
+	case "appHome":
 		if home, err := os.UserHomeDir(); err == nil {
 			return filepath.Join(home, ".chatchain"), true
 		}

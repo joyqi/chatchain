@@ -18,7 +18,7 @@ type ProviderConfig struct {
 	Model string `yaml:"model"`
 	// System is an inline system prompt; SystemFile reads it from a file
 	// instead (inline wins when both are set). Key, URL, and SystemFile
-	// expand ${…} variables (internal/vars): ${userHome}, ${chatchainHome},
+	// expand ${…} variables (internal/vars): ${userHome}, ${appHome},
 	// ${cwd}, ${env:VAR}, …
 	System     string `yaml:"system"`
 	SystemFile string `yaml:"system_file"`

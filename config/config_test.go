@@ -122,7 +122,7 @@ func TestLoadExpandsProviderVars(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "c.yaml")
 	os.WriteFile(cfgPath, []byte(
-		"providers:\n  d:\n    type: openai\n    key: ${env:CFG_TEST_KEY}\n    url: ${env:CFG_TEST_KEY}/v1\n    system_file: ${chatchainHome}/sys.md\n    effort: high\n"), 0o644)
+		"providers:\n  d:\n    type: openai\n    key: ${env:CFG_TEST_KEY}\n    url: ${env:CFG_TEST_KEY}/v1\n    system_file: ${appHome}/sys.md\n    effort: high\n"), 0o644)
 
 	cfg := Load(cfgPath)
 	_, pc := cfg.Get("d")

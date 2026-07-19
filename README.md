@@ -149,7 +149,7 @@ providers:
     type: openresponses
     key: sk-xxx
     model: gpt-5.2
-    system_file: ${chatchainHome}/prompts/reviewer.md  # prompt from a file (inline `system` wins)
+    system_file: ${appHome}/prompts/reviewer.md  # prompt from a file (inline `system` wins)
     effort: high             # default reasoning effort: low|medium|high|xhigh|max
     mcp_servers: [github]    # load only these MCP servers; [] = none; key absent = all
 
@@ -178,7 +178,7 @@ Provider config values (`key`, `url`, `system_file`) and MCP server values (`com
 |----------|-----------|
 | `${workspaceFolder}` / `${cwd}` | Current working directory |
 | `${userHome}` | User home directory |
-| `${chatchainHome}` | chatchain's global directory (`~/.chatchain`) |
+| `${appHome}` | chatchain's global directory (`~/.chatchain`) |
 | `${pathSeparator}` / `${/}` | OS path separator (`/` or `\`) |
 | `${env:VAR}` | Value of environment variable `VAR` |
 
