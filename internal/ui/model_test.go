@@ -1419,3 +1419,33 @@ func TestInputPanelColors(t *testing.T) {
 	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
 	<-reply
 }
+
+// EnterAdvances (the ask wizard shape): Enter on a non-last tab moves to the
+// NEXT tab instead of committing — unvisited questions must not be silently
+// submitted with defaults; only the last tab's Enter commits all.
+func TestTabbedEnterAdvances(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan TabbedResult, 1)
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{EnterAdvances: true, Panels: []Panel{
+		{Title: "Q1", Kind: PanelList, Items: []string{"a", "b"}},
+		{Title: "Q2", Kind: PanelInput},
+	}}, reply: reply})
+
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown})) // pick "b"
+	m = enter(t, m)                                             // NOT last tab: advance, no commit
+	select {
+	case <-reply:
+		t.Fatal("Enter on a non-last tab must not commit")
+	default:
+	}
+	if m.surf == nil || m.surf.focus != 1 {
+		t.Fatalf("focus after advance = %+v", m.surf)
+	}
+
+	m = typeText(t, m, "custom")
+	m = enter(t, m) // last tab: commits all
+	r := <-reply
+	if r.Cancelled || r.Panels[0].Cursor != 1 || r.Panels[1].Text != "custom" {
+		t.Fatalf("result = %+v", r)
+	}
+}

@@ -51,7 +51,7 @@ func (it *Interactor) Ask(ctx context.Context, spec tool.AskSpec) (tool.AskResul
 		}
 		panels[i] = ui.Panel{Title: q.Header, Kind: kind, Items: items, Prompt: q.Question}
 	}
-	r, err := it.u.Tabbed(ctx, ui.TabbedSpec{Panels: panels})
+	r, err := it.u.Tabbed(ctx, ui.TabbedSpec{Panels: panels, EnterAdvances: true})
 	if err != nil {
 		return tool.AskResult{}, err
 	}
@@ -98,7 +98,7 @@ func (it *Interactor) Ask(ctx context.Context, spec tool.AskSpec) (tool.AskResul
 				InputWidth:  60,
 			}
 		}
-		r2, err := it.u.Tabbed(ctx, ui.TabbedSpec{Panels: inputs})
+		r2, err := it.u.Tabbed(ctx, ui.TabbedSpec{Panels: inputs, EnterAdvances: true})
 		if err != nil {
 			return tool.AskResult{}, err
 		}

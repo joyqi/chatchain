@@ -495,6 +495,10 @@ func (m *model) surfaceKey(k tea.Key) {
 		case k.Code == tea.KeyEscape:
 			m.closeSurface(TabbedResult{Cancelled: true})
 		case k.Code == tea.KeyEnter:
+			if s.spec.EnterAdvances && s.focus < len(s.spec.Panels)-1 {
+				s.setFocus(s.focus + 1)
+				return
+			}
 			m.closeSurface(s.result())
 		default:
 			st.input, _ = st.input.Update(tea.KeyPressMsg(k))
@@ -533,6 +537,10 @@ func (m *model) surfaceKey(k tea.Key) {
 				return
 			}
 			st.chosen = e.path // file chosen; fall through to commit
+		}
+		if s.spec.EnterAdvances && s.focus < len(s.spec.Panels)-1 {
+			s.setFocus(s.focus + 1)
+			return
 		}
 		m.closeSurface(s.result())
 		return

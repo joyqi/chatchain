@@ -72,6 +72,12 @@ type Panel struct {
 type TabbedSpec struct {
 	Panels       []Panel
 	RefreshEvery int64 // milliseconds; >0 with any Panel.Refresh enables live refresh
+	// EnterAdvances turns Enter into wizard navigation: on any tab but the
+	// last it moves to the NEXT tab, only the last tab's Enter commits. The
+	// ask surfaces use it — unvisited questions must not be silently
+	// submitted with defaults (the /model shape keeps commit-from-anywhere:
+	// every tab there always holds a valid current value).
+	EnterAdvances bool
 }
 
 // PanelResult is one panel's state at commit.
