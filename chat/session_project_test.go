@@ -141,15 +141,16 @@ func TestSessionLocatorAcrossLayouts(t *testing.T) {
 		t.Errorf("LoadFullHistory (bucketed): %v", err)
 	}
 
-	// Global prefix resolution spans both layouts.
+	// A prefix with no flat match widens to the buckets.
 	if id, err := ResolveSessionID("aaab", ""); err != nil || id != bucketID {
-		t.Errorf("global prefix: got %q, %v", id, err)
+		t.Errorf("widened prefix: got %q, %v", id, err)
 	}
-	// Ambiguous globally...
-	if _, err := ResolveSessionID("aaa", ""); err == nil || !strings.Contains(err.Error(), "ambiguous") {
-		t.Errorf("global ambiguous: got %v", err)
+	// Mode-first: "aaa" is ambiguous across layouts but UNIQUE within the
+	// flat view, so normal mode resolves to its own session.
+	if id, err := ResolveSessionID("aaa", ""); err != nil || id != flatID {
+		t.Errorf("flat-first prefix: got %q, %v", id, err)
 	}
-	// ...but unique within the project bucket (project-first resolution).
+	// ...and unique within the project bucket (project-first resolution).
 	if id, err := ResolveSessionID("aaa", root); err != nil || id != bucketID {
 		t.Errorf("project-first prefix: got %q, %v", id, err)
 	}
@@ -163,8 +164,10 @@ func TestSessionLocatorAcrossLayouts(t *testing.T) {
 	}
 }
 
-// Scoped listing sees only the project's bucket; the global view merges flat
-// and bucketed sessions and labels the latter with their project.
+// The display views are mode-isolated: "" lists only flat sessions, a
+// project root only its bucket. listAllSessions (the --resume resolution
+// view) still merges everything, labeling bucketed entries with their
+// project.
 func TestListSessionsScoped(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -175,15 +178,23 @@ func TestListSessionsScoped(t *testing.T) {
 	writeBundle(t, filepath.Join(bucketDir(home, root1), "bbbb00000000"), "bbbb00000000", root1)
 	writeBundle(t, filepath.Join(bucketDir(home, root2), "cccc00000000"), "cccc00000000", root2)
 
-	global, err := ListSessions("")
+	flat, err := ListSessions("")
 	if err != nil {
-		t.Fatalf("ListSessions global: %v", err)
+		t.Fatalf("ListSessions flat: %v", err)
 	}
-	if len(global) != 3 {
-		t.Fatalf("global: %d sessions, want 3", len(global))
+	if len(flat) != 1 || flat[0].ID != "aaaa00000000" {
+		t.Fatalf("flat view must hide project buckets: %+v", flat)
+	}
+
+	all, err := listAllSessions()
+	if err != nil {
+		t.Fatalf("listAllSessions: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("resolution view: %d sessions, want 3", len(all))
 	}
 	hints := map[string]string{}
-	for _, in := range global {
+	for _, in := range all {
 		hints[in.ID] = in.Project
 	}
 	if hints["aaaa00000000"] != "" {
@@ -207,8 +218,10 @@ func TestListSessionsScoped(t *testing.T) {
 	}
 
 	// Labels carry the hint for bucketed sessions only.
-	if l := sessionLabel(global[0]); global[0].Project != "" && !strings.Contains(l, "["+global[0].Project+"]") {
-		t.Errorf("label missing project hint: %q", l)
+	for _, in := range all {
+		if in.Project != "" && !strings.Contains(sessionLabel(in), "["+in.Project+"]") {
+			t.Errorf("label missing project hint: %q", sessionLabel(in))
+		}
 	}
 	if l := sessionLabel(SessionInfo{ID: "x", Title: "t", Model: "m"}); strings.Contains(l, "[") {
 		t.Errorf("flat label grew a hint: %q", l)

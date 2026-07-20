@@ -237,30 +237,29 @@ func resolveSessionID(infos []SessionInfo, fragment string) (string, error) {
 	}
 }
 
-// ResolveSessionID resolves a --resume id fragment to a full session id (exact
-// match or unique prefix; see resolveSessionID). A non-empty projectRoot tries
-// that project's bucket first and only widens to the global view when nothing
-// there matched — a short prefix means "this project", while an explicit id
-// from anywhere still works.
+// ResolveSessionID resolves a --resume id fragment to a full session id
+// (exact match or unique prefix; see resolveSessionID). The mode's OWN view
+// is tried first — the project bucket in agent mode, the flat sessions
+// otherwise — so a short prefix means "one of mine"; only when nothing there
+// matches does resolution widen to every bucket, keeping an explicit id
+// working from anywhere.
 func ResolveSessionID(fragment, projectRoot string) (string, error) {
-	if projectRoot != "" {
-		infos, err := ListSessions(projectRoot)
-		if err != nil {
-			return "", err
-		}
-		id, rerr := resolveSessionID(infos, fragment)
-		if rerr == nil {
-			return id, nil
-		}
-		if !errors.Is(rerr, errNoSessionMatch) {
-			return "", rerr // ambiguous within the project — final
-		}
-	}
-	infos, err := ListSessions("")
+	scoped, err := ListSessions(projectRoot)
 	if err != nil {
 		return "", err
 	}
-	return resolveSessionID(infos, fragment)
+	id, rerr := resolveSessionID(scoped, fragment)
+	if rerr == nil {
+		return id, nil
+	}
+	if !errors.Is(rerr, errNoSessionMatch) {
+		return "", rerr // ambiguous within the mode's own view — final
+	}
+	all, err := listAllSessions()
+	if err != nil {
+		return "", err
+	}
+	return resolveSessionID(all, fragment)
 }
 
 // ---- SessionWriter ----
@@ -781,10 +780,10 @@ func LoadFullHistory(id string, p provider.Provider) ([]provider.Message, error)
 }
 
 // ListSessions returns sessions sorted by most-recently-updated first.
-// projectRoot scopes the view: non-empty lists only that project's bucket
-// (one readdir — O(own sessions)); "" is the global view — flat sessions plus
-// every projects/<slug>/ bucket, with bucketed entries carrying a project
-// hint so nothing is ever invisible.
+// The views are MODE-ISOLATED: a non-empty projectRoot lists only that
+// project's bucket (agent mode), "" lists only the flat sessions (normal
+// mode) — each mode sees its own kind and nothing else. Cross-bucket
+// discovery exists solely for --resume id resolution (listAllSessions).
 func ListSessions(projectRoot string) ([]SessionInfo, error) {
 	base, err := sessionsDir()
 	if err != nil {
@@ -795,21 +794,36 @@ func ListSessions(projectRoot string) ([]SessionInfo, error) {
 		infos, err = listBucket(filepath.Join(base, projectsDirName, projectSlug(projectRoot)), true)
 	} else {
 		infos, err = listBucket(base, false)
-		if err == nil {
-			pdir := filepath.Join(base, projectsDirName)
-			if buckets, berr := os.ReadDir(pdir); berr == nil {
-				for _, b := range buckets {
-					if !b.IsDir() {
-						continue
-					}
-					more, _ := listBucket(filepath.Join(pdir, b.Name()), true)
-					infos = append(infos, more...)
-				}
-			}
-		}
 	}
 	if err != nil {
 		return nil, err
+	}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].UpdatedAt.After(infos[j].UpdatedAt) })
+	return infos, nil
+}
+
+// listAllSessions is the resolution view: flat sessions plus every
+// projects/<slug>/ bucket. Only --resume id resolution consults it — an
+// explicit id names one session and works from anywhere, while the display
+// views stay mode-isolated.
+func listAllSessions() ([]SessionInfo, error) {
+	base, err := sessionsDir()
+	if err != nil {
+		return nil, err
+	}
+	infos, err := listBucket(base, false)
+	if err != nil {
+		return nil, err
+	}
+	pdir := filepath.Join(base, projectsDirName)
+	if buckets, berr := os.ReadDir(pdir); berr == nil {
+		for _, b := range buckets {
+			if !b.IsDir() {
+				continue
+			}
+			more, _ := listBucket(filepath.Join(pdir, b.Name()), true)
+			infos = append(infos, more...)
+		}
 	}
 	sort.Slice(infos, func(i, j int) bool { return infos[i].UpdatedAt.After(infos[j].UpdatedAt) })
 	return infos, nil
