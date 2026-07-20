@@ -393,10 +393,14 @@ func (m *model) renderSurface(b *strings.Builder) {
 					if c := st.input.Cursor(); c != nil {
 						m.surfCur = c
 						m.surfCur.Y = strings.Count(b.String(), "\n") + 1
-						m.surfCur.X = prefixCols + 1 + inputCursorCols(st.input, c.X)
+						m.surfCur.X = prefixCols + inputCursorCols(st.input, c.X)
 					}
+					// No leading padding column: the field's first text cell
+					// sits exactly where the option labels start, so the box
+					// reads as one of the rows (only a trailing pad closes
+					// the shade).
 					bg := inputBg()
-					b.WriteString("\n" + marker + box + bg + " " + field + sgrReset + bg +
+					b.WriteString("\n" + marker + box + bg + field + sgrReset + bg +
 						strings.Repeat(" ", pad) + " " + sgrReset)
 					continue
 				}
