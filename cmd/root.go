@@ -191,6 +191,11 @@ var rootCmd = &cobra.Command{
 		if noSave && cmd.Flags().Changed("resume") {
 			return fmt.Errorf("--no-save cannot be combined with --resume")
 		}
+		// Config no_save: same ephemeral start, except an explicit --resume
+		// of a persisted session outranks it.
+		if pc.NoSave && !cmd.Flags().Changed("resume") {
+			noSave = true
+		}
 
 		// Resume an existing session (before model selection: a resumed session
 		// can supply the model when -M is omitted).
@@ -244,14 +249,27 @@ var rootCmd = &cobra.Command{
 		// Create a fresh session writer unless resuming or ephemeral (--no-save).
 		// Agent-mode sessions land in the project's bucket keyed by its root;
 		// normal-mode sessions stay flat but still record where they started.
+		sessionCwd := cwd
+		if agentMode {
+			sessionCwd = agentOpts.Root
+		}
 		if sw == nil && !noSave {
-			sessionCwd := cwd
-			if agentMode {
-				sessionCwd = agentOpts.Root
-			}
 			sw, err = chat.NewSessionWriter(p, temp, baseURL, sessionCwd, agentMode)
 			if err != nil {
 				return fmt.Errorf("failed to create session: %w", err)
+			}
+		}
+		// Ephemeral mode gets a DEFERRED factory instead: /save mints the
+		// session then, reading the provider's current tuning (not startup
+		// flags) so mid-chat /model changes land in the meta.
+		var newSession chat.SessionFactory
+		if sw == nil && noSave {
+			newSession = func() (*chat.SessionWriter, error) {
+				curTemp := temp
+				if tun, ok := p.(provider.Tunable); ok {
+					curTemp = tun.Temperature()
+				}
+				return chat.NewSessionWriter(p, curTemp, baseURL, sessionCwd, agentMode)
 			}
 		}
 
@@ -283,7 +301,7 @@ var rootCmd = &cobra.Command{
 		if !term.IsTerminal(int(os.Stdout.Fd())) {
 			return fmt.Errorf("interactive mode requires a terminal; use -m/--message for piped input")
 		}
-		return chat.Run(p, systemPrompt, systemInteractive, importedHistory, dispatch, mgr, sw, contextWindow, agentOpts, reqLog)
+		return chat.Run(p, systemPrompt, systemInteractive, importedHistory, dispatch, mgr, sw, newSession, contextWindow, agentOpts, reqLog)
 	},
 }
 
@@ -300,7 +318,7 @@ func init() {
 	rootCmd.Flags().StringArrayVar(&mcpFlags, "mcp", nil, "MCP server (command string or URL, repeatable)")
 	rootCmd.Flags().StringVar(&resumeID, "resume", "", "Resume a saved session: --resume to pick interactively, or --resume=<id>")
 	rootCmd.Flags().Lookup("resume").NoOptDefVal = " " // allow bare --resume (interactive picker)
-	rootCmd.Flags().BoolVar(&noSave, "no-save", false, "Do not persist this session to disk (ephemeral)")
+	rootCmd.Flags().BoolVar(&noSave, "no-save", false, "Start ephemeral: nothing persists unless you run /save in the chat")
 	rootCmd.Flags().IntVar(&maxTurns, "max-turns", 0, "Limit agentic tool turns in non-interactive mode (-m only; 0 = unlimited)")
 	rootCmd.Flags().StringVar(&contextWindowFlag, "context-window", "", "Context window size for compaction accounting (e.g. 200k, 1m); default 128k")
 	rootCmd.Flags().BoolVar(&agentFlag, "agent", false, "Enable agent mode (AGENTS.md system-prompt overlay)")

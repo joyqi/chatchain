@@ -189,3 +189,17 @@ mcp_servers:
 		t.Fatal("unknown name must error, not silently skip")
 	}
 }
+
+// no_save parses and defaults false.
+func TestNoSaveField(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "c.yaml")
+	os.WriteFile(cfgPath, []byte("providers:\n  eph:\n    type: openai\n    no_save: true\n  norm:\n    type: openai\n"), 0o644)
+	cfg := Load(cfgPath)
+	if _, pc := cfg.Get("eph"); !pc.NoSave {
+		t.Error("no_save: true not parsed")
+	}
+	if _, pc := cfg.Get("norm"); pc.NoSave {
+		t.Error("no_save must default false")
+	}
+}

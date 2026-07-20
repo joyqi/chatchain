@@ -26,6 +26,9 @@ type ProviderConfig struct {
 	// support it: low|medium|high|xhigh|max ("" = provider default). A
 	// resumed session's own effort still overrides it.
 	Effort string `yaml:"effort"`
+	// NoSave starts sessions ephemeral (the --no-save behavior): nothing
+	// persists unless the user runs /save mid-chat. --resume overrides it.
+	NoSave bool `yaml:"no_save"`
 	// MCPServers selects which of the top-level mcp_servers this provider
 	// loads, by name. nil (key absent) = all of them; an empty list = none;
 	// names must exist in the top-level map (a typo fails loudly).

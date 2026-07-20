@@ -21,10 +21,16 @@ import (
 // Run is the interactive chat loop, rendered through the bubbletea facade
 // (internal/ui): a synchronous turn engine over ReadInput with type-ahead
 // queued inside the ui (docs/design/ui-architecture.md).
+
+// SessionFactory mints the session writer on demand: an ephemeral session
+// (--no-save / no_save) carries one so /save can start persisting mid-chat.
+type SessionFactory func() (*SessionWriter, error)
+
+// Run is the interactive chat loop's entry point.
 //
 // Invariant: after ui.New() nothing may write to the terminal except through
 // the facade — no spinner, no raw OSC/ANSI escapes, no direct stdout.
-func Run(p provider.Provider, systemPrompt string, systemInteractive bool, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, contextWindow int, agent AgentOptions, reqLog *RequestLog) error {
+func Run(p provider.Provider, systemPrompt string, systemInteractive bool, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, newSession SessionFactory, contextWindow int, agent AgentOptions, reqLog *RequestLog) error {
 	// ---- pre-Program phase: plain stdout, the Program hasn't claimed the
 	// terminal yet. The OSC background query MUST happen here (during the
 	// Program it would race the event loop's stdin ownership).
@@ -38,7 +44,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 		}
 		overlay = agents.NewOverlay(agent.Root, cwd)
 	}
-	setAgentCommands(agent.Enabled)
+	setActiveCommands(agent.Enabled, newSession != nil)
 	sessionScope := ""
 	if agent.Enabled {
 		sessionScope = agent.Root
@@ -66,9 +72,15 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 	}
 
 	DimStyle.Println("Chat started. Press Ctrl+C to exit.")
-	DimStyle.Println("Commands: /file [path], /session, /model, /compact, /export, /status, /tools, /debug" + agentCommandHint(overlay))
+	saveHint := ""
+	if newSession != nil {
+		saveHint = ", /save"
+	}
+	DimStyle.Println("Commands: /file [path], /session, /model, /compact, /export, /status, /tools, /debug" + saveHint + agentCommandHint(overlay))
 	if id := sw.ID(); id != "" {
 		DimStyle.Printf("Session: %s\n", id)
+	} else if newSession != nil {
+		DimStyle.Println("Session: not saved — /save [title] keeps this chat")
 	}
 	if n := overlay.FileCount(); n > 0 {
 		DimStyle.Printf("Agent mode: AGENTS.md loaded (%d files, %.1f KB)\n", n, float64(overlay.ChainSize())/1024)
@@ -506,6 +518,34 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			lc := &lineCommitter{commit: tr.noticeLines}
 			exportChat(lc, arg, sw, history, p)
 			lc.flush()
+			continue
+		}
+		if newSession != nil && (input == "/save" || strings.HasPrefix(input, "/save ")) {
+			if sw != nil {
+				tr.notice("Session already saving (%s).", sw.ID())
+				continue
+			}
+			newSW, serr := newSession()
+			if serr != nil {
+				tr.error("Save failed: %v", serr)
+				continue
+			}
+			sw = newSW
+			sw.SetContextWindow(budget.window)
+			if tun, ok := p.(provider.Tunable); ok {
+				if e := tun.Effort(); e != "" {
+					sw.SetEffort(e)
+				}
+			}
+			persistTurn() // the whole backlog: persisted has stayed 0
+			if title := strings.TrimSpace(strings.TrimPrefix(input, "/save")); title != "" {
+				titled = true // a user-chosen title is never overwritten
+				sw.SetTitle(title)
+				u.SetTitle(title)
+			} else {
+				maybeTitle() // placeholder + async LLM title, as at turn end
+			}
+			tr.notice("Session saved: %s — auto-saving from now on.", sw.ID())
 			continue
 		}
 		if input == "/tools" || strings.HasPrefix(input, "/tools ") {

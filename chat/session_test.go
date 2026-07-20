@@ -452,3 +452,50 @@ func TestResolveSessionID(t *testing.T) {
 		t.Fatal("unknown: got nil error")
 	}
 }
+
+// TestDeferredSaveBacklog mirrors the /save flow for an ephemeral session:
+// the writer is minted only when the user saves, the whole accumulated
+// backlog lands in one append, and the session resumes losslessly with the
+// user's chosen title.
+func TestDeferredSaveBacklog(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	p := &stubProvider{model: "m1"}
+
+	// Several turns accumulate in memory with NO writer (sw == nil: every
+	// persistTurn was a no-op, the watermark never moved).
+	backlog := []provider.Message{
+		{Role: "user", Content: "explore this"},
+		{Role: "assistant", Content: "sure"},
+		{Role: "user", Content: "turned out valuable"},
+		{Role: "assistant", Content: "saving then"},
+	}
+
+	// /save: mint + append everything since watermark 0 + custom title.
+	sw, err := NewSessionWriter(p, nil, "", "", false)
+	if err != nil {
+		t.Fatalf("NewSessionWriter: %v", err)
+	}
+	if err := sw.AppendMessages(backlog); err != nil {
+		t.Fatalf("AppendMessages: %v", err)
+	}
+	sw.SetTitle("keeper")
+	sw.SetContextWindow(128000)
+	id := sw.ID()
+	if err := sw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, sess, err := ResumeSession(id, p)
+	if err != nil {
+		t.Fatalf("ResumeSession: %v", err)
+	}
+	if len(sess.Messages) != len(backlog) {
+		t.Fatalf("resumed %d messages, want %d", len(sess.Messages), len(backlog))
+	}
+	if sess.Messages[3].Content != "saving then" {
+		t.Fatalf("backlog order lost: %+v", sess.Messages[3])
+	}
+	if sess.Meta.Title != "keeper" {
+		t.Fatalf("title = %q, want keeper", sess.Meta.Title)
+	}
+}

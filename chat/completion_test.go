@@ -5,22 +5,31 @@ import (
 	"testing"
 )
 
-// TestAgentCommandVisibility pins the command-table contract: /skills joins
-// activeSlashCommands only in agent mode, and the base table is never mutated
-// (the UI's suggestion menu and the dispatch loop both read this table).
-func TestAgentCommandVisibility(t *testing.T) {
-	t.Cleanup(func() { setAgentCommands(false) })
+// TestConditionalCommandVisibility pins the command-table contract: /skills
+// joins activeSlashCommands only in agent mode, /save only for sessions that
+// started ephemeral, the two toggles compose, and the base table is never
+// mutated (the UI's suggestion menu and the dispatch loop both read it).
+func TestConditionalCommandVisibility(t *testing.T) {
+	t.Cleanup(func() { setActiveCommands(false, false) })
 
-	setAgentCommands(false)
-	if slices.Contains(activeSlashCommands, "/skills") {
-		t.Fatal("/skills visible with agent mode off")
+	setActiveCommands(false, false)
+	if slices.Contains(activeSlashCommands, "/skills") || slices.Contains(activeSlashCommands, "/save") {
+		t.Fatal("conditional commands visible with both toggles off")
 	}
-	setAgentCommands(true)
-	if !slices.Contains(activeSlashCommands, "/skills") {
-		t.Fatal("/skills not active with agent mode on")
+	setActiveCommands(true, false)
+	if !slices.Contains(activeSlashCommands, "/skills") || slices.Contains(activeSlashCommands, "/save") {
+		t.Fatal("agent-only toggle leaked or missed")
+	}
+	setActiveCommands(false, true)
+	if slices.Contains(activeSlashCommands, "/skills") || !slices.Contains(activeSlashCommands, "/save") {
+		t.Fatal("save-only toggle leaked or missed")
+	}
+	setActiveCommands(true, true)
+	if !slices.Contains(activeSlashCommands, "/skills") || !slices.Contains(activeSlashCommands, "/save") {
+		t.Fatal("both toggles must compose")
 	}
 	// The base table itself is never mutated.
-	if slices.Contains(slashCommands, "/skills") {
-		t.Fatal("base slashCommands polluted with /skills")
+	if slices.Contains(slashCommands, "/skills") || slices.Contains(slashCommands, "/save") {
+		t.Fatal("base slashCommands polluted")
 	}
 }
