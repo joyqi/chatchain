@@ -58,6 +58,55 @@ type Env struct {
 	// ProjectRoot anchors project-scoped tools — the agent set's skill
 	// discovery. Empty means "resolve from the working directory at call time".
 	ProjectRoot string
+	// Interact lets a tool put a question to the user through the host UI
+	// (the ask set). nil in non-interactive runs — a set that needs it
+	// returns no tools, so the model never sees what it cannot use.
+	Interact Interactor
+}
+
+// Interactor is the host-side seam for model-initiated user interaction: one
+// spec-driven entry covering single-select, multi-select, and confirm (a
+// two-option single-select). The chat layer implements it over the tabbed
+// surface engine; tools stay ignorant of the terminal stack.
+type Interactor interface {
+	Ask(ctx context.Context, spec AskSpec) (AskResult, error)
+}
+
+// AskSpec is one interaction: 1–4 questions answered on one surface (Tab
+// switches, Enter commits all, ESC declines the whole ask).
+type AskSpec struct {
+	Questions []AskQuestion
+}
+
+// AskQuestion is a single question. Header is the SHORT tab label; Question
+// is the body line. AllowCustom appends an "Other…" choice that opens a text
+// field.
+type AskQuestion struct {
+	Header      string
+	Question    string
+	Options     []AskOption
+	Multiple    bool
+	AllowCustom bool
+}
+
+// AskOption is one selectable choice.
+type AskOption struct {
+	Label       string
+	Description string
+}
+
+// AskAnswer is one question's outcome: the chosen option labels (one for
+// single-select, any number for multi), or the user's typed text.
+type AskAnswer struct {
+	Selected []string
+	Custom   string
+}
+
+// AskResult reports the interaction. Declined means the user dismissed the
+// surface — a valid outcome the model should handle, not an error.
+type AskResult struct {
+	Declined bool
+	Answers  []AskAnswer
 }
 
 // SetFactory builds a toolset's tools from the set's shared raw YAML config.
@@ -72,6 +121,30 @@ var sets = map[string]SetFactory{
 	"shell": newShellSet,
 	"agent": newAgentSet,
 	"code":  newCodeSet,
+	"ask":   newAskSet,
+}
+
+// SetDisabled reports an explicit boolean-false config value for a set —
+// the opt-out for sets that are otherwise enabled by default (ask). A
+// missing key is NOT disabled: presence-enables, false-disables, absence
+// defers to the default policy.
+func SetDisabled(raw map[string]yaml.Node, name string) bool {
+	n, ok := raw[name]
+	if !ok {
+		return false
+	}
+	return nodeDisables(n)
+}
+
+func nodeDisables(n yaml.Node) bool {
+	if n.Kind != yaml.ScalarNode || n.Tag != "!!bool" {
+		return false
+	}
+	switch n.Value {
+	case "false", "no", "off":
+		return true
+	}
+	return false
 }
 
 // Registry holds the enabled built-in tools and satisfies Dispatcher.
@@ -93,6 +166,9 @@ func Build(env Env, raw map[string]yaml.Node, warnf func(string, ...any)) *Regis
 	}
 	sort.Strings(names)
 	for _, name := range names {
+		if nodeDisables(raw[name]) {
+			continue // explicit opt-out (e.g. ask: false)
+		}
 		f, ok := sets[name]
 		if !ok {
 			if warnf != nil {

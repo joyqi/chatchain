@@ -157,6 +157,14 @@ var rootCmd = &cobra.Command{
 		// skill discovery — resolved in every mode, so a `tools: {agent: ...}`
 		// entry works outside agent mode too.
 		toolEnv := tool.Env{ProjectRoot: agentOpts.Root}
+		// Interactive runs get the ask seam (created unbound — chat.Run
+		// binds the live UI); -m runs leave it nil, so the ask set
+		// contributes no tools and the model never sees them.
+		var interact *chat.Interactor
+		if chatMessage == "" {
+			interact = chat.NewInteractor()
+			toolEnv.Interact = interact
+		}
 		if toolEnv.ProjectRoot == "" && cwdErr == nil {
 			toolEnv.ProjectRoot = agents.ProjectRoot(cwd)
 		}
@@ -301,7 +309,7 @@ var rootCmd = &cobra.Command{
 		if !term.IsTerminal(int(os.Stdout.Fd())) {
 			return fmt.Errorf("interactive mode requires a terminal; use -m/--message for piped input")
 		}
-		return chat.Run(p, systemPrompt, systemInteractive, importedHistory, dispatch, mgr, sw, newSession, contextWindow, agentOpts, reqLog)
+		return chat.Run(p, systemPrompt, systemInteractive, importedHistory, dispatch, mgr, sw, newSession, interact, contextWindow, agentOpts, reqLog)
 	},
 }
 
@@ -442,6 +450,12 @@ func buildDispatcher(pc config.ProviderConfig, mgr *mcpmgr.Manager, agent bool, 
 	reg := tool.Build(env, pc.Tools, warnf)
 	if agent {
 		reg.EnableSet(env, "agent", warnf)
+	}
+	// The ask set is on by default whenever interaction is possible; an
+	// explicit `ask: false` opts out (Build already skipped it; EnableSet
+	// must not resurrect it).
+	if env.Interact != nil && !tool.SetDisabled(pc.Tools, "ask") {
+		reg.EnableSet(env, "ask", warnf)
 	}
 
 	var parts []tool.Dispatcher

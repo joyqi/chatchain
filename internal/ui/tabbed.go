@@ -32,6 +32,11 @@ type Panel struct {
 	Title string
 	Kind  PanelKind
 
+	// Prompt is an optional one-line body text rendered dim between the tab
+	// bar and the panel content — the ask toolset's question text (the Title
+	// stays a short tab chip).
+	Prompt string
+
 	// List / Multi.
 	Items   []string
 	Cursor  int   // initial cursor (List)
@@ -298,6 +303,10 @@ func (m *model) renderSurface(b *strings.Builder) {
 
 	p := s.spec.Panels[s.focus]
 	st := &s.ps[s.focus]
+
+	if p.Prompt != "" {
+		b.WriteString("\n" + faint + " " + ansi.Truncate(p.Prompt, maxInt(4, w-2), "…") + sgrReset)
+	}
 
 	switch p.Kind {
 	case PanelList, PanelMulti:

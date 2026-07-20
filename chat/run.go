@@ -30,7 +30,7 @@ type SessionFactory func() (*SessionWriter, error)
 //
 // Invariant: after ui.New() nothing may write to the terminal except through
 // the facade — no spinner, no raw OSC/ANSI escapes, no direct stdout.
-func Run(p provider.Provider, systemPrompt string, systemInteractive bool, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, newSession SessionFactory, contextWindow int, agent AgentOptions, reqLog *RequestLog) error {
+func Run(p provider.Provider, systemPrompt string, systemInteractive bool, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, newSession SessionFactory, interact *Interactor, contextWindow int, agent AgentOptions, reqLog *RequestLog) error {
 	// ---- pre-Program phase: plain stdout, the Program hasn't claimed the
 	// terminal yet. The OSC background query MUST happen here (during the
 	// Program it would race the event loop's stdin ownership).
@@ -112,6 +112,9 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 	defer os.Stdout.WriteString("\033[23;0t")
 	u := ui.New()
 	defer u.Close()
+	if interact != nil {
+		interact.bind(u)
+	}
 	defer func() { sw.Close() }() // sw may be swapped by /session
 	u.SetTitle(windowTitle(sw.Title()))
 	u.SetSlashCommands(activeSlashCommands)

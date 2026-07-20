@@ -204,8 +204,9 @@ Besides MCP servers, ChatChain ships built-in tools grouped into named
 enabled by listing it under that provider's `tools:` key; the value is the
 set's shared configuration, and an empty value uses its defaults. Available
 sets: `shell` (running bash commands, sandboxed), `code` (reading, searching,
-and editing project files), and `agent` (skill activation; auto-enabled by
-agent mode).
+and editing project files), `agent` (skill activation; auto-enabled by agent
+mode), and `ask` (interactive questions to the user; enabled by default in
+interactive sessions — disable with `ask: false`).
 
 ```yaml
 providers:
@@ -225,6 +226,18 @@ providers:
         network: true        # allow network inside the sandbox
         write: [~/go/pkg]    # extra sandbox-writable paths
 ```
+
+#### `ask` — `choose`, `confirm`
+
+Lets the model put a decision to you on an interactive selector instead of
+asking in prose — and, crucially, WITHOUT ending its turn: the answer flows
+back as a tool result and the same agentic round continues. `choose` packs
+1–4 questions into a tabbed surface (short headers as tab labels; Tab
+switches, one Enter commits all; single- or multi-select per question, and an
+"Other…" free-text answer unless the model disables it). `confirm` is a
+single yes/no. ESC declines — the model is told and proceeds on its own.
+Zero side effects, on by default interactively, absent in `-m` runs; opt out
+per provider with `tools: {ask: false}`.
 
 #### `shell` — `bash`
 
