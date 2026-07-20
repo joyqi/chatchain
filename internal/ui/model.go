@@ -164,7 +164,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.PasteMsg:
 		if m.surf != nil {
-			if p := m.surf.spec.Panels[m.surf.focus]; p.Kind == PanelInput {
+			if p := m.surf.spec.Panels[m.surf.focus]; p.Kind == PanelInput || m.surf.ps[m.surf.focus].editing {
 				st := &m.surf.ps[m.surf.focus]
 				flat := strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(msg.Content)
 				st.input, _ = st.input.Update(tea.PasteMsg{Content: strings.TrimSpace(flat)})
@@ -483,6 +483,41 @@ func (m *model) surfaceKey(k tea.Key) {
 	p := s.spec.Panels[s.focus]
 	st := &s.ps[s.focus]
 
+	// An open inline "Other…" editor owns the keyboard. ESC closes JUST the
+	// editor (back to the options — the user is refining an answer, not
+	// declining the ask); Enter confirms the text: a Multi checks the row
+	// and stays for more toggles, a single-select proceeds with it as the
+	// answer (wizard advance / commit).
+	if (p.Kind == PanelList || p.Kind == PanelMulti) && p.Custom && st.editing {
+		otherIdx := len(p.Items)
+		switch {
+		case k.Mod == tea.ModCtrl && k.Code == 'c':
+			m.closeSurface(TabbedResult{Cancelled: true})
+		case k.Code == tea.KeyEscape:
+			st.editing = false
+			st.input.Blur()
+		case k.Code == tea.KeyEnter:
+			st.editing = false
+			st.input.Blur()
+			text := strings.TrimSpace(st.input.Value())
+			if p.Kind == PanelMulti {
+				st.checked[otherIdx] = text != ""
+				return
+			}
+			if text == "" {
+				return // nothing entered: stay on the options
+			}
+			if s.spec.EnterAdvances && s.focus < len(s.spec.Panels)-1 {
+				s.setFocus(s.focus + 1)
+				return
+			}
+			m.closeSurface(s.result())
+		default:
+			st.input, _ = st.input.Update(tea.KeyPressMsg(k))
+		}
+		return
+	}
+
 	// Input panels own the keyboard: letters must type, not navigate. Only
 	// the surface-level chords stay routed (Tab/Enter/Esc/Ctrl+C); the rest —
 	// including textinput's emacs-style Ctrl bindings — feed the field.
@@ -538,6 +573,15 @@ func (m *model) surfaceKey(k tea.Key) {
 			}
 			st.chosen = e.path // file chosen; fall through to commit
 		}
+		if (p.Kind == PanelList || p.Kind == PanelMulti) && p.Custom && st.cursor == len(p.Items) &&
+			strings.TrimSpace(st.input.Value()) == "" {
+			// Empty Other: Enter opens the editor. With text already entered
+			// the row behaves like any option (fall through to advance /
+			// commit) — Space edits it.
+			st.editing = true
+			st.input.Focus()
+			return
+		}
 		if s.spec.EnterAdvances && s.focus < len(s.spec.Panels)-1 {
 			s.setFocus(s.focus + 1)
 			return
@@ -566,7 +610,23 @@ func (m *model) surfaceKey(k tea.Key) {
 		return
 	case tea.KeySpace:
 		switch p.Kind {
+		case PanelList:
+			if p.Custom && st.cursor == len(p.Items) {
+				st.editing = true // Space (re)opens the editor on a single-select
+				st.input.Focus()
+				return
+			}
 		case PanelMulti:
+			if p.Custom && st.cursor == len(p.Items) {
+				if st.checked[st.cursor] {
+					st.checked[st.cursor] = false // uncheck; the draft text stays
+				} else {
+					st.editing = true // check-by-editing (Enter confirms)
+					st.input.Focus()
+				}
+				st.copied = false
+				return
+			}
 			st.checked[st.cursor] = !st.checked[st.cursor]
 		case PanelView:
 			m.surfacePage(p, st, 1) // v1: Space pages a view forward

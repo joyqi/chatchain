@@ -41,6 +41,11 @@ type Panel struct {
 	Items   []string
 	Cursor  int   // initial cursor (List)
 	Checked []int // initially checked indices (Multi)
+	// Custom appends an inline "Other…" free-text choice: Enter (or Space on
+	// a Multi) on that row opens an inline input IN PLACE; Enter confirms the
+	// text (single-select proceeds with it, Multi checks the row and stays),
+	// ESC closes just the editor. The typed text returns in Result.Custom.
+	Custom bool
 
 	// Slider (←/→ step, g default, G max).
 	Min, Max, Step float64
@@ -87,6 +92,7 @@ type PanelResult struct {
 	Value   *float64 // Slider
 	Path    string   // Browser: chosen file ("" if none)
 	Text    string   // Input: the submitted text
+	Custom  string   // List/Multi with Custom: the inline "Other…" text
 }
 
 // TabbedResult reports the whole surface at commit.
@@ -117,7 +123,8 @@ type panelState struct {
 	copied  bool            // View: last "c" copied to clipboard
 	wrapped int             // View(Wrap): wrapped row count from the last render
 	hoff    int             // View(!Wrap): horizontal pan offset (h/l)
-	input   textinput.Model // Input
+	input   textinput.Model // Input, and the inline Custom editor
+	editing bool            // List/Multi Custom: the inline editor is open
 	rows    int             // last visible row budget, for paging
 }
 
@@ -139,6 +146,14 @@ func newSurface(spec TabbedSpec, reply chan TabbedResult, gen int) *surfaceState
 		switch p.Kind {
 		case PanelList, PanelMulti:
 			st.items = append([]string{}, p.Items...)
+			if p.Custom {
+				st.items = append(st.items, "Other…")
+				ti := textinput.New()
+				ti.Prompt = ""
+				ti.SetVirtualCursor(false)
+				ti.SetStyles(textinput.Styles{})
+				st.input = ti
+			}
 			st.cursor = p.Cursor
 			if st.cursor < 0 || st.cursor >= len(st.items) {
 				st.cursor = 0
@@ -217,6 +232,10 @@ func (s *surfaceState) result() TabbedResult {
 	for i := range s.ps {
 		st := &s.ps[i]
 		pr := PanelResult{Cursor: st.cursor, Value: st.value, Path: st.chosen, Text: st.input.Value()}
+		if s.spec.Panels[i].Custom {
+			pr.Custom = strings.TrimSpace(st.input.Value())
+			pr.Text = ""
+		}
 		for j := 0; j < len(st.items); j++ {
 			if st.checked[j] {
 				pr.Checked = append(pr.Checked, j)
@@ -231,6 +250,10 @@ func (s *surfaceState) result() TabbedResult {
 // field focused (focus drives both editing and the real-cursor position).
 func (s *surfaceState) setFocus(i int) {
 	if s.spec.Panels[s.focus].Kind == PanelInput {
+		s.ps[s.focus].input.Blur()
+	}
+	if s.ps[s.focus].editing {
+		s.ps[s.focus].editing = false
 		s.ps[s.focus].input.Blur()
 	}
 	s.focus = i
@@ -329,6 +352,40 @@ func (m *model) renderSurface(b *strings.Builder) {
 				box = faint + "[ ] " + sgrReset
 				if st.checked[i] {
 					box = green + "[x] " + sgrReset
+				}
+			}
+			if p.Custom && i == len(p.Items) {
+				// The "Other…" row: an inline editor while editing, the saved
+				// text once entered, the plain affordance otherwise.
+				if st.editing {
+					prefixCols := 2
+					if p.Kind == PanelMulti {
+						prefixCols += 4
+					}
+					boxW := clampInt(40, 4, maxInt(4, w-prefixCols-4))
+					st.input.SetWidth(boxW)
+					field := st.input.View()
+					if st.input.Value() == "" {
+						field = faint + ansi.Truncate("your answer", boxW, "…")
+					}
+					pad := boxW - ansi.StringWidth(field)
+					if pad < 0 {
+						pad = 0
+					}
+					if c := st.input.Cursor(); c != nil {
+						m.surfCur = c
+						m.surfCur.Y = strings.Count(b.String(), "\n") + 1
+						m.surfCur.X = prefixCols + 1 + c.X
+					}
+					bg := inputBg()
+					b.WriteString("\n" + marker + box + bg + " " + field + sgrReset + bg +
+						strings.Repeat(" ", pad) + " " + sgrReset)
+					continue
+				}
+				if v := strings.TrimSpace(st.input.Value()); v != "" {
+					st.items[i] = "Other: " + v
+				} else {
+					st.items[i] = "Other…"
 				}
 			}
 			item := ansi.Truncate(st.items[i], maxInt(4, w-6), "…")
@@ -459,6 +516,14 @@ func surfaceHint(p Panel, st *panelState) string {
 		return "←→ adjust · g default · G max · Enter confirm · q/Esc cancel"
 	case PanelInput:
 		return "←→ move · Enter confirm · Esc cancel"
+	case PanelList, PanelMulti:
+		if st.editing {
+			return "Enter confirm · Esc back to options"
+		}
+		if p.Kind == PanelMulti {
+			return "↑↓ move · ←→ page · Space toggle · Enter confirm · q/Esc cancel"
+		}
+		return "↑↓ move · ←→ page · Enter confirm · q/Esc cancel"
 	case PanelView:
 		if st.copied {
 			return "✓ copied to clipboard"

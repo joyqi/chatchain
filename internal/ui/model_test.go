@@ -1449,3 +1449,76 @@ func TestTabbedEnterAdvances(t *testing.T) {
 		t.Fatalf("result = %+v", r)
 	}
 }
+
+// The inline Custom editor: Enter on the "Other…" row opens it IN PLACE;
+// ESC closes just the editor (the ask survives); Enter with text proceeds —
+// a single-select advances the wizard with the custom answer, a Multi checks
+// the row and stays for more toggles.
+func TestTabbedInlineCustom(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan TabbedResult, 1)
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{EnterAdvances: true, Panels: []Panel{
+		{Title: "Q1", Kind: PanelList, Items: []string{"a", "b"}, Custom: true},
+		{Title: "Q2", Kind: PanelMulti, Items: []string{"x", "y"}, Custom: true},
+	}}, reply: reply})
+
+	// Q1: cursor to "Other…" (index 2), Enter opens the editor.
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m = enter(t, m)
+	if !m.surf.ps[0].editing {
+		t.Fatal("Enter on Other must open the inline editor")
+	}
+	// ESC closes JUST the editor.
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if m.surf == nil || m.surf.ps[0].editing {
+		t.Fatal("ESC in the editor must return to the options, not decline the ask")
+	}
+	// Reopen, type, Enter → wizard advances to Q2 with the custom answer.
+	m = enter(t, m)
+	m = typeText(t, m, "zig")
+	m = enter(t, m)
+	select {
+	case <-reply:
+		t.Fatal("custom confirm on a non-last tab must advance, not commit")
+	default:
+	}
+	if m.surf.focus != 1 {
+		t.Fatalf("focus = %d, want Q2", m.surf.focus)
+	}
+
+	// Q2 (multi): Space on "Other…" opens the editor; Enter checks and stays.
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeySpace}))
+	if !m.surf.ps[1].editing {
+		t.Fatal("Space on an unchecked Other must open the editor")
+	}
+	m = typeText(t, m, "bird")
+	m = enter(t, m)
+	if m.surf == nil {
+		t.Fatal("multi editor confirm must stay on the panel")
+	}
+	if !m.surf.ps[1].checked[2] {
+		t.Fatal("confirmed custom must check the Other row")
+	}
+	// Enter on the Other row WITH text behaves like a normal row: commit
+	// (last tab) instead of reopening the editor — "type, Enter, Enter" is
+	// the natural submit flow. Check "x" first via Space elsewhere.
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeySpace}))
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m = enter(t, m) // cursor back on Other (has text): commits, no reopen
+	r := <-reply
+	if r.Cancelled {
+		t.Fatal("commit expected")
+	}
+	if r.Panels[0].Cursor != 2 || r.Panels[0].Custom != "zig" {
+		t.Fatalf("Q1 result = %+v", r.Panels[0])
+	}
+	if r.Panels[1].Custom != "bird" || len(r.Panels[1].Checked) != 2 {
+		t.Fatalf("Q2 result = %+v", r.Panels[1])
+	}
+}
