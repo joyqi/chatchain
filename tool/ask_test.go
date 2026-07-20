@@ -40,7 +40,7 @@ func TestAskSetAbsentWithoutInteractor(t *testing.T) {
 func TestChooseParsesAndFormats(t *testing.T) {
 	fi := &fakeInteractor{res: AskResult{Answers: []AskAnswer{
 		{Selected: []string{"OAuth"}},
-		{Selected: []string{"requests", "httpx"}},
+		{Selected: []string{"requests", "httpx"}, Custom: "aiohttp"}, // multi: picks AND custom
 		{Custom: "use k3s instead"},
 	}}}
 	choose, _ := askTools(t, fi)
@@ -80,7 +80,7 @@ func TestChooseParsesAndFormats(t *testing.T) {
 		t.Error("option description lost")
 	}
 
-	want := "Auth: OAuth\nLibraries: requests, httpx\nDeploy: use k3s instead (custom answer)"
+	want := "Auth: OAuth\nLibraries: requests, httpx, aiohttp (custom answer)\nDeploy: use k3s instead (custom answer)"
 	if text != want {
 		t.Fatalf("result:\n%q\nwant:\n%q", text, want)
 	}

@@ -103,14 +103,16 @@ func (t *chooseTool) Call(ctx context.Context, args map[string]any) (string, boo
 		a := res.Answers[i]
 		b.WriteString(q.Header)
 		b.WriteString(": ")
-		switch {
-		case a.Custom != "":
-			b.WriteString(a.Custom)
-			b.WriteString(" (custom answer)")
-		case len(a.Selected) > 0:
-			b.WriteString(strings.Join(a.Selected, ", "))
-		default:
+		// Selected options and a custom answer COEXIST on a multi-select —
+		// never let one shadow the other.
+		parts := append([]string{}, a.Selected...)
+		if a.Custom != "" {
+			parts = append(parts, a.Custom+" (custom answer)")
+		}
+		if len(parts) == 0 {
 			b.WriteString("(nothing selected)")
+		} else {
+			b.WriteString(strings.Join(parts, ", "))
 		}
 		b.WriteString("\n")
 	}
