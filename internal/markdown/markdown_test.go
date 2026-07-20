@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/fatih/color"
 	"github.com/rivo/uniseg"
 )
@@ -1287,5 +1288,64 @@ func TestInlineMathVsDollarAdversarial(t *testing.T) {
 		if got != c.want {
 			t.Errorf("[%s] highlightInline(%q) = %q, want %q", c.note, c.in, got, c.want)
 		}
+	}
+}
+
+// Inline containers nest: bold/italic/link text recurse with the container's
+// attribute COMPOSED onto the segment style, so an inner span's reset can
+// never cut the outer style mid-line, and no delimiter leaks.
+func TestInlineNesting(t *testing.T) {
+	color.NoColor = false
+	syncMDRenderer()
+	bold := mdPlain.Bold(true)
+	boldCode := bold.Foreground(lipgloss.Color("6"))
+	boldItalic := bold.Italic(true)
+
+	got := highlightInline("**a `c` b**")
+	want := bold.Render("a ") + boldCode.Render("c") + bold.Render(" b")
+	if got != want {
+		t.Errorf("bold∋code:\n got %q\nwant %q", got, want)
+	}
+
+	// The tail after the inner span must STILL be bold (the reset-cut class).
+	if !strings.Contains(got, bold.Render(" b")) {
+		t.Errorf("outer style lost after the inner span: %q", got)
+	}
+
+	if got, want := highlightInline("***x***"), boldItalic.Render("x"); got != want {
+		t.Errorf("bold italic = %q, want %q", got, want)
+	}
+
+	// Code spans stay leaves: their content is literal, never re-parsed.
+	if got := visible(highlightInline("`*args*`")); got != "*args*" {
+		t.Errorf("code content re-parsed: %q", got)
+	}
+
+	// Link text nests; the URL stays a dim leaf.
+	got = highlightInline("[see `x`](http://u)")
+	linkCode := mdPlain.Foreground(lipgloss.Color("6")).Underline(true).Foreground(lipgloss.Color("6"))
+	if !strings.Contains(got, linkCode.Render("x")) {
+		t.Errorf("link∋code = %q, want code styled with the link underline", got)
+	}
+	if !strings.Contains(visible(got), "(http://u)") {
+		t.Errorf("url lost: %q", visible(got))
+	}
+}
+
+// Headings style their inline constructs on top of the heading look instead
+// of stripping them (the strip was a workaround for nested resets).
+func TestHeadingInlineStyled(t *testing.T) {
+	color.NoColor = false
+	var out strings.Builder
+	m := newTestWriter(&out)
+	m.Write([]byte("## Use `brew` now\n"))
+	m.Flush()
+
+	if got := visible(out.String()); !strings.Contains(got, "Use brew now") {
+		t.Fatalf("heading text mangled: %q", got)
+	}
+	h2code := mdH2.Foreground(lipgloss.Color("6"))
+	if !strings.Contains(out.String(), h2code.Render("brew")) {
+		t.Errorf("heading code segment not composed (want bold+cyan): %q", out.String())
 	}
 }

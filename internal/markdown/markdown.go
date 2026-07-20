@@ -393,11 +393,11 @@ func (m *Writer) highlightLine(line string) string {
 			i++
 		}
 		if i < len(trimmed) && trimmed[i] == ' ' {
-			// Inline markers inside the heading (**bold**, `code`, *italic*)
-			// are stripped rather than styled: the heading has one style of
-			// its own, and nested SGR resets from highlightInline would cut
-			// it mid-line (same reasoning as blockquotes).
-			return headingStyle(i).Render(stripInlineMarkdown(strings.TrimSpace(trimmed[i:])))
+			// Inline markers inside the heading style on top of the heading's
+			// own look: renderInline composes attributes downward (heading
+			// bold/underline + code cyan), so no inner reset can cut the
+			// heading mid-line — the flaw that used to force stripping.
+			return renderInline(strings.TrimSpace(trimmed[i:]), headingStyle(i), true)
 		}
 	}
 
@@ -447,7 +447,34 @@ func isBlockLine(line string) bool {
 // styled text (no backticks), and [text](url) → styled text + a dim URL.
 func highlightInline(line string) string {
 	syncMDRenderer()
+	return renderInline(line, mdPlain, false)
+}
+
+// renderInline styles one line's inline constructs with STYLE-CONTEXT
+// PASSING: container constructs (bold, italic, link text) recurse with their
+// attribute composed onto base, and every atomic segment renders with the
+// full composed style, self-contained. Nesting escape sequences instead
+// (outer bold wrapping an inner styled span) would let the inner reset cut
+// the outer style mid-line — the reason nesting was unsupported before.
+// Leaves stay literal: a code span's content is never re-parsed (`*args*`
+// keeps its asterisks), and precedence is scan order — code before math
+// before emphasis, ** before *. styled says whether base carries any
+// attributes; a plain run under a plain base is emitted verbatim, keeping
+// top-level output byte-identical to the pre-nesting renderer.
+func renderInline(line string, base lipgloss.Style, styled bool) string {
 	var out strings.Builder
+	var plain strings.Builder
+	flush := func() {
+		if plain.Len() == 0 {
+			return
+		}
+		if styled {
+			out.WriteString(base.Render(plain.String()))
+		} else {
+			out.WriteString(plain.String())
+		}
+		plain.Reset()
+	}
 	runes := []rune(line)
 	i := 0
 
@@ -459,8 +486,9 @@ func highlightInline(line string) string {
 				if urlEnd := findClose(runes, textEnd+2, ')'); urlEnd > textEnd+1 {
 					text := string(runes[i+1 : textEnd])
 					url := string(runes[textEnd+2 : urlEnd])
-					out.WriteString(mdLink.Render(text))
-					out.WriteString(mdDim.Render(" (" + url + ")"))
+					flush()
+					out.WriteString(renderInline(text, base.Foreground(lipgloss.Color("6")).Underline(true), true))
+					out.WriteString(base.Faint(true).Render(" (" + url + ")"))
 					i = urlEnd + 1
 					continue
 				}
@@ -473,7 +501,8 @@ func highlightInline(line string) string {
 		// wins: "`$x$`" stays literal code, never approximated math.
 		if runes[i] == '`' {
 			if end := findClose(runes, i+1, '`'); end > 0 {
-				out.WriteString(mdCode.Render(string(runes[i+1 : end])))
+				flush()
+				out.WriteString(base.Foreground(lipgloss.Color("6")).Render(string(runes[i+1 : end])))
 				i = end + 1
 				continue
 			}
@@ -484,7 +513,7 @@ func highlightInline(line string) string {
 		// close one that a later "$" might try to form. Only "\$" is unescaped —
 		// every other backslash passes through untouched (prose is not LaTeX).
 		if runes[i] == '\\' && i+1 < len(runes) && runes[i+1] == '$' {
-			out.WriteByte('$')
+			plain.WriteByte('$')
 			i += 2
 			continue
 		}
@@ -508,27 +537,42 @@ func highlightInline(line string) string {
 		// leave the second "$" to be re-scanned as a valid inline opener on the
 		// next iteration, which would eat a single-line "$$x$$" into "$x$".
 		if runes[i] == '$' && i+1 < len(runes) && runes[i+1] == '$' {
-			out.WriteString("$$")
+			plain.WriteString("$$")
 			i += 2
 			continue
 		}
 		if body, end, ok := findInlineMath(runes, i); ok {
-			out.WriteString(mdCode.Render(mathtext.ApproxInline(body)))
+			flush()
+			out.WriteString(base.Foreground(lipgloss.Color("6")).Render(mathtext.ApproxInline(body)))
 			i = end
 			continue
+		}
+
+		// Bold italic: ***text*** → both attributes composed. Without this
+		// branch the ** pair would match greedily inside the *** run and
+		// orphan the third star ("*x" bold plus a stray "*").
+		if i+2 < len(runes) && runes[i] == '*' && runes[i+1] == '*' && runes[i+2] == '*' {
+			if end := findTripleClose(runes, i+3); end > 0 {
+				flush()
+				out.WriteString(renderInline(string(runes[i+3:end]), base.Bold(true).Italic(true), true))
+				i = end + 3
+				continue
+			}
 		}
 
 		// Bold: **text** / __text__ → bold, markers hidden.
 		if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '*' {
 			if end := findDoubleClose(runes, i+2, '*'); end > 0 {
-				out.WriteString(mdBold.Render(string(runes[i+2 : end])))
+				flush()
+				out.WriteString(renderInline(string(runes[i+2:end]), base.Bold(true), true))
 				i = end + 2
 				continue
 			}
 		}
 		if i+1 < len(runes) && runes[i] == '_' && runes[i+1] == '_' {
 			if end := findDoubleClose(runes, i+2, '_'); end > 0 {
-				out.WriteString(mdBold.Render(string(runes[i+2 : end])))
+				flush()
+				out.WriteString(renderInline(string(runes[i+2:end]), base.Bold(true), true))
 				i = end + 2
 				continue
 			}
@@ -538,7 +582,8 @@ func highlightInline(line string) string {
 		// Avoid matching list bullets and horizontal rules.
 		if runes[i] == '*' && i+1 < len(runes) && runes[i+1] != '*' && runes[i+1] != ' ' {
 			if end := findClose(runes, i+1, '*'); end > i+1 {
-				out.WriteString(mdItalic.Render(string(runes[i+1 : end])))
+				flush()
+				out.WriteString(renderInline(string(runes[i+1:end]), base.Italic(true), true))
 				i = end + 1
 				continue
 			}
@@ -547,16 +592,18 @@ func highlightInline(line string) string {
 			// Only match if preceded by space or start of line.
 			if i == 0 || unicode.IsSpace(runes[i-1]) {
 				if end := findClose(runes, i+1, '_'); end > i+1 {
-					out.WriteString(mdItalic.Render(string(runes[i+1 : end])))
+					flush()
+					out.WriteString(renderInline(string(runes[i+1:end]), base.Italic(true), true))
 					i = end + 1
 					continue
 				}
 			}
 		}
 
-		out.WriteRune(runes[i])
+		plain.WriteRune(runes[i])
 		i++
 	}
+	flush()
 
 	return out.String()
 }
@@ -628,6 +675,16 @@ func findClose(runes []rune, start int, delim rune) int {
 }
 
 // findDoubleClose finds a double closing delimiter (e.g., **) starting from pos.
+// findTripleClose finds the first "***" run at or after start.
+func findTripleClose(runes []rune, start int) int {
+	for i := start; i < len(runes)-2; i++ {
+		if runes[i] == '*' && runes[i+1] == '*' && runes[i+2] == '*' {
+			return i
+		}
+	}
+	return -1
+}
+
 func findDoubleClose(runes []rune, start int, delim rune) int {
 	for i := start; i < len(runes)-1; i++ {
 		if runes[i] == delim && runes[i+1] == delim {
