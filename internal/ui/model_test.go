@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
 	"chatchain/internal/textwidth"
@@ -1520,5 +1521,23 @@ func TestTabbedInlineCustom(t *testing.T) {
 	}
 	if r.Panels[1].Custom != "bird" || len(r.Panels[1].Checked) != 2 {
 		t.Fatalf("Q2 result = %+v", r.Panels[1])
+	}
+}
+
+// The field cursor's X is a RUNE index; wide (CJK) runes must convert to
+// display columns or the real terminal cursor drifts one column left per
+// wide rune ("乒乓球" = 3 runes, 6 columns).
+func TestInputCursorColsCJK(t *testing.T) {
+	ti := textinput.New()
+	ti.SetValue("乒乓球")
+	if got := inputCursorCols(ti, 3); got != 6 {
+		t.Fatalf("CJK cols = %d, want 6", got)
+	}
+	ti.SetValue("a中b")
+	if got := inputCursorCols(ti, 2); got != 3 {
+		t.Fatalf("mixed cols = %d, want 3 (a=1 + 中=2)", got)
+	}
+	if got := inputCursorCols(ti, 99); got != 4 {
+		t.Fatalf("clamped cols = %d, want 4", got)
 	}
 }

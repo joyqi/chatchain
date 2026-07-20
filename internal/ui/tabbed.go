@@ -9,7 +9,9 @@ import (
 
 	"charm.land/bubbles/v2/progress"
 	"charm.land/bubbles/v2/textinput"
+
 	"charm.land/lipgloss/v2"
+	"chatchain/internal/textwidth"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -262,6 +264,22 @@ func (s *surfaceState) setFocus(i int) {
 	}
 }
 
+// inputCursorCols converts the field cursor's RUNE index (what
+// textinput.Cursor reports as X) into display columns: wide (CJK) runes
+// occupy two columns, so the raw index drifts the real terminal cursor one
+// column left per wide rune before it. Horizontal scroll is not modeled —
+// content longer than the box already approximates.
+func inputCursorCols(ti textinput.Model, runeIdx int) int {
+	runes := []rune(ti.Value())
+	if runeIdx > len(runes) {
+		runeIdx = len(runes)
+	}
+	if runeIdx < 0 {
+		runeIdx = 0
+	}
+	return textwidth.StringWidth(string(runes[:runeIdx]))
+}
+
 // sliderStep ports the v1 SliderPanel semantics: integer step indices (no
 // float accumulation), default↔range transitions, Max clamp.
 func sliderStep(st *panelState, p Panel, dir int) {
@@ -375,7 +393,7 @@ func (m *model) renderSurface(b *strings.Builder) {
 					if c := st.input.Cursor(); c != nil {
 						m.surfCur = c
 						m.surfCur.Y = strings.Count(b.String(), "\n") + 1
-						m.surfCur.X = prefixCols + 1 + c.X
+						m.surfCur.X = prefixCols + 1 + inputCursorCols(st.input, c.X)
 					}
 					bg := inputBg()
 					b.WriteString("\n" + marker + box + bg + " " + field + sgrReset + bg +
@@ -440,7 +458,7 @@ func (m *model) renderSurface(b *strings.Builder) {
 		if c := st.input.Cursor(); c != nil {
 			m.surfCur = c
 			m.surfCur.Y = strings.Count(b.String(), "\n") + 2
-			m.surfCur.X = 3 + c.X
+			m.surfCur.X = 3 + inputCursorCols(st.input, c.X)
 		}
 		// Blank rows above and below, like the slider. Text renders in the
 		// default foreground on the adaptive background shade; the trailing
