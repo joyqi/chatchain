@@ -344,9 +344,16 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			continue
 		}
 		if input == "/model" || strings.HasPrefix(input, "/model ") {
-			stop := u.Busy("Fetching available models...")
-			models, ferr := p.ListModels(ctx)
+			fctx, fcancel := context.WithCancel(ctx)
+			pop := u.PushCancelScope(fcancel)
+			stop := u.Busy("Fetching available models")
+			models, ferr := p.ListModels(fctx)
 			stop()
+			pop()
+			fcancel()
+			if fctx.Err() != nil && ctx.Err() == nil {
+				continue // the user cancelled the fetch: abort /model quietly
+			}
 			manualModel := ferr != nil || len(models) == 0
 			if ferr != nil {
 				printErr("Fetching models failed: %v — enter a model name manually.", ferr)
@@ -706,9 +713,19 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 
 // ensureModel is the lazy model picker for the v2 path.
 func ensureModel(ctx context.Context, u *ui.UI, tr *transcript, p provider.Provider, sw *SessionWriter) bool {
-	stop := u.Busy("Fetching available models...")
-	models, err := p.ListModels(ctx)
+	// The fetch runs under its own cancel scope: ESC aborts it (and the
+	// picker) immediately instead of leaving the user hostage to the HTTP
+	// timeout with an unresponsive spinner.
+	fctx, fcancel := context.WithCancel(ctx)
+	pop := u.PushCancelScope(fcancel)
+	stop := u.Busy("Fetching available models")
+	models, err := p.ListModels(fctx)
 	stop()
+	pop()
+	fcancel()
+	if fctx.Err() != nil && ctx.Err() == nil {
+		return false // user-cancelled: leave the picker entirely
+	}
 	var name string
 	switch {
 	case err != nil || len(models) == 0:
