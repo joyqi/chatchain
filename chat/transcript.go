@@ -226,7 +226,17 @@ func (t *transcript) contentBlock() func(lines ...string) {
 func (t *transcript) image(rows []string, caption string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.beginLocked(blockImage)
+	if t.callUp {
+		// An image-generation widget is up: the image IS its result — morph
+		// the widget into the image block in place (separator already paid
+		// at the raise; the region replaces the preview rows bottom-up).
+		t.callUp = false
+		t.pending = 0
+		t.last = blockImage
+		t.u.ClosePreview()
+	} else {
+		t.beginLocked(blockImage)
+	}
 	const indent = "  "
 	indented := make([]string, len(rows))
 	for i, r := range rows {

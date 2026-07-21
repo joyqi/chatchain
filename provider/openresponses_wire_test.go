@@ -403,3 +403,53 @@ func TestOpenResponsesImageGeneration(t *testing.T) {
 		t.Fatalf("raw replay must keep the call item id: %s", raw)
 	}
 }
+
+// Progressive frames: partial_image events reach the observer decoded, the
+// generating event raises the composing widget, and the declaration carries
+// partial_images.
+func TestOpenResponsesImagePartials(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.image_generation_call.generating"}`,
+		``,
+		`data: {"type":"response.image_generation_call.partial_image","partial_image_b64":"` +
+			base64.StdEncoding.EncodeToString([]byte{1, 2}) + `"}`,
+		``,
+		`data: {"type":"response.output_item.done","item":{"id":"ig_1","type":"image_generation_call","result":"` +
+			base64.StdEncoding.EncodeToString([]byte{3, 4, 5}) + `"}}`,
+		``,
+	}, "\n")
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &got)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(sse))
+	}))
+	defer srv.Close()
+
+	p := NewOpenResponses("sk", srv.URL, "gpt-5", nil, srv.Client())
+	p.SetImageOutput(true)
+	var partials [][]byte
+	p.SetImagePartialObserver(func(d []byte) { partials = append(partials, d) })
+	var raised []string
+	p.SetToolCallObserver(func(name, delta string) { raised = append(raised, name) })
+
+	_, _, _, err := p.StreamChatWithTools(context.Background(),
+		[]Message{{Role: "user", Content: "draw"}}, nil, io.Discard, nopCloser{io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := got["tools"].([]any)[0].(map[string]any)
+	if tool["partial_images"] != float64(1) {
+		t.Fatalf("declaration = %v", tool)
+	}
+	if len(partials) != 1 || len(partials[0]) != 2 {
+		t.Fatalf("partials = %v", partials)
+	}
+	if len(raised) == 0 || raised[0] != "image_generation" {
+		t.Fatalf("widget not raised: %v", raised)
+	}
+	if len(p.LastImages()) != 1 {
+		t.Fatalf("final image missing")
+	}
+}

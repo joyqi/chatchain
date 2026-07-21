@@ -402,3 +402,25 @@ func TestTranscriptImageBlock(t *testing.T) {
 		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
 	}
 }
+
+// An image-generation widget (raised via the composing observer) morphs INTO
+// the image block: the separator was paid at the raise, so the image pays no
+// second one; without a widget the block opens normally.
+func TestImageMorphsGenerationWidget(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.user("draw")
+	tr.openCall("[image_generation …]")
+	tr.image([]string{"ROW"}, "🖼 saved: /p.png")
+
+	want := []string{
+		"user:draw",
+		"print:", "call:[image_generation …]",
+		"settle", "print:  ROW",
+		"print:  " + DimStyle.Sprint("🖼 saved: /p.png"),
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}

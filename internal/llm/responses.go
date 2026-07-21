@@ -74,6 +74,9 @@ type RespTool struct {
 // ("image_generation") — no name/description/strict fields.
 type RespBuiltinTool struct {
 	Type string `json:"type"`
+	// PartialImages asks image_generation for progressive preview frames
+	// (0–3) via response.image_generation_call.partial_image events.
+	PartialImages int `json:"partial_images,omitempty"`
 }
 
 type RespReasoning struct {
@@ -147,6 +150,8 @@ type RespEvent struct {
 	ItemID    string          `json:"item_id"`   // function_call_arguments.*
 	Arguments string          `json:"arguments"` // function_call_arguments.done
 	Item      json.RawMessage `json:"item"`      // output_item.* (verbatim, for replay)
+	// PartialImageB64 carries image_generation_call.partial_image frames.
+	PartialImageB64 string `json:"partial_image_b64"`
 	Response  *RespResponse   `json:"response"`  // response.completed/failed/incomplete
 	// "error" terminal events carry these at the top level.
 	Code    string `json:"code"`

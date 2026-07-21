@@ -27,6 +27,7 @@ type openResponsesRawOutput struct {
 type OpenResponsesProvider struct {
 	baseProvider
 	imageOutput   bool
+	imagePartial  func(data []byte)
 	client        llm.Responses
 	lastRawOutput *openResponsesRawOutput
 	lastImages    []Attachment
@@ -163,7 +164,7 @@ func (p *OpenResponsesProvider) buildRequest(messages []Message) *llm.RespReques
 	if p.imageOutput {
 		// The image switch advertises the server-side built-in on EVERY
 		// request path (streaming and unary alike).
-		req.Tools = append(req.Tools, llm.RespBuiltinTool{Type: "image_generation"})
+		req.Tools = append(req.Tools, llm.RespBuiltinTool{Type: "image_generation", PartialImages: 1})
 	}
 	return req
 }
@@ -271,6 +272,17 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 			closeReasoning()
 			fmt.Fprint(w, evt.Delta)
 			full += evt.Delta
+		case "response.image_generation_call.in_progress", "response.image_generation_call.generating":
+			// Generation started: raise the lifecycle widget through the
+			// composing observer (the same channel function calls use).
+			closeReasoning()
+			p.notifyToolDelta("image_generation", "…")
+		case "response.image_generation_call.partial_image":
+			if p.imagePartial != nil && evt.PartialImageB64 != "" {
+				if data, derr := base64.StdEncoding.DecodeString(evt.PartialImageB64); derr == nil && len(data) > 0 {
+					p.imagePartial(data)
+				}
+			}
 		case "response.function_call_arguments.delta":
 			closeReasoning() // thinking is over once tool args stream
 			getPendingArgs(evt.ItemID).WriteString(evt.Delta)
@@ -393,3 +405,11 @@ func (p *OpenResponsesProvider) ImageOutput() bool      { return p.imageOutput }
 
 // LastImages implements ImageOutputProvider.
 func (p *OpenResponsesProvider) LastImages() []Attachment { return p.lastImages }
+
+// SetImagePartialObserver registers the progressive-frame callback: each
+// response.image_generation_call.partial_image event delivers one decoded
+// preview frame (a complete low-detail image, later frames refine it). nil
+// detaches. Called from the stream goroutine.
+func (p *OpenResponsesProvider) SetImagePartialObserver(fn func(data []byte)) {
+	p.imagePartial = fn
+}

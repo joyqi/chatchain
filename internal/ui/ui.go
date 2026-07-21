@@ -87,6 +87,9 @@ func (u *UI) CallPreview(label string) { u.region.openCallPreview(label) }
 // CallDetail updates the widget's live status-row prefix ("1.2k tokens").
 func (u *UI) CallDetail(detail string) { u.region.setCallDetail(detail) }
 
+// CallBody replaces the call widget's body rows (progressive image frames).
+func (u *UI) CallBody(rows []string) { u.region.setCallBody(rows) }
+
 // ClosePreview deferred-closes whatever preview is open: the next committed
 // lines morph it away in place.
 func (u *UI) ClosePreview() { u.region.closePreview() }

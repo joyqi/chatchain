@@ -10,6 +10,7 @@ import (
 
 	"chatchain/internal/imgterm"
 	"chatchain/internal/markdown"
+	"chatchain/internal/ui"
 	"chatchain/provider"
 )
 
@@ -128,4 +129,30 @@ func SaveImagesQuiet(p any, w io.Writer) {
 		}
 		fmt.Fprintf(w, "🖼 saved: %s\n", path)
 	}
+}
+
+// imagePartialObserver is the optional provider seam for progressive
+// image-generation frames (openresponses partial_image events).
+type imagePartialObserver interface {
+	SetImagePartialObserver(fn func(data []byte))
+}
+
+// watchImagePartials renders each progressive frame as a tiny half-block
+// thumbnail into the generation widget's body — the widget the composing
+// observer raised morphs from spinner-only to a refining preview, and the
+// final image replaces it in place. Runs on the stream goroutine; the ui
+// facade is safe for concurrent use.
+func watchImagePartials(u *ui.UI, tp any) func() {
+	obs, ok := tp.(imagePartialObserver)
+	if !ok {
+		return func() {}
+	}
+	obs.SetImagePartialObserver(func(data []byte) {
+		rows, err := imgterm.Render(data, 24, 3)
+		if err != nil {
+			return
+		}
+		u.CallBody(rows)
+	})
+	return func() { obs.SetImagePartialObserver(nil) }
 }

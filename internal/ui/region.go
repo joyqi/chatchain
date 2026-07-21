@@ -300,6 +300,25 @@ func (r *region) openCallPreview(label string) {
 	r.publishLocked(over)
 }
 
+// setCallBody replaces the call widget's body rows wholesale (progressive
+// image frames: each partial supersedes the last). Bounded by the caller;
+// rows go through oneRow like every preview entry. No-op unless a call
+// preview is up and receiving.
+func (r *region) setCallBody(rows []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.label == "" || r.since.IsZero() || !r.open {
+		return
+	}
+	out := make([]string, len(rows))
+	for i, ln := range rows {
+		out[i] = oneRow(ln)
+	}
+	r.ptail = out
+	over := r.rebalanceLocked()
+	r.publishLocked(over)
+}
+
 // setCallDetail updates the call preview's live status-row prefix ("1.2k
 // tokens"); a no-op unless a call preview is up and still receiving — a
 // throttled meter update racing the settle must not resurrect the row.

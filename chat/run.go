@@ -1196,6 +1196,7 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *tran
 	// dropped (fmt.Fprint discards the error; history uses the provider's own
 	// accumulator).
 	defer watchToolComposing(phases, tr, tp, func() { contentPw.Close() })()
+	defer watchImagePartials(u, tp)()
 
 	go func() {
 		defer close(done)
