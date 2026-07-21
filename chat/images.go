@@ -148,7 +148,11 @@ func watchImagePartials(u *ui.UI, tp any) func() {
 		return func() {}
 	}
 	obs.SetImagePartialObserver(func(data []byte) {
-		rows, err := imgterm.Render(data, 24, 3)
+		// Partial frames are full-resolution, low-DETAIL images; render at
+		// about half the final block size so the composition is actually
+		// visible while it refines (frame growth is safe — only shrinks
+		// bounce the composer, and the final image is larger still).
+		rows, err := imgterm.Render(data, 64, 12)
 		if err != nil {
 			return
 		}
