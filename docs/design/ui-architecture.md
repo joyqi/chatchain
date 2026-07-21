@@ -101,7 +101,7 @@ Facade shape decisions from the adversarial review:
   {reply, program-done, caller-ctx}; Program shutdown fails all outstanding
   waiters. No unbuffered sends from inside Update (deadlock).
 - **SelectSpec** must express the verified surfaces: tabbed panels with kinds
-  (single list, multi-select list, slider, one-line text input, directory browser, view), Enter
+  (single list, multi-select list, slider, boolean switch, one-line text input, directory browser, view), Enter
   commits ALL tabs (the /model questionnaire), per-panel `Refresh func()
   []string` + `RefreshEvery` (the /debug and /tools live views). Drill-down
   loops (debug detail) stay logic-side: Select → View → Select.

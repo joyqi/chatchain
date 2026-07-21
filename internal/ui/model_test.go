@@ -1541,3 +1541,55 @@ func TestInputCursorColsCJK(t *testing.T) {
 		t.Fatalf("clamped cols = %d, want 4", got)
 	}
 }
+
+// A PanelSwitch drives one boolean: Space toggles, ←→ set the state
+// directly, Enter commits it — and both states render the exact same row
+// geometry (the knob slides, the width stays).
+func TestTabbedSwitch(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan TabbedResult, 1)
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{Panels: []Panel{
+		{Title: "Image", Kind: PanelSwitch},
+	}}, reply: reply})
+
+	toggleRow := func() string {
+		for _, l := range strings.Split(content(m), "\n") {
+			if strings.Contains(l, "●") {
+				return strings.TrimRight(stripSGRText(l), " ")
+			}
+		}
+		t.Fatal("no switch row rendered")
+		return ""
+	}
+	offRow := toggleRow()
+	if !strings.Contains(offRow, "Off") {
+		t.Fatalf("initial row = %q, want the Off state", offRow)
+	}
+
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeySpace}))
+	if !m.surf.ps[0].on {
+		t.Fatal("Space must toggle the switch on")
+	}
+	onRow := toggleRow()
+	if !strings.Contains(onRow, "On") {
+		t.Fatalf("on row = %q, want the On state", onRow)
+	}
+	if textwidth.StringWidth(offRow) != textwidth.StringWidth(onRow) {
+		t.Fatalf("state flip changed the row geometry:\n%q\n%q", offRow, onRow)
+	}
+
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyLeft}))
+	if m.surf.ps[0].on {
+		t.Fatal("← must set the switch off")
+	}
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyRight}))
+	if !m.surf.ps[0].on {
+		t.Fatal("→ must set the switch on")
+	}
+
+	m = enter(t, m)
+	r := <-reply
+	if r.Cancelled || !r.Panels[0].On {
+		t.Fatalf("commit = %+v, want On=true", r)
+	}
+}

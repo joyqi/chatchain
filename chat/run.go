@@ -393,13 +393,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			// builders consult it (google modalities, responses builtin tool).
 			imgTun, imgOK := p.(provider.ImageTunable)
 			if imgOK {
-				idx := 0 // Off
-				if imgTun.ImageOutput() {
-					idx = 1
-				}
-				items := []string{"Off", "On"}
-				items[idx] += " (current)"
-				panels = append(panels, ui.Panel{Title: "Image", Kind: ui.PanelList, Items: items, Cursor: idx,
+				panels = append(panels, ui.Panel{Title: "Image", Kind: ui.PanelSwitch, On: imgTun.ImageOutput(),
 					Prompt: "Request image generation (modalities / built-in tool)"})
 			}
 			r, serr := u.Tabbed(ctx, ui.TabbedSpec{Panels: panels})
@@ -440,7 +434,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				}
 			}
 			if imgOK {
-				if on := r.Panels[4].Cursor == 1; on != imgTun.ImageOutput() {
+				if on := r.Panels[4].On; on != imgTun.ImageOutput() {
 					imgTun.SetImageOutput(on)
 					sw.SetImage(on)
 					state := "off"
@@ -612,25 +606,26 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				continue
 			}
 			for {
-				verboseIdx := 1
-				if reqLog.Verbose() {
-					verboseIdx = 0
-				}
 				r, serr := u.Tabbed(ctx, ui.TabbedSpec{
 					RefreshEvery: 500,
 					Panels: []ui.Panel{
 						{Title: "Messages", Kind: ui.PanelList, Items: requestRows(reqLog.Entries()),
 							Refresh: func() []string { return requestRows(reqLog.Entries()) }},
-						{Title: "Verbose", Kind: ui.PanelList, Items: []string{"On", "Off"}, Cursor: verboseIdx},
+						{Title: "Verbose", Kind: ui.PanelSwitch, On: reqLog.Verbose()},
 					},
 				})
 				if serr != nil || r.Cancelled {
 					break
 				}
-				if r.Focused == 1 { // verbose toggle
-					reqLog.SetVerbose(r.Panels[1].Cursor == 0)
-					printDim("Request recording %s", map[bool]string{true: "ON", false: "OFF"}[reqLog.Verbose()])
-					break
+				// Enter commits ALL tabs: the Verbose switch applies wherever
+				// focus was (flip on the switch tab, Tab back, drill in — the
+				// flip still lands).
+				if v := r.Panels[1].On; v != reqLog.Verbose() {
+					reqLog.SetVerbose(v)
+					printDim("Request recording %s", map[bool]string{true: "ON", false: "OFF"}[v])
+				}
+				if r.Focused == 1 {
+					break // nothing to drill into from the switch tab
 				}
 				entries := reqLog.Entries()
 				i := r.Panels[0].Cursor

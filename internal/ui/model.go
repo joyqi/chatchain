@@ -595,21 +595,29 @@ func (m *model) surfaceKey(k tea.Key) {
 		m.surfaceNav(p, st, 1)
 		return
 	case tea.KeyLeft:
-		if p.Kind == PanelSlider {
+		switch p.Kind {
+		case PanelSlider:
 			sliderStep(st, p, -1)
-		} else {
+		case PanelSwitch:
+			st.on = false
+		default:
 			m.surfacePage(p, st, -1)
 		}
 		return
 	case tea.KeyRight:
-		if p.Kind == PanelSlider {
+		switch p.Kind {
+		case PanelSlider:
 			sliderStep(st, p, 1)
-		} else {
+		case PanelSwitch:
+			st.on = true
+		default:
 			m.surfacePage(p, st, 1)
 		}
 		return
 	case tea.KeySpace:
 		switch p.Kind {
+		case PanelSwitch:
+			st.on = !st.on
 		case PanelList:
 			if p.Custom && st.cursor == len(p.Items) {
 				st.editing = true // Space (re)opens the editor on a single-select
@@ -646,6 +654,8 @@ func (m *model) surfaceKey(k tea.Key) {
 		return
 	case " ":
 		switch p.Kind {
+		case PanelSwitch:
+			st.on = !st.on
 		case PanelMulti:
 			st.checked[st.cursor] = !st.checked[st.cursor]
 		case PanelView:
@@ -663,6 +673,8 @@ func (m *model) surfaceKey(k tea.Key) {
 		switch {
 		case p.Kind == PanelSlider:
 			sliderStep(st, p, -1)
+		case p.Kind == PanelSwitch:
+			st.on = false
 		case p.Kind == PanelView && !p.Wrap:
 			if st.hoff > 0 {
 				st.hoff--
@@ -674,6 +686,8 @@ func (m *model) surfaceKey(k tea.Key) {
 		switch {
 		case p.Kind == PanelSlider:
 			sliderStep(st, p, 1)
+		case p.Kind == PanelSwitch:
+			st.on = true
 		case p.Kind == PanelView && !p.Wrap:
 			st.hoff++
 		default:

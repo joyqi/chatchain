@@ -17,13 +17,14 @@ import (
 
 // PanelKind selects a tabbed panel's behavior — the v2 ports of the vendored
 // promptui panels (list, checkbox multi-select, slider, directory browser,
-// read-only view).
+// read-only view) plus the v2-native one-line input and boolean switch.
 type PanelKind int
 
 const (
 	PanelList PanelKind = iota
 	PanelMulti
 	PanelSlider
+	PanelSwitch
 	PanelInput
 	PanelBrowser
 	PanelView
@@ -52,6 +53,9 @@ type Panel struct {
 	// Slider (←/→ step, g default, G max).
 	Min, Max, Step float64
 	Value          *float64 // nil = default
+
+	// Switch (Space toggles, ←/→ set off/on). On is the initial state.
+	On bool
 
 	// View.
 	Lines []string
@@ -92,6 +96,7 @@ type PanelResult struct {
 	Cursor  int      // List: highlighted index
 	Checked []int    // Multi: checked indices (ascending)
 	Value   *float64 // Slider
+	On      bool     // Switch: final state
 	Path    string   // Browser: chosen file ("" if none)
 	Text    string   // Input: the submitted text
 	Custom  string   // List/Multi with Custom: the inline "Other…" text
@@ -116,6 +121,7 @@ type panelState struct {
 	cursor  int
 	checked map[int]bool
 	value   *float64
+	on      bool // Switch
 	offset  int
 	items   []string // live copy of Items/Lines (Refresh target)
 	dir     string
@@ -165,6 +171,8 @@ func newSurface(spec TabbedSpec, reply chan TabbedResult, gen int) *surfaceState
 			}
 		case PanelSlider:
 			st.value = p.Value
+		case PanelSwitch:
+			st.on = p.On
 		case PanelInput:
 			ti := textinput.New()
 			ti.Prompt = ""
@@ -233,7 +241,7 @@ func (s *surfaceState) result() TabbedResult {
 	r := TabbedResult{Focused: s.focus, Panels: make([]PanelResult, len(s.ps))}
 	for i := range s.ps {
 		st := &s.ps[i]
-		pr := PanelResult{Cursor: st.cursor, Value: st.value, Path: st.chosen, Text: st.input.Value()}
+		pr := PanelResult{Cursor: st.cursor, Value: st.value, On: st.on, Path: st.chosen, Text: st.input.Value()}
 		if s.spec.Panels[i].Custom {
 			pr.Custom = strings.TrimSpace(st.input.Value())
 			pr.Text = ""
@@ -438,6 +446,20 @@ func (m *model) renderSurface(b *strings.Builder) {
 		bar.SetWidth(clampInt(w-13, 10, 40))
 		// Blank rows above and below give the lone bar row some breathing room.
 		b.WriteString("\n\n  " + val + "  " + bar.ViewAs(pct) + "\n")
+	case PanelSwitch:
+		// The slider's row geometry: identical widths in both states
+		// (right-aligned label, fixed-length track) so toggling never shifts
+		// the layout — the knob slides, the colors swap.
+		const track = 6
+		label, toggle := "Off", faint+"●"+strings.Repeat("─", track)+sgrReset
+		if st.on {
+			label, toggle = "On", green+strings.Repeat("━", track)+"●"+sgrReset
+		}
+		val := fmt.Sprintf("%3s", label)
+		if !st.on {
+			val = faint + val + sgrReset
+		}
+		b.WriteString("\n\n  " + val + "  " + toggle + "\n")
 	case PanelInput:
 		boxW := p.InputWidth
 		if boxW <= 0 {
@@ -536,6 +558,8 @@ func surfaceHint(p Panel, st *panelState) string {
 	switch p.Kind {
 	case PanelSlider:
 		return "←→ adjust · g default · G max · Enter confirm · q/Esc cancel"
+	case PanelSwitch:
+		return "Space toggle · ←→ off/on · Enter confirm · q/Esc cancel"
 	case PanelInput:
 		return "←→ move · Enter confirm · Esc cancel"
 	case PanelList, PanelMulti:
