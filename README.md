@@ -205,11 +205,20 @@ as ANSI half-block art (capped well below a screenful, indented like other
 blocks), and is saved INSIDE the session bundle (`<session>/images/` —
 deleted with the session; ephemeral and `-m` runs fall back to
 `~/.chatchain/images/`). The printed path is an OSC 8 hyperlink — clickable
-in terminals that support it. Generated images round-trip
+in terminals that support it (⌘-click in Ghostty/iTerm2; Terminal.app has no
+OSC 8 support). Generated images round-trip
 into the conversation, so follow-ups like "make the circle blue" edit the
 previous image in place. Sessions persist them losslessly (attachments), and
 `-m` single-shot runs print the saved path instead of rasterizing into a
 pipe.
+
+Two ways to switch generation on where it needs an explicit request-side
+opt-in: the per-provider `image: true` config key, or the `/model` surface's
+**Image** tab at runtime (shown for capable providers; persisted with the
+session). On `openresponses` it advertises the `image_generation` built-in
+tool (works with gpt-5-family models); on Google it adds
+`responseModalities: ["TEXT","IMAGE"]` for official-API models that require
+the opt-in — relays like zenmux generate without it.
 
 ### Built-in Toolsets
 

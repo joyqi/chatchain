@@ -17,6 +17,7 @@ type baseProvider struct {
 	lastOutput   int
 	lastUsageOK  bool
 	toolObserver func(name, argsDelta string)
+	imageOutput  bool
 }
 
 func (b *baseProvider) Type() string                { return b.providerType }
@@ -43,3 +44,10 @@ func (b *baseProvider) notifyToolDelta(name, argsDelta string) {
 		b.toolObserver(name, argsDelta)
 	}
 }
+
+// SetImageOutput / ImageOutput implement ImageTunable. Only providers whose
+// request builders consult the flag (google, openresponses) advertise it —
+// the chat layer type-asserts the concrete provider.
+func (b *baseProvider) SetImageOutput(on bool)    { b.imageOutput = on }
+func (b *baseProvider) ImageOutput() bool         { return b.imageOutput }
+func (b *baseProvider) SupportsImageOutput() bool { return false }

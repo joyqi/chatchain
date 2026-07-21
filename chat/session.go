@@ -45,6 +45,7 @@ type sessionMeta struct {
 	Temperature   *float64 `json:"temperature,omitempty"`
 	ContextWindow int      `json:"context_window,omitempty"`
 	Effort        string   `json:"effort,omitempty"`
+	Image         bool     `json:"image,omitempty"`
 	BaseURL       string   `json:"base_url,omitempty"`
 	// Cwd is where the session was started: the project root in agent mode,
 	// the plain working directory otherwise. Labels and any future
@@ -376,6 +377,9 @@ func ApplySessionTuning(sess *Session, p provider.Provider, skipTemperature, ski
 			t.SetEffort(sess.Meta.Effort)
 		}
 	}
+	if it, ok := p.(provider.ImageTunable); ok && it.SupportsImageOutput() && sess.Meta.Image {
+		it.SetImageOutput(true)
+	}
 	if !skipWindow && sess.Meta.ContextWindow > 0 && setWindow != nil {
 		setWindow(sess.Meta.ContextWindow)
 	}
@@ -567,6 +571,18 @@ func (w *SessionWriter) ImagesDir() string {
 		return ""
 	}
 	return dir
+}
+
+// SetImage records the image-generation switch in the session meta.
+func (w *SessionWriter) SetImage(on bool) error {
+	if w == nil {
+		return nil
+	}
+	w.meta.Image = on
+	if !w.created {
+		return nil
+	}
+	return w.writeMeta()
 }
 
 // SetTemperature / SetEffort / SetContextWindow update the session's tuning

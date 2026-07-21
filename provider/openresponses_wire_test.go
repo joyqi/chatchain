@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -348,5 +349,57 @@ func TestOpenResponsesChatAndModels(t *testing.T) {
 	models, err := p.ListModels(context.Background())
 	if err != nil || len(models) != 2 || models[0] != "a-model" || models[1] != "b-model" {
 		t.Fatalf("models = %v, %v", models, err)
+	}
+}
+
+// The image switch advertises the image_generation built-in ahead of function
+// tools; an image_generation_call item surfaces through LastImages with its
+// b64 payload decoded, and the raw replay keeps the item WITHOUT the payload.
+func TestOpenResponsesImageGeneration(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.output_item.done","item":{"id":"ig_1","type":"image_generation_call","status":"completed","output_format":"png","result":"` +
+			base64.StdEncoding.EncodeToString([]byte{9, 8, 7}) + `"}}`,
+		``,
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}`,
+		``,
+	}, "\n")
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &got)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(sse))
+	}))
+	defer srv.Close()
+
+	p := NewOpenResponses("sk", srv.URL, "gpt-5", nil, srv.Client())
+	p.SetImageOutput(true)
+	_, _, _, err := p.StreamChatWithTools(context.Background(),
+		[]Message{{Role: "user", Content: "draw"}},
+		[]ToolDef{{Name: "f", InputSchema: map[string]any{"type": "object"}}},
+		io.Discard, nopCloser{io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tools := got["tools"].([]any)
+	if len(tools) != 2 || tools[0].(map[string]any)["type"] != "image_generation" {
+		t.Fatalf("tools = %v (want the builtin first, then the function)", tools)
+	}
+	if tools[1].(map[string]any)["name"] != "f" {
+		t.Fatalf("function tool mangled: %v", tools[1])
+	}
+
+	imgs := p.LastImages()
+	if len(imgs) != 1 || imgs[0].MimeType != "image/png" || len(imgs[0].Data) != 3 {
+		t.Fatalf("LastImages = %+v", imgs)
+	}
+
+	raw, _ := p.MarshalRawContent(p.LastRawContent())
+	if strings.Contains(string(raw), "result") {
+		t.Fatalf("raw replay must strip the b64 payload: %s", raw)
+	}
+	if !strings.Contains(string(raw), "ig_1") {
+		t.Fatalf("raw replay must keep the call item id: %s", raw)
 	}
 }

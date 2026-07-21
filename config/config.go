@@ -26,6 +26,11 @@ type ProviderConfig struct {
 	// support it: low|medium|high|xhigh|max ("" = provider default). A
 	// resumed session's own effort still overrides it.
 	Effort string `yaml:"effort"`
+	// Image enables image GENERATION for providers that support it: google
+	// sends responseModalities TEXT+IMAGE (models needing the opt-in),
+	// openresponses advertises the image_generation built-in tool. The
+	// /model surface can flip it at runtime.
+	Image bool `yaml:"image"`
 	// NoSave starts sessions ephemeral (the --no-save behavior): nothing
 	// persists unless the user runs /save mid-chat. --resume overrides it.
 	NoSave bool `yaml:"no_save"`

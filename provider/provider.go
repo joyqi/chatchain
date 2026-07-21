@@ -82,6 +82,17 @@ type Tunable interface {
 	Effort() string
 }
 
+// ImageTunable is an optional interface: providers whose image generation
+// needs an explicit request-side opt-in expose a runtime switch (config
+// `image: true`, the /model Image tab).
+type ImageTunable interface {
+	SetImageOutput(on bool)
+	ImageOutput() bool
+	// SupportsImageOutput gates the UI: the switch only shows for providers
+	// whose request builders actually consult it.
+	SupportsImageOutput() bool
+}
+
 // ImageOutputProvider is an optional interface: providers whose models can
 // GENERATE images surface the last stream's outputs here (mirroring
 // LastRawContent/LastUsage). The chat layer attaches them to the assistant

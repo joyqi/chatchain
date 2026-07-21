@@ -211,7 +211,14 @@ func (p *GoogleProvider) buildRequest(messages []Message) *llm.GenerateRequest {
 			ThinkingLevel:   strings.ToUpper(p.effort),
 		}
 	}
-	if cfg.Temperature != nil || cfg.ThinkingConfig != nil {
+	if p.imageOutput {
+		// The explicit opt-in (config image: true / the /model Image tab):
+		// official-API models that need responseModalities to emit images.
+		// Off by default — relays like zenmux generate without it, and text
+		// models reject the IMAGE modality.
+		cfg.ResponseModalities = []string{"TEXT", "IMAGE"}
+	}
+	if cfg.Temperature != nil || cfg.ThinkingConfig != nil || cfg.ResponseModalities != nil {
 		req.GenerationConfig = cfg
 	}
 	return req
@@ -347,3 +354,7 @@ func (p *GoogleProvider) streamChatInternal(ctx context.Context, messages []Mess
 // LastImages implements ImageOutputProvider: the images generated during the
 // most recent stream.
 func (p *GoogleProvider) LastImages() []Attachment { return p.lastImages }
+
+// SupportsImageOutput: gemini image models take the responseModalities
+// opt-in through the runtime switch.
+func (p *GoogleProvider) SupportsImageOutput() bool { return true }

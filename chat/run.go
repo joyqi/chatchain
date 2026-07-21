@@ -383,12 +383,27 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			if p.Type() == "anthropic" {
 				maxTemp = 1.0
 			}
-			r, serr := u.Tabbed(ctx, ui.TabbedSpec{Panels: []ui.Panel{
+			panels := []ui.Panel{
 				modelPanel,
 				{Title: "Context", Kind: ui.PanelList, Items: windowLabels, Cursor: windowIdx},
 				{Title: "Effort", Kind: ui.PanelList, Items: levelLabels, Cursor: levelIdx},
 				{Title: "Temperature", Kind: ui.PanelSlider, Min: 0, Max: maxTemp, Step: 0.1, Value: curTemp},
-			}})
+			}
+			// The image-generation switch: only for providers whose request
+			// builders consult it (google modalities, responses builtin tool).
+			imgTun, imgOK := p.(provider.ImageTunable)
+			imgOK = imgOK && imgTun.SupportsImageOutput()
+			if imgOK {
+				idx := 0 // Off
+				if imgTun.ImageOutput() {
+					idx = 1
+				}
+				items := []string{"Off", "On"}
+				items[idx] += " (current)"
+				panels = append(panels, ui.Panel{Title: "Image", Kind: ui.PanelList, Items: items, Cursor: idx,
+					Prompt: "Request image generation (modalities / built-in tool)"})
+			}
+			r, serr := u.Tabbed(ctx, ui.TabbedSpec{Panels: panels})
 			if serr != nil || r.Cancelled {
 				continue
 			}
@@ -422,6 +437,18 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 					tun.SetTemperature(v)
 					sw.SetTemperature(v)
 					printDim("Temperature: %s", formatTemperature(v))
+					changed = true
+				}
+			}
+			if imgOK {
+				if on := r.Panels[4].Cursor == 1; on != imgTun.ImageOutput() {
+					imgTun.SetImageOutput(on)
+					sw.SetImage(on)
+					state := "off"
+					if on {
+						state = "on"
+					}
+					printDim("Image generation: %s", state)
 					changed = true
 				}
 			}

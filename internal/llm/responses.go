@@ -70,6 +70,12 @@ type RespTool struct {
 	Strict      bool           `json:"strict"`
 }
 
+// RespBuiltinTool declares a server-side built-in tool by bare type
+// ("image_generation") — no name/description/strict fields.
+type RespBuiltinTool struct {
+	Type string `json:"type"`
+}
+
 type RespReasoning struct {
 	Effort string `json:"effort"`
 }
@@ -82,7 +88,7 @@ type RespRequest struct {
 	Input        []any          `json:"input"` // RespMsg / RespFunctionCall / RespFunctionCallOutput / json.RawMessage (verbatim replay)
 	Temperature  *float64       `json:"temperature,omitempty"`
 	Reasoning    *RespReasoning `json:"reasoning,omitempty"`
-	Tools        []RespTool     `json:"tools,omitempty"`
+	Tools        []any          `json:"tools,omitempty"` // RespTool / RespBuiltinTool
 	Stream       bool           `json:"stream,omitempty"`
 }
 
@@ -105,6 +111,8 @@ type RespResponse struct {
 	Status string `json:"status"`
 	Output []struct {
 		Type    string `json:"type"`
+		Result  string `json:"result"`        // image_generation_call: b64 image
+		Format  string `json:"output_format"` // image_generation_call: "png", …
 		Content []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
@@ -157,6 +165,10 @@ type RespOutputItem struct {
 	// Arguments is normally a JSON-encoded string but kept raw: some gateways
 	// send an object instead (see ArgumentsString).
 	Arguments json.RawMessage `json:"arguments"`
+	// Result carries an image_generation_call's base64 image payload.
+	Result string `json:"result"`
+	// OutputFormat is the image_generation_call's format ("png", "webp", …).
+	OutputFormat string `json:"output_format"`
 }
 
 // ArgumentsString returns the arguments when they are a JSON string, else ""

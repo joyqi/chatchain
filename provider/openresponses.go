@@ -28,6 +28,7 @@ type OpenResponsesProvider struct {
 	baseProvider
 	client        llm.Responses
 	lastRawOutput *openResponsesRawOutput
+	lastImages    []Attachment
 }
 
 func NewOpenResponses(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *OpenResponsesProvider {
@@ -158,13 +159,32 @@ func (p *OpenResponsesProvider) buildRequest(messages []Message) *llm.RespReques
 			req.Input = append(req.Input, llm.RespFunctionCallOutput{Type: "function_call_output", CallID: msg.ToolCallID, Output: msg.Content})
 		}
 	}
+	if p.imageOutput {
+		// The image switch advertises the server-side built-in on EVERY
+		// request path (streaming and unary alike).
+		req.Tools = append(req.Tools, llm.RespBuiltinTool{Type: "image_generation"})
+	}
 	return req
 }
 
 func (p *OpenResponsesProvider) Chat(ctx context.Context, messages []Message) (string, error) {
+	p.lastImages = nil
 	resp, err := p.client.Create(ctx, p.buildRequest(messages))
 	if err != nil {
 		return "", fmt.Errorf("chat error: %w", err)
+	}
+	// The unary path surfaces generated images too (-m single-shot runs).
+	for _, item := range resp.Output {
+		if item.Type != "image_generation_call" || item.Result == "" {
+			continue
+		}
+		if data, derr := base64.StdEncoding.DecodeString(item.Result); derr == nil && len(data) > 0 {
+			mime := "image/png"
+			if item.Format != "" {
+				mime = "image/" + item.Format
+			}
+			p.lastImages = append(p.lastImages, Attachment{MimeType: mime, Data: data})
+		}
 	}
 	return resp.OutputText(), nil
 }
@@ -191,6 +211,7 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 	}
 
 	p.lastUsageOK = false
+	p.lastImages = nil
 	stream, err := p.client.StreamResponse(ctx, req)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("stream error: %w", err)
@@ -259,6 +280,29 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 			b.WriteString(evt.Arguments)
 		case "response.output_item.done":
 			// Capture every completed output item as raw JSON for replay.
+			var peeked llm.RespOutputItem
+			peekOK := json.Unmarshal(evt.Item, &peeked) == nil
+			if peekOK && peeked.Type == "image_generation_call" {
+				// The generated image: base64 in `result`. Surface it via
+				// LastImages; the raw replay keeps the item WITHOUT the
+				// payload (megabytes of base64 — the id alone carries the
+				// multiturn context server-side).
+				if data, derr := base64.StdEncoding.DecodeString(peeked.Result); derr == nil && len(data) > 0 {
+					mime := "image/png"
+					if peeked.OutputFormat != "" {
+						mime = "image/" + peeked.OutputFormat
+					}
+					p.lastImages = append(p.lastImages, Attachment{MimeType: mime, Data: data})
+				}
+				var obj map[string]json.RawMessage
+				if json.Unmarshal(evt.Item, &obj) == nil {
+					delete(obj, "result")
+					if reencoded, rerr := json.Marshal(obj); rerr == nil {
+						rawOutputItems = append(rawOutputItems, reencoded)
+					}
+				}
+				continue
+			}
 			rawOutputItems = append(rawOutputItems, evt.Item)
 			var item llm.RespOutputItem
 			if json.Unmarshal(evt.Item, &item) == nil && item.Type == "function_call" {
@@ -331,6 +375,19 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 		return full, thinkFull, toolCalls, nil
 	}
 
+	// An image round also keeps its raw items: the image_generation_call id
+	// (payload stripped) carries the server-side multiturn context.
+	if len(p.lastImages) > 0 && len(rawOutputItems) > 0 {
+		p.lastRawOutput = &openResponsesRawOutput{items: rawOutputItems}
+		return full, thinkFull, nil, nil
+	}
 	p.lastRawOutput = nil
 	return full, thinkFull, nil, nil
 }
+
+// SupportsImageOutput: the switch advertises the image_generation built-in
+// tool on requests.
+func (p *OpenResponsesProvider) SupportsImageOutput() bool { return true }
+
+// LastImages implements ImageOutputProvider.
+func (p *OpenResponsesProvider) LastImages() []Attachment { return p.lastImages }

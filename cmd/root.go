@@ -117,6 +117,11 @@ var rootCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if pc.Image {
+			if tun, ok := p.(provider.ImageTunable); ok && tun.SupportsImageOutput() {
+				tun.SetImageOutput(true)
+			}
+		}
 		if pc.Effort != "" {
 			if !provider.ValidEffort(pc.Effort) {
 				return fmt.Errorf("config effort %q: want low|medium|high|xhigh|max", pc.Effort)
