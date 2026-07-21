@@ -684,9 +684,9 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			history = history[:hist0] // tool rounds append; reset per attempt
 			var err error
 			if isToolProvider && len(tools) > 0 {
-				reply, thinking, err = toolLoop(turnCtx, u, sink, tr, tp, dispatch, &history, tools, sendOverlay, approved)
+				reply, thinking, err = toolLoop(turnCtx, u, sink, tr, tp, dispatch, &history, tools, sendOverlay, approved, sw.ImagesDir)
 			} else {
-				reply, thinking, err = streamTurn(turnCtx, u, sink, tr, func(w io.Writer, r io.WriteCloser) (string, string, error) {
+				reply, thinking, err = streamTurn(turnCtx, u, sink, tr, p, func(w io.Writer, r io.WriteCloser) (string, string, error) {
 					return p.StreamChat(turnCtx, agents.ComposeSendHistory(history, sendOverlay), w, r)
 				})
 			}
@@ -707,7 +707,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 		}
 
 		amsg := provider.Message{Role: "assistant", Content: reply, Reasoning: thinking}
-		collectImages(p, tr, u.Width, &amsg)
+		collectImages(p, tr, u.Width, sw.ImagesDir, &amsg)
 		history = append(history, amsg)
 		persistTurn()
 		budget.update(p, history)
@@ -899,7 +899,7 @@ func watchToolComposing(phases *turnPhases, tr *transcript, tp provider.ToolProv
 // content/reasoning writers and returns its final (reply, thinking, err).
 // A ctx cancel (ESC/Ctrl+C via the ui scope) maps to errInterrupted with the
 // partials the user actually saw — same contract as streamResponse.
-func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, call func(w io.Writer, r io.WriteCloser) (string, string, error)) (string, string, error) {
+func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, p any, call func(w io.Writer, r io.WriteCloser) (string, string, error)) (string, string, error) {
 	reasonPr, reasonPw := io.Pipe()
 	contentPr, contentPw := io.Pipe()
 	var reply, thinking string
@@ -948,6 +948,9 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcrip
 		if streamErr != nil {
 			return fail(streamErr)
 		}
+		if hasImages(p) { // image-only response: no text is a valid turn
+			return reply, thinking, nil
+		}
 		return fail(readErr)
 	}
 
@@ -969,6 +972,9 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcrip
 			<-done
 			if interrupted() || streamErr != nil {
 				return fail(streamErr)
+			}
+			if hasImages(p) { // thought + image, no text: a valid turn
+				return reply, thinking, nil
 			}
 			// Reasoning-only response: render the reasoning as the answer.
 			mdw, msink := newContent()
@@ -996,7 +1002,7 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcrip
 // toolLoop is the v2 twin of executeWithTools: rounds of streaming +
 // tool execution rendered through the ui frame (Busy labels instead of the
 // stderr spinner; per-tool cancel scopes instead of raw-mode watches).
-func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, approved map[string]bool) (string, string, error) {
+func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, approved map[string]bool, imgDir func() string) (string, string, error) {
 	// No round cap: the user is the brake (ESC cancels the turn; approval
 	// gates cover mutating tools) — industry parity with the major CLIs.
 	for {
@@ -1012,7 +1018,7 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 		if rcp, ok := tp.(provider.RawContentProvider); ok {
 			msg.RawContent = rcp.LastRawContent()
 		}
-		collectImages(tp, tr, u.Width, &msg)
+		collectImages(tp, tr, u.Width, imgDir, &msg)
 		*history = append(*history, msg)
 
 		for _, tc := range toolCalls {

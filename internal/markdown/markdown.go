@@ -77,6 +77,25 @@ var (
 // termWidth-1 and text wraps at termWidth-quoteBorderCols.
 const quoteBorderCols = 2
 
+// Hyperlink wraps text in an OSC 8 terminal hyperlink. Terminals without
+// support ignore the sequence and show the plain text — progressive
+// enhancement, no capability sniffing. The URL is stripped of control bytes
+// so crafted content can never terminate or escape the OSC sequence (the
+// window-title lesson). Under color.NoColor (piped output) the text passes
+// through bare — escape sequences don't belong in pipes.
+func Hyperlink(url, text string) string {
+	if color.NoColor {
+		return text
+	}
+	url = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, url)
+	return termenv.Hyperlink(url, text)
+}
+
 // headingStyle maps a heading level to its style: H1 bold+underline, every
 // other level plain bold. (Bold+faint "level differentiation" for H3+ was
 // tried and reverted: ###/#### are the levels models emit most, and terminals
@@ -487,7 +506,7 @@ func renderInline(line string, base lipgloss.Style, styled bool) string {
 					text := string(runes[i+1 : textEnd])
 					url := string(runes[textEnd+2 : urlEnd])
 					flush()
-					out.WriteString(renderInline(text, base.Foreground(lipgloss.Color("6")).Underline(true), true))
+					out.WriteString(Hyperlink(url, renderInline(text, base.Foreground(lipgloss.Color("6")).Underline(true), true)))
 					out.WriteString(base.Faint(true).Render(" (" + url + ")"))
 					i = urlEnd + 1
 					continue

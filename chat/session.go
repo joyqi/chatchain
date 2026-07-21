@@ -551,6 +551,24 @@ func (w *SessionWriter) SetModel(model string) error {
 	return w.writeMeta()
 }
 
+// ImagesDir returns the session bundle's images directory (created on
+// demand): generated images live INSIDE the bundle so deleting the session
+// deletes them. "" on a nil writer — the caller falls back to the global
+// images directory for ephemeral sessions.
+func (w *SessionWriter) ImagesDir() string {
+	if w == nil {
+		return ""
+	}
+	if err := w.ensureCreated(); err != nil {
+		return ""
+	}
+	dir := filepath.Join(w.dir, "images")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return ""
+	}
+	return dir
+}
+
 // SetTemperature / SetEffort / SetContextWindow update the session's tuning
 // metadata the same way SetModel does: in memory always, on disk only once the
 // bundle exists. Unset values (nil temperature, "" effort, 0 window) drop the

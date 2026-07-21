@@ -219,13 +219,21 @@ func (t *transcript) contentBlock() func(lines ...string) {
 }
 
 // image commits a rendered image block: the half-block rows, then a dim
-// caption ("🖼 saved: <path>") inside the same block.
+// caption ("🖼 saved: <path>") inside the same block, all under a uniform
+// two-space left indent so the picture doesn't sit flush against the edge.
+// The indent is safe to prepend: every row is SGR-self-contained, so the
+// leading spaces render in the terminal's own colors.
 func (t *transcript) image(rows []string, caption string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.beginLocked(blockImage)
-	t.pushLocked(rows)
-	t.pushLocked([]string{DimStyle.Sprint(caption)})
+	const indent = "  "
+	indented := make([]string, len(rows))
+	for i, r := range rows {
+		indented[i] = indent + r
+	}
+	t.pushLocked(indented)
+	t.pushLocked([]string{indent + DimStyle.Sprint(caption)})
 }
 
 // openCall raises the tool-call lifecycle widget ("⠋ [name …]" over the live

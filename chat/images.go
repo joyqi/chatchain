@@ -9,13 +9,14 @@ import (
 	"time"
 
 	"chatchain/internal/imgterm"
+	"chatchain/internal/markdown"
 	"chatchain/provider"
 )
 
-// imagesDir is where generated images land as plain files the user can grab:
-// ~/.chatchain/images (session bundles additionally persist them as message
-// attachments for lossless resume and history round-trips).
-func imagesDir() (string, error) {
+// fallbackImagesDir holds generated images for EPHEMERAL sessions
+// (~/.chatchain/images); saved sessions keep them inside the bundle
+// (SessionWriter.ImagesDir) so deleting the session deletes its images.
+func fallbackImagesDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -39,12 +40,15 @@ func imageExt(mime string) string {
 	return "bin"
 }
 
-// saveImage writes one generated image and returns its path. The name embeds
-// a timestamp and index so parallel generations never collide.
-func saveImage(att provider.Attachment, seq int) (string, error) {
-	dir, err := imagesDir()
-	if err != nil {
-		return "", err
+// saveImage writes one generated image into dir ("" = the ephemeral
+// fallback) and returns its path. The name embeds a timestamp and index so
+// parallel generations never collide.
+func saveImage(att provider.Attachment, dir string, seq int) (string, error) {
+	if dir == "" {
+		var err error
+		if dir, err = fallbackImagesDir(); err != nil {
+			return "", err
+		}
 	}
 	name := fmt.Sprintf("%s-%d.%s", time.Now().Format("20060102-150405"), seq, imageExt(att.MimeType))
 	path := filepath.Join(dir, name)
@@ -55,8 +59,9 @@ func saveImage(att provider.Attachment, seq int) (string, error) {
 // a roomy terminal, never the whole screen. The live terminal width still
 // wins when narrower.
 const (
-	imageMaxCols = 72
-	imageMaxRows = 14
+	imageMaxCols    = 72
+	imageMaxRows    = 14
+	imageIndentCols = 2 // uniform left indent for image rows and caption
 )
 
 // hasImages reports whether the provider generated images this stream — an
@@ -71,7 +76,9 @@ func hasImages(p any) bool {
 // persistence), saved under ~/.chatchain/images, and rendered into the chat
 // as half-block blocks. A decode failure still saves the file — the path
 // line is the fallback rendering.
-func collectImages(p any, tr *transcript, width func() int, msg *provider.Message) {
+// dir resolves lazily — only when an image actually needs saving — so the
+// session bundle's lazy-creation contract survives image-less turns.
+func collectImages(p any, tr *transcript, width func() int, dir func() string, msg *provider.Message) {
 	ip, ok := p.(provider.ImageOutputProvider)
 	if !ok {
 		return
@@ -80,8 +87,9 @@ func collectImages(p any, tr *transcript, width func() int, msg *provider.Messag
 	if len(images) == 0 {
 		return
 	}
+	target := dir()
 	for i, att := range images {
-		path, err := saveImage(att, i)
+		path, err := saveImage(att, target, i)
 		if err != nil {
 			tr.error("Saving image failed: %v", err)
 			continue
@@ -90,11 +98,11 @@ func collectImages(p any, tr *transcript, width func() int, msg *provider.Messag
 		msg.Attachments = append(msg.Attachments, att)
 
 		maxCols := imageMaxCols
-		if w := width(); w-2 < maxCols {
-			maxCols = w - 2
+		if w := width(); w-2-imageIndentCols < maxCols {
+			maxCols = w - 2 - imageIndentCols
 		}
 		rows, rerr := imgterm.Render(att.Data, maxCols, imageMaxRows)
-		caption := fmt.Sprintf("🖼 saved: %s", path)
+		caption := "🖼 saved: " + markdown.Hyperlink("file://"+path, path)
 		if rerr != nil {
 			tr.notice("%s (%s)", caption, strings.TrimPrefix(rerr.Error(), "decode image: "))
 			continue
@@ -113,7 +121,7 @@ func SaveImagesQuiet(p any, w io.Writer) {
 		return
 	}
 	for i, att := range ip.LastImages() {
-		path, err := saveImage(att, i)
+		path, err := saveImage(att, "", i)
 		if err != nil {
 			fmt.Fprintf(w, "saving image failed: %v\n", err)
 			continue

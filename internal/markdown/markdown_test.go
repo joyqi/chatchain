@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/fatih/color"
 	"github.com/rivo/uniseg"
 )
@@ -14,11 +15,11 @@ import (
 // test width (80 — the old non-TTY fallback), no live previews.
 func newTestWriter(w io.Writer) *Writer { return NewWriterTo(w, 80) }
 
-// stripANSI removes ANSI SGR codes (test-local twin of chat's helper).
-func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
+// stripANSI removes ALL ANSI escapes — SGR and OSC (hyperlinks) alike.
+func stripANSI(s string) string { return xansi.Strip(s) }
 
-// visible strips ANSI SGR codes, leaving the text the user actually sees.
-func visible(s string) string { return ansiRe.ReplaceAllString(s, "") }
+// visible strips ANSI escapes, leaving the text the user actually sees.
+func visible(s string) string { return xansi.Strip(s) }
 
 // sgrParams collects every parameter of every SGR sequence in s, so styles
 // can be asserted regardless of how the params are grouped into sequences.
@@ -1347,5 +1348,40 @@ func TestHeadingInlineStyled(t *testing.T) {
 	h2code := mdH2.Foreground(lipgloss.Color("6"))
 	if !strings.Contains(out.String(), h2code.Render("brew")) {
 		t.Errorf("heading code segment not composed (want bold+cyan): %q", out.String())
+	}
+}
+
+// Hyperlinks are zero-width for the ANSI ruler (layout math must not count
+// OSC 8 bytes), sanitize control bytes out of the URL, and pass text through
+// bare under NoColor (no escapes into pipes).
+func TestHyperlink(t *testing.T) {
+	color.NoColor = false
+	link := Hyperlink("file:///tmp/a.png", "a.png")
+	if !strings.Contains(link, "\x1b]8;;file:///tmp/a.png") || !strings.Contains(link, "a.png") {
+		t.Fatalf("link = %q", link)
+	}
+	if w := xansi.StringWidth(link); w != 5 {
+		t.Fatalf("visible width = %d, want 5", w)
+	}
+	evil := Hyperlink("file:///a\x1bZ;rm -rf", "x")
+	if !strings.Contains(evil, "]8;;file:///aZ;rm -rf") {
+		t.Fatalf("control bytes not stripped from the URL: %q", evil)
+	}
+	color.NoColor = true
+	defer func() { color.NoColor = false }()
+	if got := Hyperlink("http://x", "plain"); got != "plain" {
+		t.Fatalf("NoColor must pass through bare: %q", got)
+	}
+}
+
+// Markdown links carry the OSC 8 wrapper around the styled text.
+func TestLinkHyperlinked(t *testing.T) {
+	color.NoColor = false
+	got := highlightInline("[docs](http://x)")
+	if !strings.Contains(got, "\x1b]8;;http://x") {
+		t.Fatalf("link not hyperlinked: %q", got)
+	}
+	if !strings.Contains(xansi.Strip(got), "docs (http://x)") {
+		t.Fatalf("visible text changed: %q", xansi.Strip(got))
 	}
 }

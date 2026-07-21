@@ -395,8 +395,8 @@ func TestTranscriptImageBlock(t *testing.T) {
 
 	want := []string{
 		"print:Here you go.",
-		"print:", "print:ROW1|ROW2",
-		"print:" + DimStyle.Sprint("🖼 saved: /x/y.png"),
+		"print:", "print:  ROW1|  ROW2", // uniform two-space indent
+		"print:  " + DimStyle.Sprint("🖼 saved: /x/y.png"),
 	}
 	if got := s.joined(); got != strings.Join(want, "\n") {
 		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
