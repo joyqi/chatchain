@@ -37,6 +37,7 @@ const (
 	blockNotice
 	blockError
 	blockEcho
+	blockImage
 )
 
 // transcriptSurface is what the transcript needs from the ui. *ui.UI
@@ -215,6 +216,16 @@ func (t *transcript) contentBlock() func(lines ...string) {
 		}
 		t.pushLocked(lines)
 	}
+}
+
+// image commits a rendered image block: the half-block rows, then a dim
+// caption ("🖼 saved: <path>") inside the same block.
+func (t *transcript) image(rows []string, caption string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.beginLocked(blockImage)
+	t.pushLocked(rows)
+	t.pushLocked([]string{DimStyle.Sprint(caption)})
 }
 
 // openCall raises the tool-call lifecycle widget ("⠋ [name …]" over the live

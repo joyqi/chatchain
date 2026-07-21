@@ -55,6 +55,7 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 			return err
 		}
 		fmt.Fprintln(w, reply)
+		SaveImagesQuiet(tp, w)
 		return nil
 	}
 
@@ -63,6 +64,7 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 		return err
 	}
 	fmt.Fprintln(w, reply)
+	SaveImagesQuiet(p, w)
 	return nil
 }
 

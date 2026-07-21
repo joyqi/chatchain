@@ -30,6 +30,7 @@ const (
 // validates that every part has its data oneof set.
 type GoogleProvider struct {
 	baseProvider
+	lastImages       []Attachment
 	client           llm.Google
 	lastModelContent *llm.GContent // preserves thought signatures for tool call rounds
 	toolCallIDs      bool          // whether the backend accepts FunctionCall/FunctionResponse IDs
@@ -167,6 +168,17 @@ func (p *GoogleProvider) buildContents(messages []Message) ([]*llm.GContent, *ll
 					parts = append(parts, &llm.GPart{FunctionCall: fc})
 				}
 				contents = append(contents, &llm.GContent{Role: "model", Parts: parts})
+			} else if len(msg.Attachments) > 0 {
+				// A generated image round-trips as a model inlineData part so
+				// follow-ups ("make the sky blue") edit it in place.
+				var parts []*llm.GPart
+				if msg.Content != "" {
+					parts = append(parts, &llm.GPart{Text: msg.Content})
+				}
+				for _, att := range msg.Attachments {
+					parts = append(parts, &llm.GPart{InlineData: &llm.GBlob{Data: att.Data, MimeType: att.MimeType}})
+				}
+				contents = append(contents, &llm.GContent{Role: "model", Parts: parts})
 			} else {
 				contents = append(contents, textContent("model", msg.Content))
 			}
@@ -206,9 +218,21 @@ func (p *GoogleProvider) buildRequest(messages []Message) *llm.GenerateRequest {
 }
 
 func (p *GoogleProvider) Chat(ctx context.Context, messages []Message) (string, error) {
+	p.lastImages = nil
 	resp, err := p.client.Generate(ctx, p.model, p.buildRequest(messages))
 	if err != nil {
 		return "", fmt.Errorf("chat error: %w", err)
+	}
+	// The unary path surfaces generated images too (-m single-shot runs).
+	if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
+		for _, part := range resp.Candidates[0].Content.Parts {
+			if part.InlineData != nil {
+				p.lastImages = append(p.lastImages, Attachment{
+					MimeType: part.InlineData.MimeType,
+					Data:     part.InlineData.Data,
+				})
+			}
+		}
 	}
 	return resp.Text(), nil
 }
@@ -238,6 +262,7 @@ func (p *GoogleProvider) streamChatInternal(ctx context.Context, messages []Mess
 
 	var full, thinkFull string
 	var toolCalls []ToolCall
+	p.lastImages = nil
 	var rawParts []*llm.GPart // accumulate all parts to preserve thought signatures
 	reasoningClosed := false
 	closeReasoning := func() {
@@ -272,10 +297,19 @@ func (p *GoogleProvider) streamChatInternal(ctx context.Context, messages []Mess
 			continue
 		}
 		for _, part := range resp.Candidates[0].Content.Parts {
-			if part.HasData() {
+			if part.HasData() && part.InlineData == nil {
+				// Generated images ride Message.Attachments (and the session
+				// bundle) — duplicating their base64 into the raw replay blob
+				// would double-store megabytes per image.
 				rawParts = append(rawParts, part)
 			}
 			switch {
+			case part.InlineData != nil:
+				closeReasoning()
+				p.lastImages = append(p.lastImages, Attachment{
+					MimeType: part.InlineData.MimeType,
+					Data:     part.InlineData.Data,
+				})
 			case part.Thought:
 				fmt.Fprint(reasoningW, part.Text)
 				thinkFull += part.Text
@@ -309,3 +343,7 @@ func (p *GoogleProvider) streamChatInternal(ctx context.Context, messages []Mess
 	p.lastModelContent = nil
 	return full, thinkFull, nil, nil
 }
+
+// LastImages implements ImageOutputProvider: the images generated during the
+// most recent stream.
+func (p *GoogleProvider) LastImages() []Attachment { return p.lastImages }

@@ -71,7 +71,7 @@ func echoRounds(w io.Writer, msgs []provider.Message) {
 			}
 			fmt.Fprintln(w)
 		case "assistant":
-			if msg.Content == "" {
+			if msg.Content == "" && len(msg.Attachments) == 0 {
 				continue // tool-call-only step; its results are counted below
 			}
 			flushTools()
@@ -83,12 +83,21 @@ func echoRounds(w io.Writer, msgs []provider.Message) {
 			if width, _, werr := term.GetSize(int(os.Stdout.Fd())); werr == nil && width > 0 {
 				tw = width
 			}
-			lw := &lastByteWriter{w: w}
-			mdw := markdown.NewWriterTo(lw, tw)
-			mdw.Write([]byte(strings.TrimRight(msg.Content, "\n")))
-			mdw.Flush()
-			if lw.last != '\n' {
-				fmt.Fprintln(w)
+			if msg.Content != "" {
+				lw := &lastByteWriter{w: w}
+				mdw := markdown.NewWriterTo(lw, tw)
+				mdw.Write([]byte(strings.TrimRight(msg.Content, "\n")))
+				mdw.Flush()
+				if lw.last != '\n' {
+					fmt.Fprintln(w)
+				}
+			}
+			if n := len(msg.Attachments); n > 0 {
+				names := make([]string, 0, n)
+				for _, att := range msg.Attachments {
+					names = append(names, att.Filename)
+				}
+				DimStyle.Fprintf(w, "🖼 %d image(s): %s\n", n, strings.Join(names, ", "))
 			}
 			if msg.Interrupted {
 				DimStyle.Fprintln(w, "(interrupted)")

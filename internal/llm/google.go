@@ -85,8 +85,9 @@ type GThinkingConfig struct {
 }
 
 type GGenerationConfig struct {
-	Temperature    *float32         `json:"temperature,omitempty"`
-	ThinkingConfig *GThinkingConfig `json:"thinkingConfig,omitempty"`
+	Temperature        *float32         `json:"temperature,omitempty"`
+	ThinkingConfig     *GThinkingConfig `json:"thinkingConfig,omitempty"`
+	ResponseModalities []string         `json:"responseModalities,omitempty"`
 }
 
 type GFunctionDeclaration struct {

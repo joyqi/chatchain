@@ -197,6 +197,17 @@ chatchain openai -m "hi" -M gpt-4o
 chatchain openai -k sk-override -m "hi" -M gpt-4o
 ```
 
+### Image Generation
+
+Image-capable models generate straight into the chat: with a Gemini image
+model (e.g. `gemini-3.1-flash-image`) just ask — the picture renders inline
+as ANSI half-block art (capped well below a screenful), is saved under
+`~/.chatchain/images/`, and its path is printed. Generated images round-trip
+into the conversation, so follow-ups like "make the circle blue" edit the
+previous image in place. Sessions persist them losslessly (attachments), and
+`-m` single-shot runs print the saved path instead of rasterizing into a
+pipe.
+
 ### Built-in Toolsets
 
 Besides MCP servers, ChatChain ships built-in tools grouped into named

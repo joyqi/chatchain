@@ -158,3 +158,70 @@ func TestGoogleStreamTranscript(t *testing.T) {
 		t.Fatal("thought signature lost from raw content")
 	}
 }
+
+// A generated image (inlineData output part) surfaces through LastImages,
+// stays OUT of the raw replay parts (attachments own the bytes), and an
+// assistant message carrying it serializes back as a model inlineData part —
+// the iterative-editing round trip.
+func TestGoogleImageOutput(t *testing.T) {
+	transcript := strings.Join([]string{
+		`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Here you go."},{"inlineData":{"mimeType":"image/png","data":"iVBO"}}]}}]}`,
+		``,
+	}, "\n")
+	var reqBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(transcript))
+	}))
+	defer srv.Close()
+
+	p := NewGemini("k", srv.URL, "m", nil, srv.Client())
+	var content strings.Builder
+	full, _, calls, err := p.StreamChatWithTools(context.Background(),
+		[]Message{{Role: "user", Content: "draw a cat"}}, nil,
+		&content, writeCloserFunc{io.Discard, func() {}})
+	if err != nil || len(calls) != 0 {
+		t.Fatalf("stream: %v calls=%v", err, calls)
+	}
+	if full != "Here you go." {
+		t.Fatalf("full = %q", full)
+	}
+	imgs := p.LastImages()
+	if len(imgs) != 1 || imgs[0].MimeType != "image/png" || string(imgs[0].Data) != "\x89PN" {
+		t.Fatalf("LastImages = %+v", imgs)
+	}
+
+	// Round trip: the assistant message with the attachment replays as a
+	// model inlineData part plus its text.
+	_, _, _, err = p.StreamChatWithTools(context.Background(), []Message{
+		{Role: "user", Content: "draw a cat"},
+		{Role: "assistant", Content: "Here you go.", Attachments: []Attachment{{MimeType: "image/png", Data: []byte{1, 2}}}},
+		{Role: "user", Content: "make it blue"},
+	}, nil, io.Discard, writeCloserFunc{io.Discard, func() {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req map[string]any
+	if err := json.Unmarshal(reqBody, &req); err != nil {
+		t.Fatal(err)
+	}
+	contents := req["contents"].([]any)
+	model := contents[1].(map[string]any)
+	parts := model["parts"].([]any)
+	if len(parts) != 2 {
+		t.Fatalf("model parts = %v", parts)
+	}
+	if parts[0].(map[string]any)["text"] != "Here you go." {
+		t.Fatalf("text part = %v", parts[0])
+	}
+	blob := parts[1].(map[string]any)["inlineData"].(map[string]any)
+	if blob["mimeType"] != "image/png" || blob["data"] != "AQI=" {
+		t.Fatalf("inlineData = %v", blob)
+	}
+	// Per-stream reset: the second stream (same fixture, one image) reports
+	// exactly ITS image — not an accumulation across streams.
+	if len(p.LastImages()) != 1 {
+		t.Fatalf("LastImages must reset per stream: %+v", p.LastImages())
+	}
+}

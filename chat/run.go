@@ -706,7 +706,9 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			continue
 		}
 
-		history = append(history, provider.Message{Role: "assistant", Content: reply, Reasoning: thinking})
+		amsg := provider.Message{Role: "assistant", Content: reply, Reasoning: thinking}
+		collectImages(p, tr, u.Width, &amsg)
+		history = append(history, amsg)
 		persistTurn()
 		budget.update(p, history)
 		pushStatus()
@@ -1010,6 +1012,7 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 		if rcp, ok := tp.(provider.RawContentProvider); ok {
 			msg.RawContent = rcp.LastRawContent()
 		}
+		collectImages(tp, tr, u.Width, &msg)
 		*history = append(*history, msg)
 
 		for _, tc := range toolCalls {
@@ -1201,6 +1204,9 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *tran
 			renderSpill()
 			return content, reasoning, toolCalls, nil
 		}
+		if hasImages(tp) { // image-only response: no text is a valid turn
+			return content, reasoning, nil, nil
+		}
 		return fail(readErr)
 	}
 
@@ -1226,6 +1232,10 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *tran
 			if len(toolCalls) > 0 {
 				renderSpill()
 				return content, reasoning, toolCalls, nil
+			}
+			if hasImages(tp) { // thought + image, no text: a valid turn
+				tr.closeContent()
+				return content, reasoning, nil, nil
 			}
 			// Reasoning-only response: render the reasoning as the answer.
 			mdw, msink := newContent()

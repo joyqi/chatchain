@@ -82,6 +82,15 @@ type Tunable interface {
 	Effort() string
 }
 
+// ImageOutputProvider is an optional interface: providers whose models can
+// GENERATE images surface the last stream's outputs here (mirroring
+// LastRawContent/LastUsage). The chat layer attaches them to the assistant
+// message, saves them, and renders them; images round-trip to the model
+// through Message.Attachments for iterative editing.
+type ImageOutputProvider interface {
+	LastImages() []Attachment
+}
+
 // ValidEffort reports whether level is a recognized reasoning-effort value
 // ("" = provider default). The canonical list — the /model Effort tab and the
 // config's effort key both validate against it.

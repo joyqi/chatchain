@@ -381,3 +381,24 @@ func TestWatchToolComposing(t *testing.T) {
 		t.Fatal("cleanup should detach the observer")
 	}
 }
+
+// An image block: half-block rows plus a dim caption in ONE block, one
+// separator like every other block.
+func TestTranscriptImageBlock(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	content := tr.openContent()
+	content("Here you go.")
+	tr.closeContent()
+	tr.image([]string{"ROW1", "ROW2"}, "🖼 saved: /x/y.png")
+
+	want := []string{
+		"print:Here you go.",
+		"print:", "print:ROW1|ROW2",
+		"print:" + DimStyle.Sprint("🖼 saved: /x/y.png"),
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
