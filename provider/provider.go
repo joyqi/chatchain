@@ -84,13 +84,12 @@ type Tunable interface {
 
 // ImageTunable is an optional interface: providers whose image generation
 // needs an explicit request-side opt-in expose a runtime switch (config
-// `image: true`, the /model Image tab).
+// `image: true`, the /model Image tab). Only providers whose request
+// builders actually consult the flag implement it — the type assertion IS
+// the capability check, like every optional interface here.
 type ImageTunable interface {
 	SetImageOutput(on bool)
 	ImageOutput() bool
-	// SupportsImageOutput gates the UI: the switch only shows for providers
-	// whose request builders actually consult it.
-	SupportsImageOutput() bool
 }
 
 // ImageOutputProvider is an optional interface: providers whose models can

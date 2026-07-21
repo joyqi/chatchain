@@ -118,7 +118,7 @@ var rootCmd = &cobra.Command{
 			return err
 		}
 		if pc.Image {
-			if tun, ok := p.(provider.ImageTunable); ok && tun.SupportsImageOutput() {
+			if tun, ok := p.(provider.ImageTunable); ok {
 				tun.SetImageOutput(true)
 			}
 		}

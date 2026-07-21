@@ -377,7 +377,7 @@ func ApplySessionTuning(sess *Session, p provider.Provider, skipTemperature, ski
 			t.SetEffort(sess.Meta.Effort)
 		}
 	}
-	if it, ok := p.(provider.ImageTunable); ok && it.SupportsImageOutput() && sess.Meta.Image {
+	if it, ok := p.(provider.ImageTunable); ok && sess.Meta.Image {
 		it.SetImageOutput(true)
 	}
 	if !skipWindow && sess.Meta.ContextWindow > 0 && setWindow != nil {

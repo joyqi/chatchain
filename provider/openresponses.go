@@ -26,6 +26,7 @@ type openResponsesRawOutput struct {
 
 type OpenResponsesProvider struct {
 	baseProvider
+	imageOutput   bool
 	client        llm.Responses
 	lastRawOutput *openResponsesRawOutput
 	lastImages    []Attachment
@@ -385,9 +386,10 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 	return full, thinkFull, nil, nil
 }
 
-// SupportsImageOutput: the switch advertises the image_generation built-in
-// tool on requests.
-func (p *OpenResponsesProvider) SupportsImageOutput() bool { return true }
+// SetImageOutput / ImageOutput implement ImageTunable: the switch advertises
+// the image_generation built-in tool on requests.
+func (p *OpenResponsesProvider) SetImageOutput(on bool) { p.imageOutput = on }
+func (p *OpenResponsesProvider) ImageOutput() bool      { return p.imageOutput }
 
 // LastImages implements ImageOutputProvider.
 func (p *OpenResponsesProvider) LastImages() []Attachment { return p.lastImages }

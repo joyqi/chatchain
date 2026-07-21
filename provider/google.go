@@ -30,6 +30,7 @@ const (
 // validates that every part has its data oneof set.
 type GoogleProvider struct {
 	baseProvider
+	imageOutput      bool
 	lastImages       []Attachment
 	client           llm.Google
 	lastModelContent *llm.GContent // preserves thought signatures for tool call rounds
@@ -355,6 +356,7 @@ func (p *GoogleProvider) streamChatInternal(ctx context.Context, messages []Mess
 // most recent stream.
 func (p *GoogleProvider) LastImages() []Attachment { return p.lastImages }
 
-// SupportsImageOutput: gemini image models take the responseModalities
-// opt-in through the runtime switch.
-func (p *GoogleProvider) SupportsImageOutput() bool { return true }
+// SetImageOutput / ImageOutput implement ImageTunable: the switch adds the
+// responseModalities opt-in to requests.
+func (p *GoogleProvider) SetImageOutput(on bool) { p.imageOutput = on }
+func (p *GoogleProvider) ImageOutput() bool      { return p.imageOutput }

@@ -392,7 +392,6 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			// The image-generation switch: only for providers whose request
 			// builders consult it (google modalities, responses builtin tool).
 			imgTun, imgOK := p.(provider.ImageTunable)
-			imgOK = imgOK && imgTun.SupportsImageOutput()
 			if imgOK {
 				idx := 0 // Off
 				if imgTun.ImageOutput() {
