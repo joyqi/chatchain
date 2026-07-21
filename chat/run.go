@@ -350,8 +350,11 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			models, ferr := p.ListModels(fctx)
 			stop()
 			pop()
+			// Read the cancellation state BEFORE fcancel — our own deferred
+			// cancel would make fctx.Err() unconditionally non-nil.
+			userCancelled := fctx.Err() != nil && ctx.Err() == nil
 			fcancel()
-			if fctx.Err() != nil && ctx.Err() == nil {
+			if userCancelled {
 				continue // the user cancelled the fetch: abort /model quietly
 			}
 			manualModel := ferr != nil || len(models) == 0
@@ -722,8 +725,9 @@ func ensureModel(ctx context.Context, u *ui.UI, tr *transcript, p provider.Provi
 	models, err := p.ListModels(fctx)
 	stop()
 	pop()
+	userCancelled := fctx.Err() != nil && ctx.Err() == nil
 	fcancel()
-	if fctx.Err() != nil && ctx.Err() == nil {
+	if userCancelled {
 		return false // user-cancelled: leave the picker entirely
 	}
 	var name string
