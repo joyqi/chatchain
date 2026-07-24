@@ -118,12 +118,23 @@ type ImageGenParams struct {
 	NegativePrompt string
 }
 
+// ImageGenOptions are the choice lists a dedicated image provider offers for
+// its generation parameters — the /model tabs render them (plus a "default"
+// row meaning "omit the parameter"). Lists are per-dialect unions, not
+// per-model promises: a value a particular model rejects surfaces as an API
+// error and the user picks another (the effort-tab philosophy).
+type ImageGenOptions struct {
+	AspectRatios []string
+	ImageSizes   []string
+}
+
 // ImageGenTunable is an optional interface: dedicated image providers expose
 // their generation parameters for the config defaults at startup and the
-// /model tabs at runtime (P2). The assertion IS the capability check.
+// /model tabs at runtime. The assertion IS the capability check.
 type ImageGenTunable interface {
 	SetImageGenParams(ImageGenParams)
 	ImageGenParams() ImageGenParams
+	ImageGenOptions() ImageGenOptions
 }
 
 // ValidEffort reports whether level is a recognized reasoning-effort value

@@ -128,3 +128,37 @@ func modelRows(current string, models []string) (values []string, labels []strin
 	}
 	return values, labels, curIdx
 }
+
+// choiceRows builds a List tab over an optional string parameter: row 0 is
+// "default" (omit the parameter), the offered options follow, and a
+// configured value outside the list is appended so an untouched tab stays a
+// no-op (the modelRows convention). The current row is labeled "(current)".
+func choiceRows(current string, options []string) (values []string, labels []string, curIdx int) {
+	values = append(values, "")
+	for _, o := range options {
+		values = append(values, o)
+	}
+	found := false
+	for _, v := range values {
+		if v == current {
+			found = true
+			break
+		}
+	}
+	if !found {
+		values = append(values, current)
+	}
+	labels = make([]string, len(values))
+	for i, v := range values {
+		if v == "" {
+			labels[i] = "default"
+		} else {
+			labels[i] = v
+		}
+		if v == current {
+			labels[i] += " (current)"
+			curIdx = i
+		}
+	}
+	return values, labels, curIdx
+}

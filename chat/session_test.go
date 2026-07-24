@@ -499,3 +499,32 @@ func TestDeferredSaveBacklog(t *testing.T) {
 		t.Fatalf("title = %q, want keeper", sess.Meta.Title)
 	}
 }
+
+// imageGenStub is a stubProvider that also implements ImageGenTunable, for
+// the imagen-session tuning replay.
+type imageGenStub struct {
+	stubProvider
+	gen provider.ImageGenParams
+}
+
+func (s *imageGenStub) SetImageGenParams(g provider.ImageGenParams) { s.gen = g }
+func (s *imageGenStub) ImageGenParams() provider.ImageGenParams     { return s.gen }
+func (s *imageGenStub) ImageGenOptions() provider.ImageGenOptions   { return provider.ImageGenOptions{} }
+
+// Recorded image-generation params replay on resume; an empty meta leaves the
+// startup (config) values alone.
+func TestApplySessionTuningImageParams(t *testing.T) {
+	meta := sessionMeta{Provider: "stub", AspectRatio: "3:2", NegativePrompt: "blurry"}
+	p := &imageGenStub{}
+	ApplySessionTuning(&Session{Meta: meta}, p, false, false, nil)
+	if p.gen.AspectRatio != "3:2" || p.gen.NegativePrompt != "blurry" || p.gen.ImageSize != "" {
+		t.Fatalf("image params not applied: %+v", p.gen)
+	}
+
+	config := provider.ImageGenParams{AspectRatio: "1:1"}
+	p2 := &imageGenStub{gen: config}
+	ApplySessionTuning(&Session{Meta: sessionMeta{Provider: "stub"}}, p2, false, false, nil)
+	if p2.gen != config {
+		t.Fatalf("empty meta must not clobber config defaults: %+v", p2.gen)
+	}
+}

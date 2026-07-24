@@ -246,6 +246,10 @@ providers:
     negative_prompt: "blurry, watermark"
 ```
 
+The same knobs are adjustable mid-chat: `/model` grows **Aspect**, **Size**,
+and **Negative** tabs for image providers (a "default" row omits the
+parameter), persisted with the session and replayed on resume.
+
 Parameter and editing support varies by backend: relays map the full set
 (seedream's aspect ratio, size, negative prompt, and reference-image editing
 are live-verified), while the official Gemini API hosts generate-only Imagen

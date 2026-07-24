@@ -60,6 +60,16 @@ func (p *ImagenProvider) SetModel(m string) { p.model = m }
 func (p *ImagenProvider) SetImageGenParams(g ImageGenParams) { p.gen = g }
 func (p *ImagenProvider) ImageGenParams() ImageGenParams     { return p.gen }
 
+// ImageGenOptions lists what the Imagen :predict dialect understands across
+// backends (seedream's advertised ratios ∪ official Imagen's); a size tier a
+// given backend lacks is ignored or rejected server-side.
+func (p *ImagenProvider) ImageGenOptions() ImageGenOptions {
+	return ImageGenOptions{
+		AspectRatios: []string{"1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"},
+		ImageSizes:   []string{"1K", "2K", "4K"},
+	}
+}
+
 func (p *ImagenProvider) LastImages() []Attachment { return p.lastImages }
 
 // ListModels reuses the Google listing (relay fallback included) and keeps

@@ -203,7 +203,9 @@ func TestImagenCapabilitySurface(t *testing.T) {
 	if _, ok := p.(ImageOutputProvider); !ok {
 		t.Fatal("imagen must surface LastImages")
 	}
-	if _, ok := p.(ImageGenTunable); !ok {
+	if tun, ok := p.(ImageGenTunable); !ok {
 		t.Fatal("imagen must expose its generation params")
+	} else if o := tun.ImageGenOptions(); len(o.AspectRatios) == 0 || len(o.ImageSizes) == 0 {
+		t.Fatal("imagen must offer choice lists for the /model tabs")
 	}
 }

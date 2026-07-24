@@ -455,6 +455,29 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				panels = append(panels, ui.Panel{Title: "Image", Kind: ui.PanelSwitch, On: imgTun.ImageOutput(),
 					Prompt: "Request image generation (modalities / built-in tool)"})
 			}
+			// Generation-parameter tabs for dedicated image providers: choice
+			// lists come from the provider, "default" omits the parameter.
+			imgGen, imgGenOK := p.(provider.ImageGenTunable)
+			aspectIdx, sizeIdx, negIdx := -1, -1, -1
+			var aspectVals, sizeVals []string
+			if imgGenOK {
+				opts := imgGen.ImageGenOptions()
+				cur := imgGen.ImageGenParams()
+				var rowLabels []string
+				var rowIdx int
+				aspectVals, rowLabels, rowIdx = choiceRows(cur.AspectRatio, opts.AspectRatios)
+				aspectIdx = len(panels)
+				panels = append(panels, ui.Panel{Title: "Aspect", Kind: ui.PanelList, Items: rowLabels, Cursor: rowIdx,
+					Prompt: "Aspect ratio of generated images"})
+				sizeVals, rowLabels, rowIdx = choiceRows(cur.ImageSize, opts.ImageSizes)
+				sizeIdx = len(panels)
+				panels = append(panels, ui.Panel{Title: "Size", Kind: ui.PanelList, Items: rowLabels, Cursor: rowIdx,
+					Prompt: "Output resolution tier"})
+				negIdx = len(panels)
+				panels = append(panels, ui.Panel{Title: "Negative", Kind: ui.PanelInput, Text: cur.NegativePrompt,
+					Placeholder: "what to avoid (empty = none)", InputWidth: 40,
+					Prompt: "Negative prompt (backend support varies)"})
+			}
 			r, serr := u.Tabbed(ctx, ui.TabbedSpec{Panels: panels})
 			if serr != nil || r.Cancelled {
 				continue
@@ -503,6 +526,19 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 						state = "on"
 					}
 					printDim("Image generation: %s", state)
+					changed = true
+				}
+			}
+			if imgGenOK {
+				g := provider.ImageGenParams{
+					AspectRatio:    aspectVals[r.Panels[aspectIdx].Cursor],
+					ImageSize:      sizeVals[r.Panels[sizeIdx].Cursor],
+					NegativePrompt: strings.TrimSpace(r.Panels[negIdx].Text),
+				}
+				if g != imgGen.ImageGenParams() {
+					imgGen.SetImageGenParams(g)
+					sw.SetImageGenParams(g)
+					printDim("Image params: %s", imageGenLabel(g))
 					changed = true
 				}
 			}

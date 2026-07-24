@@ -46,7 +46,12 @@ type sessionMeta struct {
 	ContextWindow int      `json:"context_window,omitempty"`
 	Effort        string   `json:"effort,omitempty"`
 	Image         bool     `json:"image,omitempty"`
-	BaseURL       string   `json:"base_url,omitempty"`
+	// Image-generation defaults of dedicated image providers (type imagen);
+	// empty values are omitted like the other tuning knobs.
+	AspectRatio    string `json:"aspect_ratio,omitempty"`
+	ImageSize      string `json:"image_size,omitempty"`
+	NegativePrompt string `json:"negative_prompt,omitempty"`
+	BaseURL        string `json:"base_url,omitempty"`
 	// Cwd is where the session was started: the project root in agent mode,
 	// the plain working directory otherwise. Labels and any future
 	// reorganisation read it from here — meta is the source of truth, the
@@ -380,6 +385,18 @@ func ApplySessionTuning(sess *Session, p provider.Provider, skipTemperature, ski
 	if it, ok := p.(provider.ImageTunable); ok && sess.Meta.Image {
 		it.SetImageOutput(true)
 	}
+	if ig, ok := p.(provider.ImageGenTunable); ok {
+		g := provider.ImageGenParams{
+			AspectRatio:    sess.Meta.AspectRatio,
+			ImageSize:      sess.Meta.ImageSize,
+			NegativePrompt: sess.Meta.NegativePrompt,
+		}
+		// Only a session that recorded params overrides the config defaults
+		// (the effort convention: absent meta leaves startup values alone).
+		if g != (provider.ImageGenParams{}) {
+			ig.SetImageGenParams(g)
+		}
+	}
 	if !skipWindow && sess.Meta.ContextWindow > 0 && setWindow != nil {
 		setWindow(sess.Meta.ContextWindow)
 	}
@@ -616,6 +633,21 @@ func (w *SessionWriter) SetContextWindow(n int) error {
 		return nil
 	}
 	w.meta.ContextWindow = n
+	if !w.created {
+		return nil
+	}
+	return w.writeMeta()
+}
+
+// SetImageGenParams updates the image-generation defaults in session meta
+// (imagen-type sessions), like the other tuning setters.
+func (w *SessionWriter) SetImageGenParams(g provider.ImageGenParams) error {
+	if w == nil {
+		return nil
+	}
+	w.meta.AspectRatio = g.AspectRatio
+	w.meta.ImageSize = g.ImageSize
+	w.meta.NegativePrompt = g.NegativePrompt
 	if !w.created {
 		return nil
 	}

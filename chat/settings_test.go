@@ -94,3 +94,24 @@ func TestFloatPtrEqual(t *testing.T) {
 		}
 	}
 }
+
+// choiceRows: "default" row first (omit the parameter), options follow, an
+// out-of-list configured value is appended so an untouched tab is a no-op.
+func TestChoiceRows(t *testing.T) {
+	opts := []string{"1:1", "3:2"}
+
+	values, labels, idx := choiceRows("", opts)
+	if len(values) != 3 || values[0] != "" || labels[0] != "default (current)" || idx != 0 {
+		t.Fatalf("default current: %v %v %d", values, labels, idx)
+	}
+
+	values, labels, idx = choiceRows("3:2", opts)
+	if idx != 2 || values[idx] != "3:2" || labels[idx] != "3:2 (current)" {
+		t.Fatalf("listed current: %v %v %d", values, labels, idx)
+	}
+
+	values, labels, idx = choiceRows("21:9", opts)
+	if len(values) != 4 || values[3] != "21:9" || idx != 3 || labels[3] != "21:9 (current)" {
+		t.Fatalf("custom current appended: %v %v %d", values, labels, idx)
+	}
+}
