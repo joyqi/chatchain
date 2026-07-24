@@ -225,11 +225,14 @@ the opt-in — relays like zenmux generate without it.
 Models that ONLY generate images — Doubao Seedream, official Imagen, and the
 other pure image models relay stations host — have no chat endpoint at all;
 they speak Google's Imagen `:predict` protocol instead. The `imagen` provider
-type carries them: every turn is a generation (your message is the prompt),
-and follow-up prompts send the previous result plus any `/file` attachments
-as **reference images**, so "add a robot" edits the picture above. Images
-render and persist exactly like conversational generation, sessions keep the
-whole iteration history, and `-m` does one-shot generation.
+type carries them: **every message is a fresh generation** (your text is the
+prompt; `/file` attachments ride along as reference images for
+image-to-image), matching how stateless image tools conventionally work.
+Editing is explicit: `/edit add a robot` re-sends the last generated image as
+the reference, consecutive `/edit`s chain naturally, and an earlier picture
+can be edited by `/file`-ing its saved path from the session's `images/`
+directory. Images render and persist exactly like conversational generation,
+sessions keep the whole iteration history, and `-m` does one-shot generation.
 
 ```yaml
 providers:
@@ -426,6 +429,7 @@ press Tab to cycle through the completions:
 | Command | Description |
 |---------|-------------|
 | `/file [path]` | Attach a file (image, PDF, or text). With a path, attaches directly. With no path, opens a tabbed selector: "Attached" to remove attachments, "Add" to pick one from a directory browser. |
+| `/edit <prompt>` | Edit the last generated image: re-sends it as this turn's reference image with your prompt; consecutive `/edit`s iterate on the newest result. Dedicated image providers (`type: imagen`) only. |
 | `/session` | Tabbed selector over saved sessions: "Resume" to resume one, "Delete" to multi-select and delete others. |
 | `/model` | Tabbed settings for the current session: "Model" picks the model, "Context" the context window, "Effort" the reasoning effort (`default`, `low`, `medium`, `high`, `xhigh`, `max` — passed to the provider verbatim, so a level the model doesn't support surfaces as an API error and you pick another), "Temperature" a slider (`default` omits the parameter). Enter applies all four tabs; only changed values are announced. |
 | `/compact [hint]` | Summarize older history to free context; optional hint guides what to keep |

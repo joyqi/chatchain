@@ -17,10 +17,11 @@ import (
 // gates hide the effort/temperature/context machinery for these sessions
 // (docs: brain page image-providers).
 //
-// Iterative editing maps onto conversation history: each turn's prompt is the
-// last user message, and its reference images are that message's attachments
-// plus the images of the most recent assistant reply — "add a robot" edits
-// the picture the model just produced.
+// Requests are stateless-per-message, matching the raw API: the prompt is
+// the final user message and the reference images are THAT MESSAGE's image
+// attachments — nothing is mined from earlier history. Editing is explicit:
+// the chat layer's /edit command materializes the previous result into the
+// outgoing message as an attachment (persisted, so resume replays exactly).
 type ImagenProvider struct {
 	model      string
 	client     llm.Google
@@ -98,24 +99,16 @@ func imageCapable(m llm.GModelInfo) bool {
 	return false
 }
 
-// buildRequest derives the predict call from history: the trailing user
-// message is the prompt, its image attachments plus the images of the most
-// recent assistant message become the reference images (in that order,
-// referenceId 1..n).
+// buildRequest derives the predict call from the trailing user message
+// alone: its content is the prompt, its image attachments the reference
+// images (referenceId 1..n). Earlier history is record, not input.
 func (p *ImagenProvider) buildRequest(messages []Message) (*llm.PredictRequest, error) {
 	prompt := ""
 	var refs []Attachment
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "user" {
 			prompt = messages[i].Content
-			refs = append(refs, imageAttachments(messages[i].Attachments)...)
-			// The previous assistant reply's images are the editing canvas.
-			for j := i - 1; j >= 0; j-- {
-				if messages[j].Role == "assistant" {
-					refs = append(refs, imageAttachments(messages[j].Attachments)...)
-					break
-				}
-			}
+			refs = imageAttachments(messages[i].Attachments)
 			break
 		}
 	}

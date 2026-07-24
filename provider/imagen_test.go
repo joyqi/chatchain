@@ -15,9 +15,10 @@ import (
 
 // TestImagenGoldenRequest pins the :predict request wire for the relay
 // (vertex-form) backend: publishers/{vendor}/models path on v1, x-goog-api-key
-// auth, the instances/parameters envelope, and the reference-image derivation
-// from history (this user message's attachments, then the previous assistant
-// reply's images, referenceId 1..n).
+// auth, the instances/parameters envelope, and the stateless-per-message
+// reference derivation — ONLY the final user message's image attachments
+// become referenceImages (earlier history, including the previous assistant
+// image, is record, not input; /edit re-attaches explicitly).
 func TestImagenGoldenRequest(t *testing.T) {
 	var path, key string
 	var got map[string]any
@@ -57,8 +58,8 @@ func TestImagenGoldenRequest(t *testing.T) {
 		t.Fatalf("prompt = %v", inst["prompt"])
 	}
 	refs := inst["referenceImages"].([]any)
-	if len(refs) != 2 {
-		t.Fatalf("referenceImages = %d, want user attachment + previous assistant image", len(refs))
+	if len(refs) != 1 {
+		t.Fatalf("referenceImages = %d, want ONLY this message's image attachment (history is not mined)", len(refs))
 	}
 	r0 := refs[0].(map[string]any)
 	if r0["referenceType"] != "REFERENCE_TYPE_RAW" || r0["referenceId"] != float64(1) {
@@ -66,11 +67,8 @@ func TestImagenGoldenRequest(t *testing.T) {
 	}
 	// The predict envelope's image key is bytesBase64Encoded (NOT inlineData's
 	// "data") — pinned here because the live API silently ignores unknown keys.
-	if img := r0["referenceImage"].(map[string]any); img["bytesBase64Encoded"] != "Ag==" { // []byte{2} — the user's attachment first
+	if img := r0["referenceImage"].(map[string]any); img["bytesBase64Encoded"] != "Ag==" { // []byte{2} — the user's attachment
 		t.Fatalf("ref[0] image = %v", img)
-	}
-	if r1 := refs[1].(map[string]any); r1["referenceId"] != float64(2) {
-		t.Fatalf("ref[1] = %v", r1)
 	}
 	params := got["parameters"].(map[string]any)
 	// sampleCount pinned to 1 (official Imagen would default to 4); the size

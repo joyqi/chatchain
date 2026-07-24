@@ -46,9 +46,11 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 	}
 	// Token accounting (status meter, /compact, auto-compaction, the /model
 	// Context tab) only exists for providers that report usage — a dedicated
-	// image provider has no tokens to count.
+	// image provider has no tokens to count. Image providers conversely get
+	// the /edit command (and bill per call: no automatic retries).
 	_, tokenAware := p.(provider.UsageReporter)
-	setActiveCommands(agent.Enabled, newSession != nil, tokenAware)
+	_, imageProvider := p.(provider.ImageGenTunable)
+	setActiveCommands(agent.Enabled, newSession != nil, tokenAware, imageProvider)
 	sessionScope := ""
 	if agent.Enabled {
 		sessionScope = agent.Root
@@ -86,7 +88,11 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 	if !tokenAware {
 		compactHint = ""
 	}
-	DimStyle.Println("Commands: /file [path], /session, /model" + compactHint + ", /export, /status, /tools, /debug" + saveHint + agentCommandHint(overlay))
+	editHint := ""
+	if imageProvider {
+		editHint = ", /edit"
+	}
+	DimStyle.Println("Commands: /file [path]" + editHint + ", /session, /model" + compactHint + ", /export, /status, /tools, /debug" + saveHint + agentCommandHint(overlay))
 	if id := sw.ID(); id != "" {
 		DimStyle.Printf("Session: %s\n", id)
 	} else if newSession != nil {
@@ -254,7 +260,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 		// Dedicated image providers bill per attempt (a relay 5xx can even
 		// arrive AFTER the upstream generation completed and charged): never
 		// auto-retry — surface the error and let the user decide to respend.
-		if _, billedPerCall := p.(provider.ImageGenTunable); billedPerCall {
+		if imageProvider {
 			return err
 		}
 		for attempt := 1; attempt <= maxRetries; attempt++ {
@@ -367,6 +373,25 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				printDim("Attached: %s (%s, %d bytes)", att.Filename, att.MimeType, len(att.Data))
 			}
 			continue
+		}
+		// /edit (image providers only): edit the LAST generated image. The
+		// canvas is materialized into this message as an attachment — explicit
+		// and persisted, so resume replays the exact reference — and the
+		// stripped prompt falls THROUGH to the message path below (this is the
+		// one command that sends instead of continuing the loop).
+		if imageProvider && (input == "/edit" || strings.HasPrefix(input, "/edit ")) {
+			prompt := strings.TrimSpace(strings.TrimPrefix(input, "/edit"))
+			if prompt == "" {
+				printDim("Usage: /edit <prompt> — edits the last generated image.")
+				continue
+			}
+			refs := lastGeneratedImages(history)
+			if len(refs) == 0 {
+				printDim("Nothing to edit yet — generate an image first.")
+				continue
+			}
+			pendingAttachments = append(pendingAttachments, refs...)
+			input = prompt
 		}
 		if input == "/model" || strings.HasPrefix(input, "/model ") {
 			fctx, fcancel := context.WithCancel(ctx)

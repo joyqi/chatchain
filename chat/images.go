@@ -72,6 +72,27 @@ func hasImages(p any) bool {
 	return ok && len(ip.LastImages()) > 0
 }
 
+// lastGeneratedImages returns the image attachments of the most recent
+// assistant reply that carried any — the canvas the /edit command re-sends
+// as this turn's reference images.
+func lastGeneratedImages(history []provider.Message) []provider.Attachment {
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role != "assistant" {
+			continue
+		}
+		var imgs []provider.Attachment
+		for _, a := range history[i].Attachments {
+			if strings.HasPrefix(a.MimeType, "image/") {
+				imgs = append(imgs, a)
+			}
+		}
+		if len(imgs) > 0 {
+			return imgs
+		}
+	}
+	return nil
+}
+
 // collectImages drains the provider's generated images after a stream round:
 // they are attached to the assistant message (history round-trip + session
 // persistence), saved under ~/.chatchain/images, and rendered into the chat
