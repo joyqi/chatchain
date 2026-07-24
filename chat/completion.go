@@ -8,7 +8,8 @@ var slashCommands = []string{
 }
 
 // agentSlashCommands exist only while agent mode is on; saveSlashCommands
-// only while the session started ephemeral (--no-save / no_save). Inactive
+// only while the session started ephemeral (--no-save / no_save); /compact
+// only for providers with token accounting (compact=false drops it). Inactive
 // conditional commands are fully invisible — no completion, no highlighting,
 // no dispatch (the input falls through as a plain message like any unknown
 // slash text).
@@ -20,8 +21,14 @@ var saveSlashCommands = []string{"/save"}
 var activeSlashCommands = slashCommands
 
 // setActiveCommands activates the conditional command groups.
-func setActiveCommands(agent, save bool) {
-	cmds := append([]string{}, slashCommands...)
+func setActiveCommands(agent, save, compact bool) {
+	cmds := make([]string, 0, len(slashCommands)+2)
+	for _, c := range slashCommands {
+		if c == "/compact" && !compact {
+			continue
+		}
+		cmds = append(cmds, c)
+	}
 	if save {
 		cmds = append(cmds, saveSlashCommands...)
 	}

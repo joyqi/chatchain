@@ -92,7 +92,11 @@ func (p *GoogleProvider) ListModels(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list models: %w", err)
 	}
-	return models, nil
+	names := make([]string, len(models))
+	for i, m := range models {
+		names[i] = m.Name
+	}
+	return names, nil
 }
 
 // sanitizeContent drops data-less parts before content is replayed to the

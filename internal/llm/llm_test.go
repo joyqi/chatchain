@@ -248,7 +248,7 @@ func TestGoogleVertexModelsFallback(t *testing.T) {
 			defer srv.Close()
 			g := Google{Client: New(srv.URL, srv.Client()), Vertex: true, Version: "v1"}
 			names, err := g.Models(context.Background())
-			if err != nil || len(names) != 2 || names[0] != "bytedance/doubao" {
+			if err != nil || len(names) != 2 || names[0].Name != "bytedance/doubao" {
 				t.Fatalf("fallback failed: %v %v", names, err)
 			}
 		})
@@ -265,7 +265,7 @@ func TestGoogleVertexModelsFallback(t *testing.T) {
 	defer srv.Close()
 	g := Google{Client: New(srv.URL, srv.Client()), Vertex: true, Version: "v1"}
 	names, err := g.Models(context.Background())
-	if err != nil || len(names) != 1 || names[0] != "publishers/google/models/gemini-3-pro" {
+	if err != nil || len(names) != 1 || names[0].Name != "publishers/google/models/gemini-3-pro" {
 		t.Fatalf("official path result = %v %v", names, err)
 	}
 }

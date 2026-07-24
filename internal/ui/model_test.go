@@ -904,6 +904,9 @@ func TestListPagingParity(t *testing.T) {
 // last remaining composer bounce.
 func TestBusyInStatusLine(t *testing.T) {
 	m := newTestModel(t)
+	// Give the status row context figures — the ctx segment hides without
+	// them (token-less providers), and this test locates the row by it.
+	m = step(t, m, statusMsg(StatusData{Model: "gpt-4o", CtxUsed: 1000, CtxWindow: 128000}))
 	before := content(m)
 	rowsBefore := strings.Count(before, "\n")
 
@@ -1591,5 +1594,19 @@ func TestTabbedSwitch(t *testing.T) {
 	r := <-reply
 	if r.Cancelled || !r.Panels[0].On {
 		t.Fatalf("commit = %+v, want On=true", r)
+	}
+}
+
+// A provider without token accounting pushes StatusData with zero context
+// figures — the ctx segment must vanish, not read "ctx 0 / 0".
+func TestStatusLineHidesCtxWithoutTokens(t *testing.T) {
+	m := newTestModel(t)
+	m = step(t, m, statusMsg(StatusData{Model: "seedream-5.0-pro"}))
+	line := stripSGR(content(m))
+	if !strings.Contains(line, "seedream-5.0-pro") {
+		t.Fatalf("model missing from status:\n%s", line)
+	}
+	if strings.Contains(line, "ctx") {
+		t.Fatalf("token-less status must hide the ctx segment:\n%s", line)
 	}
 }

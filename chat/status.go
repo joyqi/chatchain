@@ -2,11 +2,30 @@ package chat
 
 import (
 	"fmt"
+	"strings"
 
 	mcpmgr "chatchain/mcp"
 	"chatchain/provider"
 	"chatchain/tool"
 )
+
+// imageGenLabel renders an image provider's generation defaults for /status.
+func imageGenLabel(g provider.ImageGenParams) string {
+	var parts []string
+	if g.AspectRatio != "" {
+		parts = append(parts, "aspect "+g.AspectRatio)
+	}
+	if g.ImageSize != "" {
+		parts = append(parts, "size "+g.ImageSize)
+	}
+	if g.NegativePrompt != "" {
+		parts = append(parts, "negative "+truncateRunes(g.NegativePrompt, 24))
+	}
+	if len(parts) == 0 {
+		return "default"
+	}
+	return strings.Join(parts, " · ")
+}
 
 // statusItem is one labeled row of the /status panel. Name is the bold left
 // column, Value the right column.
@@ -73,10 +92,20 @@ func statusLines(p provider.Provider, b *contextBudget, history []provider.Messa
 			statusItem{"Effort", effortLabel(t.Effort())},
 		)
 	}
+	// Token rows only for providers that account tokens; image-generation
+	// defaults only for dedicated image providers. Same idiom as the tuning
+	// knobs above: the assertion is the capability.
+	if _, ok := p.(provider.UsageReporter); ok {
+		items = append(items,
+			statusItem{"Context", fmt.Sprintf("%d / %d tokens (%d%%)", b.used, b.window, pct)},
+			statusItem{"Token count", source},
+			statusItem{"Last turn", last},
+		)
+	}
+	if g, ok := p.(provider.ImageGenTunable); ok {
+		items = append(items, statusItem{"Image params", imageGenLabel(g.ImageGenParams())})
+	}
 	items = append(items,
-		statusItem{"Context", fmt.Sprintf("%d / %d tokens (%d%%)", b.used, b.window, pct)},
-		statusItem{"Token count", source},
-		statusItem{"Last turn", last},
 		statusItem{"Messages", fmt.Sprintf("%d in context", len(history))},
 	)
 	if pending > 0 {

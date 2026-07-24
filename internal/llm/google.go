@@ -191,25 +191,36 @@ func (g Google) StreamGenerate(ctx context.Context, model string, req *GenerateR
 	return &GoogleStream{sse: sse}, nil
 }
 
-// Models lists model names (paginated; sorted). Gemini lists /models. Vertex
-// tries the official publisher-model listing first, then falls back to the
-// Gemini-style /v1beta/models that vertexai-compatible relay stations expose
-// (probed: zenmux serves ONLY that form; the official path 404s there or
-// redirects to a landing page, which surfaces as a decode error). Response
+// GModelInfo is one listed model plus the capability metadata backends
+// attach, when they do: official Gemini fills SupportedGenerationMethods
+// (e.g. "generateContent", "predict"), relay stations (zenmux-style) fill
+// OutputModalities (e.g. "text", "image"). Either — or both — may be empty;
+// callers must treat absence as "unknown", not "unsupported".
+type GModelInfo struct {
+	Name    string
+	Methods []string // supportedGenerationMethods
+	Output  []string // outputModalities
+}
+
+// Models lists models (paginated; sorted by name). Gemini lists /models.
+// Vertex tries the official publisher-model listing first, then falls back to
+// the Gemini-style /v1beta/models that vertexai-compatible relay stations
+// expose (probed: zenmux serves ONLY that form; the official path 404s there
+// or redirects to a landing page, which surfaces as a decode error). Response
 // keys accepted: models | publisherModels | data(id) — relays vary.
-func (g Google) Models(ctx context.Context) ([]string, error) {
+func (g Google) Models(ctx context.Context) ([]GModelInfo, error) {
 	base := "/" + g.Version + "/models"
 	if g.Vertex {
 		base = "/" + g.Version + "/publishers/google/models"
 	}
-	names, err := g.listModels(ctx, base)
+	models, err := g.listModels(ctx, base)
 	if g.Vertex && err != nil && isListFallbackErr(err) {
 		var ferr error
-		if names, ferr = g.listModels(ctx, "/v1beta/models"); ferr == nil {
-			return names, nil
+		if models, ferr = g.listModels(ctx, "/v1beta/models"); ferr == nil {
+			return models, nil
 		}
 	}
-	return names, err
+	return models, err
 }
 
 // isListFallbackErr reports errors that mean "this endpoint shape does not
@@ -224,8 +235,14 @@ func isListFallbackErr(err error) bool {
 	return errors.As(err, &je)
 }
 
-func (g Google) listModels(ctx context.Context, base string) ([]string, error) {
-	var names []string
+func (g Google) listModels(ctx context.Context, base string) ([]GModelInfo, error) {
+	type entry struct {
+		Name    string   `json:"name"`
+		ID      string   `json:"id"` // openai-style relays
+		Methods []string `json:"supportedGenerationMethods"`
+		Output  []string `json:"outputModalities"`
+	}
+	var models []GModelInfo
 	pageToken := ""
 	for {
 		path := base
@@ -233,30 +250,98 @@ func (g Google) listModels(ctx context.Context, base string) ([]string, error) {
 			path += "?pageToken=" + url.QueryEscape(pageToken)
 		}
 		var out struct {
-			Models          []struct{ Name string } `json:"models"`
-			PublisherModels []struct{ Name string } `json:"publisherModels"`
-			Data            []struct{ ID string }   `json:"data"` // openai-style relays
-			NextPageToken   string                  `json:"nextPageToken"`
+			Models          []entry `json:"models"`
+			PublisherModels []entry `json:"publisherModels"`
+			Data            []entry `json:"data"`
+			NextPageToken   string  `json:"nextPageToken"`
 		}
 		if err := g.Do(ctx, "GET", path, nil, &out); err != nil {
 			return nil, err
 		}
-		for _, m := range out.Models {
-			names = append(names, m.Name)
-		}
-		for _, m := range out.PublisherModels {
-			names = append(names, m.Name)
-		}
-		for _, m := range out.Data {
-			names = append(names, m.ID)
+		for _, list := range [][]entry{out.Models, out.PublisherModels, out.Data} {
+			for _, m := range list {
+				name := m.Name
+				if name == "" {
+					name = m.ID
+				}
+				models = append(models, GModelInfo{Name: name, Methods: m.Methods, Output: m.Output})
+			}
 		}
 		if out.NextPageToken == "" {
 			break
 		}
 		pageToken = out.NextPageToken
 	}
-	sort.Strings(names)
-	return names, nil
+	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
+	return models, nil
+}
+
+// --- Imagen :predict dialect (genai generate_images / edit_image parity) ---
+// The dedicated image-generation endpoint: same model-path resolution and
+// auth as generateContent, different envelope (instances/parameters in,
+// predictions out). Official Imagen models and relay-hosted image models
+// (zenmux's seedream, qwen-image, …) speak exactly this.
+
+// GImageBlob is the image payload of the predict envelope. NOTE: the key is
+// "bytesBase64Encoded" (matching the predictions output), NOT the
+// generateContent inlineData form's "data" — verified live against zenmux.
+type GImageBlob struct {
+	BytesBase64Encoded []byte `json:"bytesBase64Encoded,omitempty"`
+	MimeType           string `json:"mimeType,omitempty"`
+}
+
+// GReferenceImage is one reference image for image+text→image editing — the
+// genai RawReferenceImage wire form.
+type GReferenceImage struct {
+	ReferenceType  string      `json:"referenceType,omitempty"` // "REFERENCE_TYPE_RAW"
+	ReferenceID    int         `json:"referenceId,omitempty"`
+	ReferenceImage *GImageBlob `json:"referenceImage,omitempty"`
+}
+
+type GImageInstance struct {
+	Prompt          string             `json:"prompt"`
+	ReferenceImages []*GReferenceImage `json:"referenceImages,omitempty"`
+}
+
+// GImageParams carries the generation knobs chatchain exposes; zero values
+// are omitted so the server default applies. Keys follow what the genai SDK
+// converters EMIT on the wire — notably sampleImageSize, not the SDK-level
+// config name imageSize.
+type GImageParams struct {
+	SampleCount    int    `json:"sampleCount,omitempty"`
+	AspectRatio    string `json:"aspectRatio,omitempty"`
+	NegativePrompt string `json:"negativePrompt,omitempty"`
+	ImageSize      string `json:"sampleImageSize,omitempty"`
+}
+
+type PredictRequest struct {
+	Instances  []*GImageInstance `json:"instances"`
+	Parameters *GImageParams     `json:"parameters,omitempty"`
+}
+
+// GPrediction is one generated image. A safety-filtered candidate carries
+// RAIFilteredReason instead of bytes.
+type GPrediction struct {
+	BytesBase64Encoded []byte `json:"bytesBase64Encoded,omitempty"`
+	MimeType           string `json:"mimeType,omitempty"`
+	RAIFilteredReason  string `json:"raiFilteredReason,omitempty"`
+}
+
+type PredictResponse struct {
+	Predictions []*GPrediction `json:"predictions"`
+}
+
+// Predict is the unary :predict call (no streaming variant exists).
+func (g Google) Predict(ctx context.Context, model string, req *PredictRequest) (*PredictResponse, error) {
+	path, err := g.modelPath(model)
+	if err != nil {
+		return nil, err
+	}
+	var out PredictResponse
+	if err := g.Do(ctx, "POST", path+":predict", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // GoogleStream yields GenerateResponse events until io.EOF.

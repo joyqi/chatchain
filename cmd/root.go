@@ -38,7 +38,7 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "chatchain [openai|anthropic|gemini|vertexai|openresponses]",
+	Use:   "chatchain [openai|anthropic|gemini|vertexai|openresponses|imagen]",
 	Short: "A lightweight cross-platform AI chat CLI",
 	Args:  cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -120,6 +120,8 @@ var rootCmd = &cobra.Command{
 		if pc.Image {
 			if tun, ok := p.(provider.ImageTunable); ok {
 				tun.SetImageOutput(true)
+			} else if p.Type() == "imagen" {
+				fmt.Fprintf(os.Stderr, "Warning: `image: true` is redundant for provider type imagen (it always generates images)\n")
 			}
 		}
 		if pc.Effort != "" {
@@ -128,6 +130,24 @@ var rootCmd = &cobra.Command{
 			}
 			if tun, ok := p.(provider.Tunable); ok {
 				tun.SetEffort(pc.Effort)
+			} else {
+				fmt.Fprintf(os.Stderr, "Warning: `effort` does not apply to provider type %s (ignored)\n", p.Type())
+			}
+		}
+		if temp != nil {
+			if _, ok := p.(provider.Tunable); !ok {
+				fmt.Fprintf(os.Stderr, "Warning: --temperature does not apply to provider type %s (ignored)\n", p.Type())
+			}
+		}
+		if g := (provider.ImageGenParams{
+			AspectRatio:    pc.AspectRatio,
+			ImageSize:      pc.ImageSize,
+			NegativePrompt: pc.NegativePrompt,
+		}); g != (provider.ImageGenParams{}) {
+			if tun, ok := p.(provider.ImageGenTunable); ok {
+				tun.SetImageGenParams(g)
+			} else {
+				fmt.Fprintf(os.Stderr, "Warning: aspect_ratio/image_size/negative_prompt apply only to image providers (ignored for type %s)\n", p.Type())
 			}
 		}
 
@@ -141,6 +161,11 @@ var rootCmd = &cobra.Command{
 		mcpConfigs, mcpErr := buildMCPConfigs(cfg, pc)
 		if mcpErr != nil {
 			return mcpErr
+		}
+		// Explicitly configured tools/MCP servers can never be called by a
+		// provider without tool calling — say so instead of listing dead tools.
+		if _, ok := p.(provider.ToolProvider); !ok && (len(pc.Tools) > 0 || len(mcpConfigs) > 0) {
+			fmt.Fprintf(os.Stderr, "Warning: tools/mcp_servers do not apply to provider type %s (no tool calling)\n", p.Type())
 		}
 		// MCP connection logging was tied to the removed -v flag; keep it off.
 		var logf mcpmgr.LogFunc
@@ -304,6 +329,11 @@ var rootCmd = &cobra.Command{
 			}
 			contextWindow = n
 		}
+		if contextWindow > 0 {
+			if _, ok := p.(provider.UsageReporter); !ok {
+				fmt.Fprintf(os.Stderr, "Warning: context window does not apply to provider type %s (no token accounting)\n", p.Type())
+			}
+		}
 
 		// MCP connects in the background from inside chat.Run (which owns the
 		// prompt and reports each server as it resolves); the dispatcher reads the
@@ -433,6 +463,7 @@ var providerEnvKeys = map[string]string{
 	"gemini":        "GOOGLE_API_KEY",
 	"vertexai":      "GOOGLE_API_KEY",
 	"openresponses": "OPENAI_API_KEY",
+	"imagen":        "GOOGLE_API_KEY", // official Gemini API is its default target
 }
 
 func providerEnvKey(providerType string) string {

@@ -920,9 +920,14 @@ func (m *model) statusLine() string {
 	if m.status.Estimated {
 		approx = "≈"
 	}
-	ctx := fmt.Sprintf("ctx %s%s / %s", approx, formatTokens(m.status.CtxUsed), formatTokens(m.status.CtxWindow))
-	if m.status.CtxWindow > 0 {
-		ctx += fmt.Sprintf(" (%d%%)", m.status.CtxUsed*100/m.status.CtxWindow)
+	// No context figures at all (a provider without token accounting): the
+	// segment disappears rather than reading "ctx 0 / 0".
+	ctx := ""
+	if m.status.CtxWindow > 0 || m.status.CtxUsed > 0 {
+		ctx = fmt.Sprintf("ctx %s%s / %s", approx, formatTokens(m.status.CtxUsed), formatTokens(m.status.CtxWindow))
+		if m.status.CtxWindow > 0 {
+			ctx += fmt.Sprintf(" (%d%%)", m.status.CtxUsed*100/m.status.CtxWindow)
+		}
 	}
 
 	frame, tail := "", ""
@@ -940,15 +945,20 @@ func (m *model) statusLine() string {
 		}
 	}
 
-	plain := "  " + model + " · " + ctx
+	plain := "  " + model
+	if ctx != "" {
+		plain += " · " + ctx
+	}
 	if m.busy != nil {
 		plain += " · " + frame + tail
 	}
 	if textwidth.StringWidth(plain) > m.width {
 		return faint + ansi.Truncate(plain, maxInt(4, m.width), "…") + sgrReset
 	}
-	out := "  " + cyan + faint + model + sgrReset + faint + " · " + sgrReset +
-		green + faint + ctx + sgrReset
+	out := "  " + cyan + faint + model + sgrReset
+	if ctx != "" {
+		out += faint + " · " + sgrReset + green + faint + ctx + sgrReset
+	}
 	if m.busy != nil {
 		out += faint + " · " + sgrReset + cyan + frame + sgrReset + faint + tail + sgrReset
 	}

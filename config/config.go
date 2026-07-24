@@ -31,6 +31,13 @@ type ProviderConfig struct {
 	// openresponses advertises the image_generation built-in tool. The
 	// /model surface can flip it at runtime.
 	Image bool `yaml:"image"`
+	// AspectRatio / ImageSize / NegativePrompt are generation defaults for
+	// dedicated image providers (type imagen): passed through verbatim (e.g.
+	// "3:2", "2K"), "" omits the parameter so the server default applies.
+	// Backend support varies — unsupported keys are ignored server-side.
+	AspectRatio    string `yaml:"aspect_ratio"`
+	ImageSize      string `yaml:"image_size"`
+	NegativePrompt string `yaml:"negative_prompt"`
 	// NoSave starts sessions ephemeral (the --no-save behavior): nothing
 	// persists unless the user runs /save mid-chat. --resume overrides it.
 	NoSave bool `yaml:"no_save"`

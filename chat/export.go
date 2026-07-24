@@ -2,6 +2,7 @@ package chat
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -224,9 +225,11 @@ func buildExportMarkdown(meta exportMeta, msgs []provider.Message) string {
 		for _, m := range r.replies {
 			toolCalls += len(m.ToolCalls)
 		}
+		// Image providers reply with attachments and no text — those turns
+		// still have an Assistant side to export.
 		hasReply := toolCalls > 0
 		for _, m := range r.replies {
-			if m.Role == "assistant" && strings.TrimSpace(m.Content) != "" {
+			if m.Role == "assistant" && (strings.TrimSpace(m.Content) != "" || len(m.Attachments) > 0) {
 				hasReply = true
 			}
 		}
@@ -244,6 +247,9 @@ func buildExportMarkdown(meta exportMeta, msgs []provider.Message) string {
 			}
 			if c := strings.TrimSpace(m.Content); c != "" {
 				blocks = append(blocks, c)
+			}
+			for _, att := range m.Attachments {
+				blocks = append(blocks, "(image: "+att.Filename+")")
 			}
 			if m.Interrupted {
 				blocks = append(blocks, "(interrupted)")
@@ -498,6 +504,17 @@ func buildExportHTML(meta exportMeta, msgs []provider.Message) (string, error) {
 					fmt.Fprintf(&b, "<p class=\"tool-label\">%s</p><pre>%s</pre>\n", label, html.EscapeString(res.Content))
 				}
 				b.WriteString("</details>\n")
+			}
+			// Generated images embed as data URIs — the export stays a single
+			// self-contained file even after the session bundle is deleted.
+			for _, att := range m.Attachments {
+				if strings.HasPrefix(att.MimeType, "image/") {
+					fmt.Fprintf(&b, "<img alt=\"%s\" src=\"data:%s;base64,%s\">\n",
+						html.EscapeString(att.Filename), html.EscapeString(att.MimeType),
+						base64.StdEncoding.EncodeToString(att.Data))
+				} else {
+					fmt.Fprintf(&b, "<p class=\"attachment\">(attachment: %s)</p>\n", html.EscapeString(att.Filename))
+				}
 			}
 			if m.Interrupted {
 				b.WriteString("<p class=\"interrupted\">(interrupted)</p>\n")

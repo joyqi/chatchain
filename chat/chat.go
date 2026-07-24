@@ -54,7 +54,9 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(w, reply)
+		if reply != "" {
+			fmt.Fprintln(w, reply)
+		}
 		SaveImagesQuiet(tp, w)
 		return nil
 	}
@@ -63,7 +65,9 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(w, reply)
+	if reply != "" {
+		fmt.Fprintln(w, reply)
+	}
 	SaveImagesQuiet(p, w)
 	return nil
 }
@@ -82,6 +86,12 @@ func isRetryable(err error) bool {
 	if err == io.EOF || errors.Is(err, errInterrupted) || errors.Is(err, errToolRoundsExceeded) || errors.Is(err, llm.ErrNoEvents) {
 		return false
 	}
+	// Provider-declared deterministic failures (safety filters, malformed
+	// turns): a retry would repeat the same billed call for the same result.
+	var pe *provider.PermanentError
+	if errors.As(err, &pe) {
+		return false
+	}
 	var se *llm.StatusError
 	if errors.As(err, &se) {
 		return se.Status == 429 || se.Status >= 500
@@ -97,6 +107,27 @@ func isRetryable(err error) bool {
 }
 
 const userPrompt = "❯ "
+
+// titleSeeds scans history for the async-title inputs: the first user text,
+// the first assistant TEXT reply, and whether an assistant instead replied
+// with images only (dedicated image providers). In the image-only case there
+// is no text for an LLM to summarize — and asking this provider would paint,
+// not title — so the caller titles from the prompt alone.
+func titleSeeds(history []provider.Message) (firstUser, firstAssistant string, imageReply bool) {
+	for _, m := range history {
+		if firstUser == "" && m.Role == "user" {
+			firstUser = m.Content
+		}
+		if firstAssistant == "" && m.Role == "assistant" {
+			if m.Content != "" {
+				firstAssistant = m.Content
+			} else if len(m.Attachments) > 0 {
+				imageReply = true
+			}
+		}
+	}
+	return firstUser, firstAssistant, imageReply
+}
 
 func generateTitleText(ctx context.Context, p provider.Provider, firstUser, firstAssistant string, sw *SessionWriter) string {
 	prompt := fmt.Sprintf("Write a short title (at most 6 words, no quotes, no trailing punctuation) for the conversation below, in the same language the conversation uses. Return only the title itself:\n\nUser: %s\n\nAssistant: %s",

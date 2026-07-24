@@ -44,7 +44,11 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 		}
 		overlay = agents.NewOverlay(agent.Root, cwd)
 	}
-	setActiveCommands(agent.Enabled, newSession != nil)
+	// Token accounting (status meter, /compact, auto-compaction, the /model
+	// Context tab) only exists for providers that report usage — a dedicated
+	// image provider has no tokens to count.
+	_, tokenAware := p.(provider.UsageReporter)
+	setActiveCommands(agent.Enabled, newSession != nil, tokenAware)
 	sessionScope := ""
 	if agent.Enabled {
 		sessionScope = agent.Root
@@ -67,7 +71,9 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 	if len(history) > 0 {
 		budget.update(p, history)
 	}
-	if sw != nil && !sw.created {
+	// Don't stamp a context-window into the meta of sessions whose provider
+	// has no token accounting at all.
+	if tokenAware && sw != nil && !sw.created {
 		sw.SetContextWindow(budget.window)
 	}
 
@@ -76,7 +82,11 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 	if newSession != nil {
 		saveHint = ", /save"
 	}
-	DimStyle.Println("Commands: /file [path], /session, /model, /compact, /export, /status, /tools, /debug" + saveHint + agentCommandHint(overlay))
+	compactHint := ", /compact"
+	if !tokenAware {
+		compactHint = ""
+	}
+	DimStyle.Println("Commands: /file [path], /session, /model" + compactHint + ", /export, /status, /tools, /debug" + saveHint + agentCommandHint(overlay))
 	if id := sw.ID(); id != "" {
 		DimStyle.Printf("Session: %s\n", id)
 	} else if newSession != nil {
@@ -120,7 +130,11 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 	u.SetSlashCommands(activeSlashCommands)
 
 	pushStatus := func() {
-		u.SetStatus(ui.StatusData{Model: statusModelLabel(p.Model(), p.Type()), CtxUsed: budget.used, CtxWindow: budget.window, Estimated: !budget.haveUsage})
+		sd := ui.StatusData{Model: statusModelLabel(p.Model(), p.Type())}
+		if tokenAware {
+			sd.CtxUsed, sd.CtxWindow, sd.Estimated = budget.used, budget.window, !budget.haveUsage
+		}
+		u.SetStatus(sd)
 	}
 	pushStatus()
 
@@ -160,16 +174,21 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 		if titled || sw == nil {
 			return
 		}
-		var firstUser, firstAssistant string
-		for _, m := range history {
-			if firstUser == "" && m.Role == "user" {
-				firstUser = m.Content
-			}
-			if firstAssistant == "" && m.Role == "assistant" && m.Content != "" {
-				firstAssistant = m.Content
-			}
+		firstUser, firstAssistant, imageReply := titleSeeds(history)
+		if firstUser == "" {
+			return
 		}
-		if firstUser == "" || firstAssistant == "" {
+		if firstAssistant == "" {
+			if !imageReply {
+				return
+			}
+			// Image-only reply: the placeholder from the prompt is the final
+			// title — an LLM pass through this provider would paint a picture,
+			// not summarize a chat.
+			titled = true
+			placeholder := truncateRunes(strings.TrimSpace(firstUser), 40)
+			sw.SetTitle(placeholder)
+			u.SetTitle(placeholder)
 			return
 		}
 		titled = true
@@ -230,6 +249,12 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 	retry := func(fn func() error) error {
 		err := fn()
 		if err == nil || !isRetryable(err) {
+			return err
+		}
+		// Dedicated image providers bill per attempt (a relay 5xx can even
+		// arrive AFTER the upstream generation completed and charged): never
+		// auto-retry — surface the error and let the user decide to respend.
+		if _, billedPerCall := p.(provider.ImageGenTunable); billedPerCall {
 			return err
 		}
 		for attempt := 1; attempt <= maxRetries; attempt++ {
@@ -370,29 +395,38 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				modelValues, modelLabels, modelIdx = modelRows(p.Model(), models)
 				modelPanel = ui.Panel{Title: "Model", Kind: ui.PanelList, Items: modelLabels, Cursor: modelIdx}
 			}
-			windows, windowLabels, windowIdx := contextWindowRows(budget.window)
+			// Tabs assemble by capability: only panels the provider can act on
+			// appear, and the commit below reads them back by recorded index.
 			tun, tunable := p.(provider.Tunable)
-			curEffort := ""
-			var curTemp *float64
+			imgTun, imgOK := p.(provider.ImageTunable)
+			panels := []ui.Panel{modelPanel}
+			ctxIdx, effortIdx, tempIdx, imgIdx := -1, -1, -1, -1
+			var windows []int
+			var levels []string
+			if tokenAware {
+				var windowLabels []string
+				var windowIdx int
+				windows, windowLabels, windowIdx = contextWindowRows(budget.window)
+				ctxIdx = len(panels)
+				panels = append(panels, ui.Panel{Title: "Context", Kind: ui.PanelList, Items: windowLabels, Cursor: windowIdx})
+			}
 			if tunable {
-				curEffort = tun.Effort()
-				curTemp = tun.Temperature()
-			}
-			levels, levelLabels, levelIdx := effortRows(curEffort)
-			maxTemp := 2.0
-			if p.Type() == "anthropic" {
-				maxTemp = 1.0
-			}
-			panels := []ui.Panel{
-				modelPanel,
-				{Title: "Context", Kind: ui.PanelList, Items: windowLabels, Cursor: windowIdx},
-				{Title: "Effort", Kind: ui.PanelList, Items: levelLabels, Cursor: levelIdx},
-				{Title: "Temperature", Kind: ui.PanelSlider, Min: 0, Max: maxTemp, Step: 0.1, Value: curTemp},
+				var levelLabels []string
+				var levelIdx int
+				levels, levelLabels, levelIdx = effortRows(tun.Effort())
+				effortIdx = len(panels)
+				panels = append(panels, ui.Panel{Title: "Effort", Kind: ui.PanelList, Items: levelLabels, Cursor: levelIdx})
+				maxTemp := 2.0
+				if p.Type() == "anthropic" {
+					maxTemp = 1.0
+				}
+				tempIdx = len(panels)
+				panels = append(panels, ui.Panel{Title: "Temperature", Kind: ui.PanelSlider, Min: 0, Max: maxTemp, Step: 0.1, Value: tun.Temperature()})
 			}
 			// The image-generation switch: only for providers whose request
 			// builders consult it (google modalities, responses builtin tool).
-			imgTun, imgOK := p.(provider.ImageTunable)
 			if imgOK {
+				imgIdx = len(panels)
 				panels = append(panels, ui.Panel{Title: "Image", Kind: ui.PanelSwitch, On: imgTun.ImageOutput(),
 					Prompt: "Request image generation (modalities / built-in tool)"})
 			}
@@ -413,20 +447,22 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				printDim("Model switched to %s", v)
 				changed = true
 			}
-			if v := windows[r.Panels[1].Cursor]; v != budget.window {
-				budget.setWindow(v)
-				sw.SetContextWindow(v)
-				printDim("Context window: %s", budget.status())
-				changed = true
+			if ctxIdx >= 0 {
+				if v := windows[r.Panels[ctxIdx].Cursor]; v != budget.window {
+					budget.setWindow(v)
+					sw.SetContextWindow(v)
+					printDim("Context window: %s", budget.status())
+					changed = true
+				}
 			}
 			if tunable {
-				if v := levels[r.Panels[2].Cursor]; v != tun.Effort() {
+				if v := levels[r.Panels[effortIdx].Cursor]; v != tun.Effort() {
 					tun.SetEffort(v)
 					sw.SetEffort(v)
 					printDim("Effort: %s", effortLabel(v))
 					changed = true
 				}
-				if v := r.Panels[3].Value; !floatPtrEqual(v, tun.Temperature()) {
+				if v := r.Panels[tempIdx].Value; !floatPtrEqual(v, tun.Temperature()) {
 					tun.SetTemperature(v)
 					sw.SetTemperature(v)
 					printDim("Temperature: %s", formatTemperature(v))
@@ -434,7 +470,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				}
 			}
 			if imgOK {
-				if on := r.Panels[4].On; on != imgTun.ImageOutput() {
+				if on := r.Panels[imgIdx].On; on != imgTun.ImageOutput() {
 					imgTun.SetImageOutput(on)
 					sw.SetImage(on)
 					state := "off"
@@ -530,7 +566,9 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			pushStatus()
 			continue
 		}
-		if input == "/compact" || strings.HasPrefix(input, "/compact ") {
+		// /compact exists only for token-accounting providers — inactive
+		// conditional commands fall through as plain text, like /save //skills.
+		if tokenAware && (input == "/compact" || strings.HasPrefix(input, "/compact ")) {
 			hint := strings.TrimSpace(strings.TrimPrefix(input, "/compact"))
 			compactNow(hint, true)
 			continue
@@ -678,7 +716,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 		for _, att := range pendingAttachments {
 			extra += len(att.Data) / 1000
 		}
-		if budget.shouldOfferCompact(extra, compactDeclined) {
+		if tokenAware && budget.shouldOfferCompact(extra, compactDeclined) {
 			ok, cerr := u.Confirm(ctx, fmt.Sprintf("Context %s — compact before sending?", budget.status()), "Compact now", "Not now")
 			if cerr == nil && ok {
 				compactNow("", false)

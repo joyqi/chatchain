@@ -220,6 +220,46 @@ tool (works with gpt-5-family models); on Google it adds
 `responseModalities: ["TEXT","IMAGE"]` for official-API models that require
 the opt-in — relays like zenmux generate without it.
 
+#### Dedicated image models — the `imagen` provider type
+
+Models that ONLY generate images — Doubao Seedream, official Imagen, and the
+other pure image models relay stations host — have no chat endpoint at all;
+they speak Google's Imagen `:predict` protocol instead. The `imagen` provider
+type carries them: every turn is a generation (your message is the prompt),
+and follow-up prompts send the previous result plus any `/file` attachments
+as **reference images**, so "add a robot" edits the picture above. Images
+render and persist exactly like conversational generation, sessions keep the
+whole iteration history, and `-m` does one-shot generation.
+
+```yaml
+providers:
+  seedream:
+    type: imagen
+    key: ${env:ZENMUX_API_KEY}
+    url: https://zenmux.ai/api/vertex-ai  # omit for the official Gemini API
+    model: bytedance/doubao-seedream-5.0-pro
+    aspect_ratio: "3:2"                   # optional generation defaults,
+    image_size: "2K"                      # passed through verbatim
+    negative_prompt: "blurry, watermark"
+```
+
+Parameter and editing support varies by backend: relays map the full set
+(seedream's aspect ratio, size, negative prompt, and reference-image editing
+are live-verified), while the official Gemini API hosts generate-only Imagen
+models that ignore reference images and the negative prompt — unknown
+parameters are dropped server-side, so a knob with no visible effect means
+that backend doesn't support it. A custom `url` is addressed in the vertex
+`publishers/{vendor}/models` form (the relay convention); omitting `url`
+targets the official Gemini API form. Generation is billed per call, so
+failures are never auto-retried — an error surfaces immediately and you
+decide whether to spend again.
+
+These models have no tokens, no temperature, and no reasoning, so the
+corresponding machinery disappears for such sessions: `/model` shows no
+Context/Effort/Temperature tabs, the status bar drops its context meter, and
+`/compact` does not apply. `/model` still picks models — filtered to
+image-capable ones when the server provides capability metadata.
+
 ### Built-in Toolsets
 
 Besides MCP servers, ChatChain ships built-in tools grouped into named

@@ -101,6 +101,31 @@ type ImageOutputProvider interface {
 	LastImages() []Attachment
 }
 
+// PermanentError wraps a provider error that retrying cannot fix — a
+// safety-filtered prompt, a malformed turn. The chat layer's retry loop must
+// surface these immediately: for image providers every retry is a fresh
+// BILLED generation that fails identically.
+type PermanentError struct{ Err error }
+
+func (e *PermanentError) Error() string { return e.Err.Error() }
+func (e *PermanentError) Unwrap() error { return e.Err }
+
+// ImageGenParams are the generation knobs of dedicated image providers
+// (imagen / images). Zero values mean "omit — server default".
+type ImageGenParams struct {
+	AspectRatio    string // e.g. "1:1", "3:2", "16:9"
+	ImageSize      string // e.g. "1K", "2K" (imagen) — dialect-specific
+	NegativePrompt string
+}
+
+// ImageGenTunable is an optional interface: dedicated image providers expose
+// their generation parameters for the config defaults at startup and the
+// /model tabs at runtime (P2). The assertion IS the capability check.
+type ImageGenTunable interface {
+	SetImageGenParams(ImageGenParams)
+	ImageGenParams() ImageGenParams
+}
+
 // ValidEffort reports whether level is a recognized reasoning-effort value
 // ("" = provider default). The canonical list — the /model Effort tab and the
 // config's effort key both validate against it.
@@ -147,7 +172,11 @@ func New(providerType, apiKey, baseURL, model string, temperature *float64, http
 		return NewOpenResponses(apiKey, baseURL, model, temperature, httpClient), nil
 	case "vertexai":
 		return NewVertexAI(apiKey, baseURL, model, temperature, httpClient), nil
+	case "imagen":
+		// A dedicated image provider: temperature does not apply (callers
+		// warn when one is configured — the type is not Tunable).
+		return NewImagen(apiKey, baseURL, model, httpClient), nil
 	default:
-		return nil, fmt.Errorf("unknown provider type: %s (supported: openai, anthropic, gemini, vertexai, openresponses)", providerType)
+		return nil, fmt.Errorf("unknown provider type: %s (supported: openai, anthropic, gemini, vertexai, openresponses, imagen)", providerType)
 	}
 }

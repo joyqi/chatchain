@@ -191,3 +191,26 @@ func TestValidateExportTarget(t *testing.T) {
 		}
 	}
 }
+
+// An imagen-session round: the assistant reply is an image attachment with no
+// text. Both exports must keep the Assistant side — markdown notes the file,
+// HTML embeds it as a data URI (self-contained by design).
+func TestExportImageOnlyReply(t *testing.T) {
+	history := []provider.Message{
+		{Role: "user", Content: "a red circle"},
+		{Role: "assistant", Attachments: []provider.Attachment{
+			{Filename: "image-1.png", MimeType: "image/png", Data: []byte{9}}}},
+	}
+	meta := exportMeta{Title: "T", Date: time.Now()}
+	md := buildExportMarkdown(meta, history)
+	if !strings.Contains(md, "## Assistant") || !strings.Contains(md, "(image: image-1.png)") {
+		t.Fatalf("markdown dropped the image reply:\n%s", md)
+	}
+	out, err := buildExportHTML(meta, history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `data:image/png;base64,CQ==`) {
+		t.Fatal("HTML export must embed the generated image as a data URI")
+	}
+}
