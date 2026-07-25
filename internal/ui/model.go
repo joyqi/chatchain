@@ -726,7 +726,7 @@ func (m *model) surfacePage(p Panel, st *panelState, dir int) {
 		step = 1
 	}
 	switch p.Kind {
-	case PanelList, PanelMulti:
+	case PanelList, PanelMulti, PanelPicker:
 		st.cursor = clampInt(st.cursor+dir*step, 0, maxInt(0, len(st.items)-1))
 	case PanelBrowser:
 		st.cursor = clampInt(st.cursor+dir*step, 0, maxInt(0, len(st.entries)-1))
@@ -738,7 +738,7 @@ func (m *model) surfacePage(p Panel, st *panelState, dir int) {
 // surfaceNav moves the cursor / scroll of the focused panel.
 func (m *model) surfaceNav(p Panel, st *panelState, dir int) {
 	switch p.Kind {
-	case PanelList, PanelMulti:
+	case PanelList, PanelMulti, PanelPicker:
 		st.cursor = clampInt(st.cursor+dir, 0, maxInt(0, len(st.items)-1))
 	case PanelBrowser:
 		st.cursor = clampInt(st.cursor+dir, 0, maxInt(0, len(st.entries)-1))

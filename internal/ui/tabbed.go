@@ -27,6 +27,7 @@ const (
 	PanelSwitch
 	PanelInput
 	PanelBrowser
+	PanelPicker
 	PanelView
 )
 
@@ -72,6 +73,21 @@ type Panel struct {
 	Text        string
 	Placeholder string
 	InputWidth  int // visible columns (0 = 40), clamped to the terminal
+
+	// Picker: a single-select list (Items) with a preview pane beside it.
+	// Preview renders the highlighted item into at most maxCols×maxRows cells
+	// (self-contained SGR rows, e.g. imgterm half-blocks); it is called only
+	// when the selection or the pane geometry changes, so an expensive
+	// renderer runs once per selection, not once per frame. A nil Preview —
+	// or a terminal too narrow for two columns — degrades to a plain list.
+	Preview func(index, maxCols, maxRows int) []string
+
+	// Details supplies one dim line per item, rendered under the panel body
+	// and following the cursor (the picker's file path). Entries may carry
+	// their own escapes (OSC 8 links) and are printed verbatim, so callers
+	// must size the visible text themselves — truncating a hyperlink here
+	// would slice the escape sequence apart.
+	Details []string
 
 	// Refresh, with TabbedSpec.RefreshEvery, live-updates Items/Lines while
 	// the surface is open (background MCP connects, incoming requests).
@@ -134,6 +150,13 @@ type panelState struct {
 	input   textinput.Model // Input, and the inline Custom editor
 	editing bool            // List/Multi Custom: the inline editor is open
 	rows    int             // last visible row budget, for paging
+
+	// Picker preview cache, keyed by what the render depends on.
+	prevRows       []string
+	prevIdx        int
+	prevCols       int
+	prevMaxRows    int
+	prevCacheValid bool
 }
 
 // surfaceState drives an open Tabbed surface.
@@ -152,6 +175,12 @@ func newSurface(spec TabbedSpec, reply chan TabbedResult, gen int) *surfaceState
 		st := &s.ps[i]
 		st.checked = map[int]bool{}
 		switch p.Kind {
+		case PanelPicker:
+			st.items = append([]string{}, p.Items...)
+			st.cursor = p.Cursor
+			if st.cursor < 0 || st.cursor >= len(st.items) {
+				st.cursor = 0
+			}
 		case PanelList, PanelMulti:
 			st.items = append([]string{}, p.Items...)
 			if p.Custom {
@@ -364,6 +393,8 @@ func (m *model) renderSurface(b *strings.Builder) {
 	}
 
 	switch p.Kind {
+	case PanelPicker:
+		m.renderPicker(b, p, st, w)
 	case PanelList, PanelMulti:
 		h := panelHeight(p, len(st.items))
 		st.rows = h
@@ -553,6 +584,121 @@ func (m *model) renderSurface(b *strings.Builder) {
 	b.WriteString("\n" + faint + ansi.Truncate(hint, maxInt(4, m.width), "…") + sgrReset)
 }
 
+// Picker geometry: the preview claims a share of the width, capped, and only
+// when the terminal is wide enough for both columns to stay readable.
+const (
+	pickerMinWidth   = 64 // below this the preview is dropped entirely
+	pickerPreviewCap = 44 // preview columns never exceed this
+	pickerGutter     = 2
+	pickerMinList    = 18 // list columns the preview must never eat into
+	pickerRows       = 14 // preview rows (Panel.Height overrides), terminal permitting
+	pickerFrameRows  = 12 // frame rows the preview must leave for everything else
+)
+
+// pickerPreviewCols returns the preview pane's width (0 = no preview).
+func pickerPreviewCols(p Panel, w int) int {
+	if p.Preview == nil || w < pickerMinWidth {
+		return 0
+	}
+	cols := w * 2 / 5
+	if cols > pickerPreviewCap {
+		cols = pickerPreviewCap
+	}
+	if w-cols-pickerGutter < pickerMinList {
+		cols = w - pickerGutter - pickerMinList
+	}
+	if cols < 8 {
+		return 0
+	}
+	return cols
+}
+
+// renderPicker draws the preview pane beside the item list, then the current
+// item's detail line. Rows are composed cell by cell: every preview row is
+// padded to the pane width by DISPLAY width (internal/textwidth), so the list
+// column starts at the same screen column on every row regardless of the SGR
+// the preview carries.
+func (m *model) renderPicker(b *strings.Builder, p Panel, st *panelState, w int) {
+	previewCols := pickerPreviewCols(p, w)
+	listCols := w - 2 // the "▸ " marker gutter
+	if previewCols > 0 {
+		listCols = w - previewCols - pickerGutter - 2
+	}
+	listCols = maxInt(4, listCols)
+
+	// The list window follows the item count; the preview gets its own row
+	// budget (a 3-item list must still show a legible thumbnail), clamped so
+	// the inline frame keeps room for the composer and status row.
+	h := panelHeight(p, len(st.items))
+	st.rows = h
+	st.scrollTo(h)
+
+	var preview []string
+	if previewCols > 0 && len(st.items) > 0 {
+		prevH := p.Height
+		if prevH <= 0 {
+			prevH = pickerRows
+		}
+		if m.height > 0 {
+			prevH = clampInt(prevH, 4, maxInt(4, m.height-pickerFrameRows))
+		}
+		preview = st.previewRows(p, previewCols, prevH)
+	}
+
+	rows := h
+	if len(preview) > rows {
+		rows = len(preview)
+	}
+	for r := 0; r < rows; r++ {
+		line := ""
+		if previewCols > 0 {
+			cell := ""
+			if r < len(preview) {
+				cell = preview[r]
+			}
+			// ANSI-aware width: preview rows are dense with SGR, and counting
+			// those bytes as glyphs would collapse the pad to zero and let
+			// the list column drift row by row.
+			pad := previewCols - ansi.StringWidth(cell)
+			if pad < 0 {
+				pad = 0
+			}
+			line = cell + strings.Repeat(" ", pad) + strings.Repeat(" ", pickerGutter)
+		}
+		if i := st.offset + r; r < h && i < len(st.items) {
+			marker := "  "
+			item := ansi.Truncate(st.items[i], listCols, "…")
+			if i == st.cursor {
+				marker = cyan + "▸ " + sgrReset
+				if !strings.Contains(item, "\x1b[") {
+					item = cyan + item + sgrReset
+				}
+			}
+			line += marker + item
+		}
+		b.WriteString("\n" + strings.TrimRight(line, " "))
+	}
+
+	// The detail line follows the cursor: a caller-sized string (an OSC 8
+	// path link here) printed verbatim — see Panel.Details.
+	if st.cursor >= 0 && st.cursor < len(p.Details) {
+		if d := p.Details[st.cursor]; d != "" {
+			b.WriteString("\n" + faint + d + sgrReset)
+		}
+	}
+}
+
+// previewRows returns the highlighted item's preview, rendering it only when
+// the selection or the pane geometry has changed since the last frame.
+func (st *panelState) previewRows(p Panel, cols, rows int) []string {
+	if st.prevCacheValid && st.prevIdx == st.cursor && st.prevCols == cols && st.prevMaxRows == rows {
+		return st.prevRows
+	}
+	st.prevRows = p.Preview(st.cursor, cols, rows)
+	st.prevIdx, st.prevCols, st.prevMaxRows, st.prevCacheValid = st.cursor, cols, rows, true
+	return st.prevRows
+}
+
 // surfaceHint mirrors the v1 promptui help lines exactly.
 func surfaceHint(p Panel, st *panelState) string {
 	switch p.Kind {
@@ -562,6 +708,8 @@ func surfaceHint(p Panel, st *panelState) string {
 		return "Space toggle · ←→ off/on · Enter confirm · q/Esc cancel"
 	case PanelInput:
 		return "←→ move · Enter confirm · Esc cancel"
+	case PanelPicker:
+		return "↑↓ move · ←→ page · Enter confirm · q/Esc cancel"
 	case PanelList, PanelMulti:
 		if st.editing {
 			return "Enter confirm · Esc back to options"
@@ -588,7 +736,7 @@ func surfaceHint(p Panel, st *panelState) string {
 // scrollPercent mirrors v1: how far through a scrollable panel we are.
 func scrollPercent(p Panel, st *panelState) (int, bool) {
 	switch p.Kind {
-	case PanelList, PanelMulti:
+	case PanelList, PanelMulti, PanelPicker:
 		n := len(st.items)
 		if h := panelHeight(p, n); n > h && n > 1 {
 			return int(float64(st.cursor)/float64(n-1)*100 + 0.5), true

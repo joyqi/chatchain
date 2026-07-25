@@ -384,7 +384,32 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 		if imageProvider && (input == "/edit" || strings.HasPrefix(input, "/edit ")) {
 			prompt := strings.TrimSpace(strings.TrimPrefix(input, "/edit"))
 			if prompt == "" {
-				printDim("Usage: /edit <prompt> — edits the last generated image.")
+				// Bare /edit: pick the canvas from every image this session
+				// generated (preview beside the list), then return to the
+				// composer for the prompt — the /file rhythm.
+				choices := generatedImageChoices(history)
+				if len(choices) == 0 {
+					printDim("Nothing to edit yet — generate an image first.")
+					continue
+				}
+				prev := newImagePreviewer(choices)
+				r, serr := u.Tabbed(ctx, ui.TabbedSpec{Panels: []ui.Panel{{
+					Title:   "Edit an image",
+					Kind:    ui.PanelPicker,
+					Prompt:  "Pick the image to edit, then type your prompt",
+					Items:   imageChoiceLabels(choices),
+					Details: imageChoiceDetails(choices, sw.imagesPath(), u.Width()),
+					Preview: prev.render,
+				}}})
+				if serr != nil || r.Cancelled {
+					continue
+				}
+				idx := r.Panels[0].Cursor
+				if idx < 0 || idx >= len(choices) {
+					continue
+				}
+				pendingAttachments = append(pendingAttachments, choices[idx].att)
+				printDim("Editing %s — type your prompt.", choices[idx].att.Filename)
 				continue
 			}
 			refs := lastGeneratedImages(history)

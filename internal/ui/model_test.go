@@ -1610,3 +1610,124 @@ func TestStatusLineHidesCtxWithoutTokens(t *testing.T) {
 		t.Fatalf("token-less status must hide the ctx segment:\n%s", line)
 	}
 }
+
+// PanelPicker: preview pane beside the list. The preview renderer is called
+// once per (selection, geometry) — not once per frame — the cursor row is
+// truncated to the list column, and the current item's detail line follows
+// the cursor.
+func TestTabbedPicker(t *testing.T) {
+	m := newTestModel(t)
+	m = step(t, m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	reply := make(chan TabbedResult, 1)
+
+	calls := 0
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{Panels: []Panel{{
+		Title:   "Pick",
+		Kind:    PanelPicker,
+		Items:   []string{"first", "second " + strings.Repeat("x", 200)},
+		Details: []string{"detail-one", "detail-two"},
+		Preview: func(index, maxCols, maxRows int) []string {
+			calls++
+			if maxCols <= 0 || maxRows <= 0 {
+				t.Errorf("preview geometry = %dx%d", maxCols, maxRows)
+			}
+			// SGR-laden rows, like imgterm's: the pad must be computed on
+			// DISPLAY width or the list column drifts.
+			return []string{"\x1b[38;5;42m" + fmt.Sprintf("PREVIEW-%d", index) + "\x1b[0m"}
+		},
+	}}}, reply: reply})
+
+	view := content(m)
+	if !strings.Contains(view, "PREVIEW-0") || !strings.Contains(stripSGR(view), "first") {
+		t.Fatalf("preview and list must render side by side:\n%s", view)
+	}
+	if !strings.Contains(view, "detail-one") {
+		t.Fatalf("detail line missing:\n%s", view)
+	}
+	// Re-rendering the same frame must not re-invoke the preview.
+	before := calls
+	_ = content(m)
+	if calls != before {
+		t.Fatalf("preview re-rendered without a change (%d → %d)", before, calls)
+	}
+
+	// Every row stays within the terminal width (padding is display-width
+	// based, so the list column can't drift).
+	for _, line := range strings.Split(stripSGR(view), "\n") {
+		if w := textwidth.StringWidth(line); w > 100 {
+			t.Fatalf("row exceeds terminal width (%d): %q", w, line)
+		}
+	}
+
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	view = content(m)
+	if !strings.Contains(view, "PREVIEW-1") || !strings.Contains(view, "detail-two") {
+		t.Fatalf("moving the cursor must refresh preview and detail:\n%s", view)
+	}
+	if calls == before {
+		t.Fatal("selection change must re-render the preview")
+	}
+
+	m = enter(t, m)
+	if r := <-reply; r.Cancelled || r.Panels[0].Cursor != 1 {
+		t.Fatalf("commit = %+v, want cursor 1", r)
+	}
+}
+
+// A terminal too narrow for two columns drops the preview entirely rather
+// than squeezing both into an unreadable width.
+func TestTabbedPickerNarrowFallback(t *testing.T) {
+	m := newTestModel(t)
+	m = step(t, m, tea.WindowSizeMsg{Width: 50, Height: 30})
+	reply := make(chan TabbedResult, 1)
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{Panels: []Panel{{
+		Title: "Pick", Kind: PanelPicker, Items: []string{"only"},
+		Preview: func(int, int, int) []string { return []string{"PREVIEW"} },
+	}}}, reply: reply})
+	if view := content(m); strings.Contains(view, "PREVIEW") {
+		t.Fatalf("narrow terminal must drop the preview:\n%s", view)
+	}
+	if view := stripSGR(content(m)); !strings.Contains(view, "only") {
+		t.Fatalf("list must still render:\n%s", view)
+	}
+}
+
+// The list column starts at the SAME screen column on every row, including
+// rows whose preview cell is dense with SGR (ANSI-aware padding).
+func TestTabbedPickerColumnAlignment(t *testing.T) {
+	m := newTestModel(t)
+	m = step(t, m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	reply := make(chan TabbedResult, 1)
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{Panels: []Panel{{
+		Title: "Pick", Kind: PanelPicker,
+		Items: []string{"alpha", "beta", "gamma"},
+		Preview: func(index, maxCols, maxRows int) []string {
+			row := "\x1b[48;2;10;20;30m\x1b[38;2;40;50;60m" + strings.Repeat("▀", 12) + "\x1b[0m"
+			rows := make([]string, maxRows)
+			for i := range rows {
+				rows[i] = row
+			}
+			return rows
+		},
+	}}}, reply: reply})
+
+	var cols []int
+	for _, line := range strings.Split(stripSGR(content(m)), "\n") {
+		if i := strings.IndexAny(line, "▸"); i >= 0 && strings.Contains(line, "alpha") {
+			cols = append(cols, textwidth.StringWidth(line[:i]))
+		}
+		for _, item := range []string{"beta", "gamma"} {
+			if i := strings.Index(line, item); i >= 0 {
+				cols = append(cols, textwidth.StringWidth(line[:i-2]))
+			}
+		}
+	}
+	if len(cols) != 3 {
+		t.Fatalf("expected 3 list rows, measured %v", cols)
+	}
+	for _, c := range cols[1:] {
+		if c != cols[0] {
+			t.Fatalf("list column drifts across rows: %v", cols)
+		}
+	}
+}
