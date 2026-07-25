@@ -35,18 +35,27 @@ type teeWriteCloser struct {
 //     assistant message (the tool side effects already happened); persist.
 //
 // A reasoning-only partial (reasoning without content) counts as "no text".
-// Returns the new history and whether the turn should be persisted.
-func finalizeInterrupt(history []provider.Message, watermark int, partial, partialReasoning string) ([]provider.Message, bool) {
+// Returns the new history, whether the turn should be persisted, and — when
+// the turn was discarded whole — the attachments that went down with it, so
+// the caller can hand them back to the pending set. Nothing else remembers
+// them: they left pendingAttachments when the message was composed, and an
+// image turn ALWAYS takes the discard path (it produces no text), which is
+// how ESC used to silently strip an /edit canvas or an uploaded file.
+func finalizeInterrupt(history []provider.Message, watermark int, partial, partialReasoning string) ([]provider.Message, bool, []provider.Attachment) {
 	if partial != "" {
 		return append(history, provider.Message{
 			Role:        "assistant",
 			Content:     partial,
 			Reasoning:   partialReasoning,
 			Interrupted: true,
-		}), true
+		}), true, nil
 	}
 	if len(history) <= watermark+1 {
-		return history[:watermark], false
+		var dropped []provider.Attachment
+		if watermark < len(history) {
+			dropped = history[watermark].Attachments
+		}
+		return history[:watermark], false, dropped
 	}
-	return history, true
+	return history, true, nil
 }

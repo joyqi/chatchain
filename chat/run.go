@@ -240,8 +240,16 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 
 	interruptTurn := func(watermark int, partial, partialReasoning string) {
 		var persist bool
-		history, persist = finalizeInterrupt(history, watermark, partial, partialReasoning)
+		var dropped []provider.Attachment
+		history, persist, dropped = finalizeInterrupt(history, watermark, partial, partialReasoning)
 		tr.notice("Interrupted.")
+		// A discarded turn takes its attachments with it — hand them back so
+		// the next message still carries the /edit canvas or the uploaded file
+		// (cancelling a send must not silently strip them).
+		if len(dropped) > 0 {
+			pendingAttachments = append(append([]provider.Attachment{}, dropped...), pendingAttachments...)
+			printDim("%d attachment(s) kept for your next message.", len(dropped))
+		}
 		if persist {
 			persistTurn()
 			maybeTitle()
