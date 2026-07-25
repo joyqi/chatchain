@@ -619,13 +619,6 @@ func pickerPreviewCols(p Panel, w int) int {
 // column starts at the same screen column on every row regardless of the SGR
 // the preview carries.
 func (m *model) renderPicker(b *strings.Builder, p Panel, st *panelState, w int) {
-	previewCols := pickerPreviewCols(p, w)
-	listCols := w - 2 // the "▸ " marker gutter
-	if previewCols > 0 {
-		listCols = w - previewCols - pickerGutter - 2
-	}
-	listCols = maxInt(4, listCols)
-
 	// The list window follows the item count; the preview gets its own row
 	// budget (a 3-item list must still show a legible thumbnail), clamped so
 	// the inline frame keeps room for the composer and status row.
@@ -634,7 +627,7 @@ func (m *model) renderPicker(b *strings.Builder, p Panel, st *panelState, w int)
 	st.scrollTo(h)
 
 	var preview []string
-	if previewCols > 0 && len(st.items) > 0 {
+	if cols := pickerPreviewCols(p, w); cols > 0 && len(st.items) > 0 {
 		prevH := p.Height
 		if prevH <= 0 {
 			prevH = pickerRows
@@ -642,8 +635,24 @@ func (m *model) renderPicker(b *strings.Builder, p Panel, st *panelState, w int)
 		if m.height > 0 {
 			prevH = clampInt(prevH, 4, maxInt(4, m.height-pickerFrameRows))
 		}
-		preview = st.previewRows(p, previewCols, prevH)
+		preview = st.previewRows(p, cols, prevH)
 	}
+
+	// Columns hug the RENDERED preview, not the reserved pane: a portrait
+	// thumbnail bounded by height comes out far narrower than its budget, and
+	// padding to the budget would open a gulf between picture and list. Every
+	// row pads to the same measured width, so the list column stays put.
+	previewW := 0
+	for _, row := range preview {
+		if rw := ansi.StringWidth(row); rw > previewW {
+			previewW = rw
+		}
+	}
+	listCols := w - 2 // the "▸ " marker gutter
+	if previewW > 0 {
+		listCols = w - previewW - pickerGutter - 2
+	}
+	listCols = maxInt(4, listCols)
 
 	rows := h
 	if len(preview) > rows {
@@ -651,7 +660,7 @@ func (m *model) renderPicker(b *strings.Builder, p Panel, st *panelState, w int)
 	}
 	for r := 0; r < rows; r++ {
 		line := ""
-		if previewCols > 0 {
+		if previewW > 0 {
 			cell := ""
 			if r < len(preview) {
 				cell = preview[r]
@@ -659,7 +668,7 @@ func (m *model) renderPicker(b *strings.Builder, p Panel, st *panelState, w int)
 			// ANSI-aware width: preview rows are dense with SGR, and counting
 			// those bytes as glyphs would collapse the pad to zero and let
 			// the list column drift row by row.
-			pad := previewCols - ansi.StringWidth(cell)
+			pad := previewW - ansi.StringWidth(cell)
 			if pad < 0 {
 				pad = 0
 			}

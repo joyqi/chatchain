@@ -319,10 +319,14 @@ type PredictRequest struct {
 	Parameters *GImageParams     `json:"parameters,omitempty"`
 }
 
-// GPrediction is one generated image. A safety-filtered candidate carries
-// RAIFilteredReason instead of bytes.
+// GPrediction is one generated image. The payload is either inline bytes or
+// a URI the caller fetches — official Vertex answers with a gs:// path when
+// the request asked for storage output, and relay stations reuse the field
+// for a signed https link (expiring, so it must be fetched right away). A
+// safety-filtered candidate carries RAIFilteredReason and neither.
 type GPrediction struct {
 	BytesBase64Encoded []byte `json:"bytesBase64Encoded,omitempty"`
+	GcsURI             string `json:"gcsUri,omitempty"`
 	MimeType           string `json:"mimeType,omitempty"`
 	RAIFilteredReason  string `json:"raiFilteredReason,omitempty"`
 }

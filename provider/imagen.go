@@ -177,20 +177,31 @@ func (p *ImagenProvider) Chat(ctx context.Context, messages []Message) (string, 
 	}
 	filtered := ""
 	for i, pred := range resp.Predictions {
-		if len(pred.BytesBase64Encoded) == 0 {
+		data, mime := pred.BytesBase64Encoded, pred.MimeType
+		if len(data) == 0 {
 			if pred.RAIFilteredReason != "" {
 				filtered = pred.RAIFilteredReason
+				continue
 			}
-			continue
+			if pred.GcsURI == "" {
+				continue
+			}
+			// Referenced payload: relays answer with a signed https link that
+			// EXPIRES, so it is fetched now rather than remembered. (Official
+			// Vertex would answer gs://, which needs Google credentials we
+			// never hold — fetchImage rejects the scheme with a clear error.)
+			var ferr error
+			if data, mime, ferr = fetchImage(ctx, p.client.HTTP, pred.GcsURI); ferr != nil {
+				return "", fmt.Errorf("imagen: fetching result image: %w", ferr)
+			}
 		}
-		mime := pred.MimeType
 		if mime == "" {
 			mime = "image/png"
 		}
 		p.lastImages = append(p.lastImages, Attachment{
 			Filename: fmt.Sprintf("image-%d%s", i+1, extForMime(mime)),
 			MimeType: mime,
-			Data:     pred.BytesBase64Encoded,
+			Data:     data,
 		})
 	}
 	if len(p.lastImages) == 0 {
@@ -198,7 +209,9 @@ func (p *ImagenProvider) Chat(ctx context.Context, messages []Message) (string, 
 		if filtered != "" {
 			return "", &PermanentError{Err: fmt.Errorf("imagen: all candidates were safety-filtered: %s", filtered)}
 		}
-		return "", &PermanentError{Err: fmt.Errorf("imagen: response contained no images")}
+		return "", &PermanentError{Err: fmt.Errorf(
+			"imagen: response contained no images (%d prediction(s), none carried inline bytes or a URI)",
+			len(resp.Predictions))}
 	}
 	return "", nil
 }

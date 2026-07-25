@@ -269,9 +269,11 @@ models that ignore reference images and the negative prompt — unknown
 parameters are dropped server-side, so a knob with no visible effect means
 that backend doesn't support it. A custom `url` is addressed in the vertex
 `publishers/{vendor}/models` form (the relay convention); omitting `url`
-targets the official Gemini API form. Generation is billed per call, so
-failures are never auto-retried — an error surfaces immediately and you
-decide whether to spend again.
+targets the official Gemini API form. Results arrive either inline or as an
+expiring signed URL (some relay-hosted models, e.g. Kling, answer that way) —
+both land in the session the same, the link being fetched right away.
+Generation is billed per call, so failures are never auto-retried — an error
+surfaces immediately and you decide whether to spend again.
 
 These models have no tokens, no temperature, and no reasoning, so the
 corresponding machinery disappears for such sessions: `/model` shows no

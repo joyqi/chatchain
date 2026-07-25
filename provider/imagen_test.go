@@ -209,3 +209,64 @@ func TestImagenCapabilitySurface(t *testing.T) {
 		t.Fatal("imagen must offer choice lists for the /model tabs")
 	}
 }
+
+// Relay-hosted models answer with a signed URL instead of inline bytes
+// (predictions[].gcsUri). It is fetched immediately — the link expires — with
+// no API key attached (the signature IS the credential), and the response
+// header decides the mime.
+func TestImagenGcsURIFetched(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	mux.HandleFunc("/blob.png", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-goog-api-key") != "" || r.Header.Get("Authorization") != "" {
+			t.Error("signed-URL fetch must not carry credentials")
+		}
+		w.Header().Set("Content-Type", "image/jpeg; charset=binary")
+		w.Write([]byte{7, 7, 7})
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"predictions":[{"gcsUri":"` + srv.URL + `/blob.png?Expires=1&Signature=x"}]}`))
+	})
+
+	p := NewImagen("k", srv.URL, "klingai/kling-v2", srv.Client())
+	if _, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "a cat"}}); err != nil {
+		t.Fatal(err)
+	}
+	imgs := p.LastImages()
+	if len(imgs) != 1 || len(imgs[0].Data) != 3 {
+		t.Fatalf("LastImages = %+v", imgs)
+	}
+	// Mime params are stripped, so the extension maps still match exactly.
+	if imgs[0].MimeType != "image/jpeg" || imgs[0].Filename != "image-1.jpg" {
+		t.Fatalf("fetched attachment = %+v", imgs[0])
+	}
+}
+
+// A gs:// URI needs Google credentials chatchain never holds: fail loudly
+// instead of reporting "no images".
+func TestImagenGcsURIUnfetchable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"predictions":[{"gcsUri":"gs://bucket/out/image-1.png"}]}`))
+	}))
+	defer srv.Close()
+	p := NewImagen("k", srv.URL, "m", srv.Client())
+	_, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "x"}})
+	if err == nil || !strings.Contains(err.Error(), "gs://bucket/out/image-1.png") {
+		t.Fatalf("err = %v, want the unsupported URI surfaced", err)
+	}
+}
+
+// An empty prediction set still says how many came back — the diagnosis that
+// exposed the gcsUri gap needed /debug to make.
+func TestImagenNoImagesErrorIsDiagnostic(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"predictions":[{},{}]}`))
+	}))
+	defer srv.Close()
+	p := NewImagen("k", srv.URL, "m", srv.Client())
+	_, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "x"}})
+	if err == nil || !strings.Contains(err.Error(), "2 prediction(s)") {
+		t.Fatalf("err = %v, want the prediction count", err)
+	}
+}
