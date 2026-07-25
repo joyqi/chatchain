@@ -38,6 +38,10 @@ type ProviderConfig struct {
 	AspectRatio    string `yaml:"aspect_ratio"`
 	ImageSize      string `yaml:"image_size"`
 	NegativePrompt string `yaml:"negative_prompt"`
+	// JSONEdits posts /images/edits with a JSON body instead of multipart
+	// (type images): xAI accepts only that form. Leave false for OpenAI and
+	// the relays that mirror it.
+	JSONEdits bool `yaml:"json_edits"`
 	// NoSave starts sessions ephemeral (the --no-save behavior): nothing
 	// persists unless the user runs /save mid-chat. --resume overrides it.
 	NoSave bool `yaml:"no_save"`

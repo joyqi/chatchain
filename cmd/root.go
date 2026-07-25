@@ -142,6 +142,13 @@ var rootCmd = &cobra.Command{
 				fmt.Fprintf(os.Stderr, "Warning: --temperature does not apply to provider type %s (ignored)\n", p.Type())
 			}
 		}
+		if pc.JSONEdits {
+			if tun, ok := p.(provider.ImageEditJSONTunable); ok {
+				tun.SetJSONEdits(true)
+			} else {
+				fmt.Fprintf(os.Stderr, "Warning: `json_edits` applies only to the images provider type (ignored for %s)\n", p.Type())
+			}
+		}
 		if g := (provider.ImageGenParams{
 			AspectRatio:    pc.AspectRatio,
 			ImageSize:      pc.ImageSize,

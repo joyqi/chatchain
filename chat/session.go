@@ -51,7 +51,9 @@ type sessionMeta struct {
 	AspectRatio    string `json:"aspect_ratio,omitempty"`
 	ImageSize      string `json:"image_size,omitempty"`
 	NegativePrompt string `json:"negative_prompt,omitempty"`
-	BaseURL        string `json:"base_url,omitempty"`
+	// JSONEdits records the edit wire format (images type; xAI needs JSON).
+	JSONEdits bool   `json:"json_edits,omitempty"`
+	BaseURL   string `json:"base_url,omitempty"`
 	// Cwd is where the session was started: the project root in agent mode,
 	// the plain working directory otherwise. Labels and any future
 	// reorganisation read it from here — meta is the source of truth, the
@@ -397,6 +399,9 @@ func ApplySessionTuning(sess *Session, p provider.Provider, skipTemperature, ski
 			ig.SetImageGenParams(g)
 		}
 	}
+	if je, ok := p.(provider.ImageEditJSONTunable); ok && sess.Meta.JSONEdits {
+		je.SetJSONEdits(true)
+	}
 	if !skipWindow && sess.Meta.ContextWindow > 0 && setWindow != nil {
 		setWindow(sess.Meta.ContextWindow)
 	}
@@ -643,6 +648,18 @@ func (w *SessionWriter) SetContextWindow(n int) error {
 		return nil
 	}
 	w.meta.ContextWindow = n
+	if !w.created {
+		return nil
+	}
+	return w.writeMeta()
+}
+
+// SetJSONEdits records the edit wire format in session meta.
+func (w *SessionWriter) SetJSONEdits(on bool) error {
+	if w == nil {
+		return nil
+	}
+	w.meta.JSONEdits = on
 	if !w.created {
 		return nil
 	}

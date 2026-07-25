@@ -196,3 +196,67 @@ func TestImagesCapabilitySurface(t *testing.T) {
 		t.Fatalf("empty prompt must be a PermanentError, got %v", err)
 	}
 }
+
+// JSON edits: some backends (xAI) accept ONLY a JSON body on /images/edits
+// and reject multipart. The switch routes there; a single reference is the
+// documented object form, several become an array; results parse the same.
+func TestImagesJSONEdits(t *testing.T) {
+	var ct string
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/images/edits" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		ct = r.Header.Get("Content-Type")
+		body, _ := io.ReadAll(r.Body)
+		got = map[string]any{}
+		json.Unmarshal(body, &got)
+		w.Write([]byte(`{"data":[{"b64_json":"CQ=="}]}`))
+	}))
+	defer srv.Close()
+
+	p := NewImages("k", srv.URL, "grok-imagine-image-quality", srv.Client())
+	p.SetJSONEdits(true)
+	ref := Attachment{Filename: "a.png", MimeType: "image/png", Data: []byte{1}}
+	if _, err := p.Chat(context.Background(), []Message{
+		{Role: "user", Content: "add a hat", Attachments: []Attachment{ref}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("content-type = %q", ct)
+	}
+	if got["model"] != "grok-imagine-image-quality" || got["prompt"] != "add a hat" {
+		t.Fatalf("body = %v", got)
+	}
+	img, ok := got["image"].(map[string]any)
+	if !ok {
+		t.Fatalf("single reference must be an object, got %T", got["image"])
+	}
+	if img["type"] != "image_url" || img["url"] != "data:image/png;base64,AQ==" {
+		t.Fatalf("image = %v", img)
+	}
+	if len(p.LastImages()) != 1 {
+		t.Fatalf("response parsing broke: %+v", p.LastImages())
+	}
+
+	// Several references generalize to an array.
+	if _, err := p.Chat(context.Background(), []Message{
+		{Role: "user", Content: "merge", Attachments: []Attachment{ref,
+			{Filename: "b.jpg", MimeType: "image/jpeg", Data: []byte{2}}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	arr, ok := got["image"].([]any)
+	if !ok || len(arr) != 2 {
+		t.Fatalf("multiple references must be an array, got %T %v", got["image"], got["image"])
+	}
+	if second := arr[1].(map[string]any); second["url"] != "data:image/jpeg;base64,Ag==" {
+		t.Fatalf("array entry = %v", second)
+	}
+
+	// The switch is off by default: OpenAI and its mirrors want multipart.
+	if NewImages("k", srv.URL, "gpt-image-1", srv.Client()).JSONEdits() {
+		t.Fatal("json edits must default to off")
+	}
+}

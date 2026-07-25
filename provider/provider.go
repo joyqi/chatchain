@@ -132,6 +132,17 @@ type ImageGenOptions struct {
 	NegativePrompt bool
 }
 
+// ImageEditJSONTunable is an optional interface: image providers whose edit
+// endpoint comes in two wire flavors expose the switch. OpenAI's native
+// /images/edits is multipart; some backends (xAI) accept ONLY a JSON body
+// and reject multipart outright, so the encoding is a per-backend fact the
+// user sets (config `json_edits: true`, the /model JSON edits tab) rather
+// than something we probe for at the cost of a billed call.
+type ImageEditJSONTunable interface {
+	SetJSONEdits(on bool)
+	JSONEdits() bool
+}
+
 // ImageGenTunable is an optional interface: dedicated image providers expose
 // their generation parameters for the config defaults at startup and the
 // /model tabs at runtime. The assertion IS the capability check.

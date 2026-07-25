@@ -513,6 +513,14 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 						Prompt: "Negative prompt (backend support varies)"})
 				}
 			}
+			// The edit wire format, where the dialect has two (OpenAI Images).
+			jsonTun, jsonOK := p.(provider.ImageEditJSONTunable)
+			jsonIdx := -1
+			if jsonOK {
+				jsonIdx = len(panels)
+				panels = append(panels, ui.Panel{Title: "JSON edits", Kind: ui.PanelSwitch, On: jsonTun.JSONEdits(),
+					Prompt: "Send /images/edits as JSON instead of multipart (xAI requires it)"})
+			}
 			r, serr := u.Tabbed(ctx, ui.TabbedSpec{Panels: panels})
 			if serr != nil || r.Cancelled {
 				continue
@@ -581,6 +589,18 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 					imgGen.SetImageGenParams(g)
 					sw.SetImageGenParams(g)
 					printDim("Image params: %s", imageGenLabel(g))
+					changed = true
+				}
+			}
+			if jsonOK {
+				if on := r.Panels[jsonIdx].On; on != jsonTun.JSONEdits() {
+					jsonTun.SetJSONEdits(on)
+					sw.SetJSONEdits(on)
+					state := "multipart"
+					if on {
+						state = "JSON"
+					}
+					printDim("Image edits sent as: %s", state)
 					changed = true
 				}
 			}

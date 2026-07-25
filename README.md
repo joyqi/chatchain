@@ -262,6 +262,12 @@ dimensions into a single **Size** knob (e.g. `image_size: "1536x1024"`)
 and has no aspect-ratio or negative-prompt parameters. DALL·E's URL-form
 responses are fetched automatically.
 
+The edit endpoint comes in two wire flavors: OpenAI's native
+`/images/edits` is multipart, while some backends (xAI) accept only a JSON
+body and reject multipart outright. Set `json_edits: true` for those, or
+flip the **JSON edits** tab on `/model` mid-chat (persisted with the
+session). Generation is unaffected either way.
+
 Parameter and editing support varies by backend: relays map the full set
 (seedream's aspect ratio, size, negative prompt, and reference-image editing
 are live-verified), while the official Gemini API hosts generate-only Imagen

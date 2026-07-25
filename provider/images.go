@@ -27,6 +27,7 @@ type ImagesProvider struct {
 	client     llm.Images
 	http       *http.Client // URL-form results (DALL·E) are fetched with this
 	gen        ImageGenParams
+	jsonEdits  bool // POST /images/edits as JSON instead of multipart (xAI)
 	lastImages []Attachment
 }
 
@@ -49,6 +50,9 @@ func (p *ImagesProvider) SetModel(m string) { p.model = m }
 
 func (p *ImagesProvider) SetImageGenParams(g ImageGenParams) { p.gen = g }
 func (p *ImagesProvider) ImageGenParams() ImageGenParams     { return p.gen }
+
+func (p *ImagesProvider) SetJSONEdits(on bool) { p.jsonEdits = on }
+func (p *ImagesProvider) JSONEdits() bool      { return p.jsonEdits }
 
 func (p *ImagesProvider) ImageGenOptions() ImageGenOptions {
 	return ImageGenOptions{
@@ -101,7 +105,11 @@ func (p *ImagesProvider) Chat(ctx context.Context, messages []Message) (string, 
 		for _, a := range refs {
 			req.Images = append(req.Images, llm.ImageFile{Name: a.Filename, Mime: a.MimeType, Data: a.Data})
 		}
-		resp, err = p.client.Edit(ctx, req)
+		if p.jsonEdits {
+			resp, err = p.client.EditJSON(ctx, req)
+		} else {
+			resp, err = p.client.Edit(ctx, req)
+		}
 	}
 	if err != nil {
 		return "", err

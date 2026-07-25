@@ -528,3 +528,25 @@ func TestApplySessionTuningImageParams(t *testing.T) {
 		t.Fatalf("empty meta must not clobber config defaults: %+v", p2.gen)
 	}
 }
+
+// The edit wire format rides along in session meta like the other knobs.
+func TestApplySessionTuningJSONEdits(t *testing.T) {
+	p := &jsonEditStub{}
+	ApplySessionTuning(&Session{Meta: sessionMeta{Provider: "stub", JSONEdits: true}}, p, false, false, nil)
+	if !p.on {
+		t.Fatal("recorded json_edits not replayed")
+	}
+	p2 := &jsonEditStub{}
+	ApplySessionTuning(&Session{Meta: sessionMeta{Provider: "stub"}}, p2, false, false, nil)
+	if p2.on {
+		t.Fatal("absent meta must not flip the switch")
+	}
+}
+
+type jsonEditStub struct {
+	stubProvider
+	on bool
+}
+
+func (s *jsonEditStub) SetJSONEdits(v bool) { s.on = v }
+func (s *jsonEditStub) JSONEdits() bool     { return s.on }

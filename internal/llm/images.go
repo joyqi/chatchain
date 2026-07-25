@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -134,6 +135,53 @@ func (i Images) Edit(ctx context.Context, req *ImagesEditRequest) (*ImagesRespon
 	var out ImagesResponse
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, fmt.Errorf("llm: malformed images response: %w", err)
+	}
+	return &out, nil
+}
+
+// imagesEditJSONImage is one reference image of a JSON edit request: the
+// xAI shape, a typed object carrying a data URI (a public URL or file id
+// would fit the same field, but chatchain always has the bytes in hand).
+type imagesEditJSONImage struct {
+	Type string `json:"type"` // "image_url"
+	URL  string `json:"url"`
+}
+
+type imagesEditJSONRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+	// Image is one object for a single reference, an array for several —
+	// the documented shape is the single object; the array is the natural
+	// generalization and a backend that dislikes it says so explicitly.
+	Image any    `json:"image"`
+	Size  string `json:"size,omitempty"`
+}
+
+// EditJSON is /images/edits with a JSON body instead of multipart. Some
+// backends (xAI) implement ONLY this form — their docs say the OpenAI SDK's
+// images.edit() cannot be used because it posts multipart. The response
+// shape is the shared one, so results flow through unchanged.
+func (i Images) EditJSON(ctx context.Context, req *ImagesEditRequest) (*ImagesResponse, error) {
+	images := make([]imagesEditJSONImage, 0, len(req.Images))
+	for _, f := range req.Images {
+		mime := f.Mime
+		if mime == "" {
+			mime = "image/png"
+		}
+		images = append(images, imagesEditJSONImage{
+			Type: "image_url",
+			URL:  "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(f.Data),
+		})
+	}
+	body := &imagesEditJSONRequest{Model: req.Model, Prompt: req.Prompt, Size: req.Size}
+	if len(images) == 1 {
+		body.Image = images[0]
+	} else {
+		body.Image = images
+	}
+	var out ImagesResponse
+	if err := i.Do(ctx, "POST", "/images/edits", body, &out); err != nil {
+		return nil, err
 	}
 	return &out, nil
 }
