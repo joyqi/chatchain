@@ -16,7 +16,7 @@ var slashCommands = []string{
 // slash text).
 var agentSlashCommands = []string{"/skills"}
 var saveSlashCommands = []string{"/save"}
-var imageSlashCommands = []string{"/edit"}
+var imageSlashCommands = []string{"/edit", "/redo"}
 
 // activeSlashCommands is the effective command table; the run loop rebinds it
 // once at startup via setActiveCommands, before the Program starts.

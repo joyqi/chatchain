@@ -40,12 +40,12 @@ func TestConditionalCommandVisibility(t *testing.T) {
 	// /edit exists only on image providers (the typical shape: image=true
 	// comes with compact=false).
 	setActiveCommands(false, false, false, true)
-	if !slices.Contains(activeSlashCommands, "/edit") {
-		t.Fatal("/edit missing for an image provider")
+	if !slices.Contains(activeSlashCommands, "/edit") || !slices.Contains(activeSlashCommands, "/redo") {
+		t.Fatal("/edit and /redo missing for an image provider")
 	}
 	setActiveCommands(false, false, true, false)
-	if slices.Contains(activeSlashCommands, "/edit") {
-		t.Fatal("/edit visible on a text provider")
+	if slices.Contains(activeSlashCommands, "/edit") || slices.Contains(activeSlashCommands, "/redo") {
+		t.Fatal("image commands visible on a text provider")
 	}
 	// The base table itself is never mutated.
 	if slices.Contains(slashCommands, "/skills") || slices.Contains(slashCommands, "/save") ||

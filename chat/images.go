@@ -72,6 +72,19 @@ func hasImages(p any) bool {
 	return ok && len(ip.LastImages()) > 0
 }
 
+// lastUserMessage returns the most recent user message — the request /redo
+// re-sends. Its attachments are the references that produced the last
+// result, so re-running works from the SAME canvas rather than from the
+// output the user just rejected.
+func lastUserMessage(history []provider.Message) *provider.Message {
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == "user" {
+			return &history[i]
+		}
+	}
+	return nil
+}
+
 // lastGeneratedImages returns the image attachments of the most recent
 // assistant reply that carried any — the canvas the /edit command re-sends
 // as this turn's reference images.

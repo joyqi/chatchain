@@ -233,7 +233,10 @@ the reference, and consecutive `/edit`s chain naturally. To edit an *earlier*
 picture, run `/edit` with no prompt: a picker opens with the image previewed
 beside a newest-first list of everything this session generated (each row
 labeled by the prompt that made it, with the file's clickable path below);
-pick one and type your prompt. Images render and persist exactly like
+pick one and type your prompt. Unhappy with what came back? `/redo` rolls
+again from the same canvas and prompt, and `/redo <reworded prompt>` retries
+from that canvas with new wording — so a rejected picture never becomes the
+input to the next attempt. Images render and persist exactly like
 conversational generation, sessions keep the whole iteration history, and
 `-m` does one-shot generation.
 
@@ -454,6 +457,7 @@ press Tab to cycle through the completions:
 |---------|-------------|
 | `/file [path]` | Attach a file (image, PDF, or text). With a path, attaches directly. With no path, opens a tabbed selector: "Attached" to remove attachments, "Add" to pick one from a directory browser. |
 | `/edit [prompt]` | Edit a generated image by re-sending it as this turn's reference. With a prompt it takes the newest image (consecutive `/edit`s iterate). With no prompt it opens a picker — preview on the left, every image this session generated on the right (newest first, labeled by its prompt, clickable path below) — and after you choose, type the prompt in the composer. Dedicated image providers (`type: imagen` / `images`) only. |
+| `/redo [prompt]` | Re-send the last request: same reference images, same prompt unless you supply a new one. Bare `/redo` rolls the dice again (image models vary per call); `/redo <reworded prompt>` retries from the *same* canvas, so a rejected result never becomes the next input. Dedicated image providers only. |
 | `/session` | Tabbed selector over saved sessions: "Resume" to resume one, "Delete" to multi-select and delete others. |
 | `/model` | Tabbed settings for the current session: "Model" picks the model, "Context" the context window, "Effort" the reasoning effort (`default`, `low`, `medium`, `high`, `xhigh`, `max` — passed to the provider verbatim, so a level the model doesn't support surfaces as an API error and you pick another), "Temperature" a slider (`default` omits the parameter). Enter applies all four tabs; only changed values are announced. |
 | `/compact [hint]` | Summarize older history to free context; optional hint guides what to keep |

@@ -90,7 +90,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 	}
 	editHint := ""
 	if imageProvider {
-		editHint = ", /edit"
+		editHint = ", /edit, /redo"
 	}
 	DimStyle.Println("Commands: /file [path]" + editHint + ", /session, /model" + compactHint + ", /export, /status, /tools, /debug" + saveHint + agentCommandHint(overlay))
 	if id := sw.ID(); id != "" {
@@ -418,6 +418,29 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				continue
 			}
 			pendingAttachments = append(pendingAttachments, refs...)
+			input = prompt
+		}
+		// /redo re-sends the LAST REQUEST — same reference images, same
+		// prompt unless a new one is given. Image models roll differently
+		// each call, and rewording works from the canvas that produced the
+		// rejected result rather than from the result itself (which is what
+		// ↑-recalling the /edit line, or another /edit, would do).
+		if imageProvider && (input == "/redo" || strings.HasPrefix(input, "/redo ")) {
+			last := lastUserMessage(history)
+			if last == nil {
+				printDim("Nothing to redo yet.")
+				continue
+			}
+			prompt := strings.TrimSpace(strings.TrimPrefix(input, "/redo"))
+			if prompt == "" {
+				prompt = last.Content
+			}
+			if strings.TrimSpace(prompt) == "" {
+				printDim("Nothing to redo yet — the last turn carried no prompt.")
+				continue
+			}
+			pendingAttachments = append(pendingAttachments, last.Attachments...)
+			printDim("Redoing: %s", truncateRunes(flattenPrompt(prompt), 60))
 			input = prompt
 		}
 		if input == "/model" || strings.HasPrefix(input, "/model ") {

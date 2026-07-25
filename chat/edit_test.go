@@ -42,3 +42,37 @@ func TestLastGeneratedImages(t *testing.T) {
 		t.Fatalf("non-image attachment treated as canvas: %v", got)
 	}
 }
+
+// /redo re-sends the last REQUEST: lastUserMessage is what it recovers, so
+// rewording works from the canvas that produced the rejected result — not
+// from that result (which is what another /edit would grab).
+func TestLastUserMessage(t *testing.T) {
+	canvas := provider.Attachment{Filename: "gen-1.png", MimeType: "image/png", Data: []byte{1}}
+	bad := provider.Attachment{Filename: "gen-2.png", MimeType: "image/png", Data: []byte{2}}
+
+	if got := lastUserMessage(nil); got != nil {
+		t.Fatalf("empty history: %v", got)
+	}
+	if got := lastUserMessage([]provider.Message{{Role: "assistant", Content: "hi"}}); got != nil {
+		t.Fatalf("no user turn: %v", got)
+	}
+
+	history := []provider.Message{
+		{Role: "user", Content: "a cat"},
+		{Role: "assistant", Attachments: []provider.Attachment{canvas}},
+		{Role: "user", Content: "add a heart", Attachments: []provider.Attachment{canvas}}, // the /edit turn
+		{Role: "assistant", Attachments: []provider.Attachment{bad}},                       // the rejected result
+	}
+	got := lastUserMessage(history)
+	if got == nil || got.Content != "add a heart" {
+		t.Fatalf("recovered request = %+v", got)
+	}
+	// The reference is the ORIGINAL canvas, never the rejected output.
+	if len(got.Attachments) != 1 || got.Attachments[0].Filename != "gen-1.png" {
+		t.Fatalf("references = %+v, want the canvas that produced the result", got.Attachments)
+	}
+	// Contrast: /edit would take the rejected image as its canvas.
+	if refs := lastGeneratedImages(history); len(refs) != 1 || refs[0].Filename != "gen-2.png" {
+		t.Fatalf("sanity: /edit canvas = %+v", refs)
+	}
+}
