@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/term"
@@ -49,8 +50,10 @@ func lastRounds(history []provider.Message, n int) []provider.Message {
 // chat's layout: user messages as full-width blocks, assistant replies through
 // the markdown renderer, and a blank line between messages. Tool activity is
 // not replayed verbatim — each round's tool-result messages collapse into one
-// dim "⚙ N tool call(s)" line. Reasoning is never replayed.
-func echoRounds(w io.Writer, msgs []provider.Message) {
+// dim "⚙ N tool call(s)" line. Reasoning is never replayed. imgDir is the
+// session's images directory ("" = none): a replayed image whose file still
+// exists there gets the live turn's clickable-path caption.
+func echoRounds(w io.Writer, msgs []provider.Message, imgDir string) {
 	tw := 100
 	if width, _, werr := term.GetSize(int(os.Stdout.Fd())); werr == nil && width > 0 {
 		tw = width
@@ -100,7 +103,7 @@ func echoRounds(w io.Writer, msgs []provider.Message) {
 				if msg.Content != "" || i > 0 {
 					fmt.Fprintln(w)
 				}
-				echoImage(w, att, tw)
+				echoImage(w, att, tw, imgDir)
 			}
 			if msg.Interrupted {
 				DimStyle.Fprintln(w, "(interrupted)")
@@ -114,11 +117,19 @@ func echoRounds(w io.Writer, msgs []provider.Message) {
 }
 
 // echoImage renders one replayed attachment: half-block rows plus a dim
-// filename caption, with the live path's indent and size caps.
-func echoImage(w io.Writer, att provider.Attachment, termWidth int) {
+// caption, with the live path's indent and size caps. When the image file
+// still exists under imgDir the caption is the live turn's clickable path
+// (OSC 8); otherwise it falls back to the bare filename.
+func echoImage(w io.Writer, att provider.Attachment, termWidth int, imgDir string) {
 	indent := strings.Repeat(" ", imageIndentCols)
+	caption := att.Filename
+	if imgDir != "" && att.Filename != "" {
+		if p := filepath.Join(imgDir, att.Filename); fileExists(p) {
+			caption = markdown.Hyperlink("file://"+p, p)
+		}
+	}
 	if !strings.HasPrefix(att.MimeType, "image/") || len(att.Data) == 0 {
-		DimStyle.Fprintf(w, "%s🖼 %s\n", indent, att.Filename)
+		DimStyle.Fprintf(w, "%s🖼 %s\n", indent, caption)
 		return
 	}
 	maxCols := imageMaxCols
@@ -127,13 +138,19 @@ func echoImage(w io.Writer, att provider.Attachment, termWidth int) {
 	}
 	rows, err := imgterm.Render(att.Data, maxCols, imageMaxRows)
 	if err != nil {
-		DimStyle.Fprintf(w, "%s🖼 %s\n", indent, att.Filename)
+		DimStyle.Fprintf(w, "%s🖼 %s\n", indent, caption)
 		return
 	}
 	for _, row := range rows {
 		fmt.Fprintln(w, indent+row)
 	}
-	DimStyle.Fprintf(w, "%s🖼 %s\n", indent, att.Filename)
+	DimStyle.Fprintf(w, "%s🖼 %s\n", indent, caption)
+}
+
+// fileExists reports whether path names an existing regular file.
+func fileExists(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().IsRegular()
 }
 
 // lastByteWriter tracks the final byte written, so the replay can tell an

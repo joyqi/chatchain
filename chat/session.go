@@ -576,6 +576,16 @@ func (w *SessionWriter) SetModel(model string) error {
 // demand): generated images live INSIDE the bundle so deleting the session
 // deletes them. "" on a nil writer — the caller falls back to the global
 // images directory for ephemeral sessions.
+// imagesPath is ImagesDir without the side effects: where this session's
+// images live (or would live), "" on a nil writer. The resume echo uses it
+// to link replayed images without creating directories.
+func (w *SessionWriter) imagesPath() string {
+	if w == nil || w.dir == "" {
+		return ""
+	}
+	return filepath.Join(w.dir, "images")
+}
+
 func (w *SessionWriter) ImagesDir() string {
 	if w == nil {
 		return ""

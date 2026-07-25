@@ -111,7 +111,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 	if len(importedHistory) > 0 {
 		if msgs := lastRounds(history, resumeEchoRounds); len(msgs) > 0 {
 			fmt.Println()
-			echoRounds(os.Stdout, msgs)
+			echoRounds(os.Stdout, msgs, sw.imagesPath())
 			echoed = true
 		}
 	}
@@ -638,7 +638,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			printDim("Resumed session %s (%d messages)", id, len(history))
 			if msgs := lastRounds(history, resumeEchoRounds); len(msgs) > 0 {
 				var buf strings.Builder
-				echoRounds(&buf, msgs)
+				echoRounds(&buf, msgs, sw.imagesPath())
 				tr.echo(strings.Split(strings.TrimRight(buf.String(), "\n"), "\n"))
 			}
 			pushStatus()

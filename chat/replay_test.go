@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"image"
 	"image/png"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -76,7 +78,7 @@ func TestEchoRounds(t *testing.T) {
 		{Role: "assistant", Content: "partial reply", Interrupted: true},
 	}
 	var buf bytes.Buffer
-	echoRounds(&buf, msgs)
+	echoRounds(&buf, msgs, "")
 	out := buf.String()
 
 	for _, want := range []string{
@@ -113,7 +115,7 @@ func TestEchoRoundsTrailingToolResults(t *testing.T) {
 		{Role: "tool", Content: "out"},
 	}
 	var buf bytes.Buffer
-	echoRounds(&buf, msgs)
+	echoRounds(&buf, msgs, "")
 	if !strings.Contains(buf.String(), "⚙ 1 tool call(s)") {
 		t.Errorf("expected trailing tool call line, got:\n%s", buf.String())
 	}
@@ -137,7 +139,7 @@ func TestEchoRoundsRendersImages(t *testing.T) {
 		{Role: "user", Content: "draw"},
 		{Role: "assistant", Attachments: []provider.Attachment{
 			{Filename: "image-1.png", MimeType: "image/png", Data: pngBuf.Bytes()}}},
-	})
+	}, "")
 	s := out.String()
 	if !strings.Contains(s, "▀") {
 		t.Fatalf("no half-block rows in echo:\n%q", s)
@@ -150,8 +152,34 @@ func TestEchoRoundsRendersImages(t *testing.T) {
 	echoRounds(&out, []provider.Message{
 		{Role: "assistant", Attachments: []provider.Attachment{
 			{Filename: "broken.png", MimeType: "image/png", Data: []byte{1, 2}}}},
-	})
+	}, "")
 	if s := out.String(); strings.Contains(s, "▀") || !strings.Contains(s, "🖼 broken.png") {
 		t.Fatalf("broken image must fall back to the caption line:\n%q", s)
+	}
+}
+
+// With the session's images directory supplied and the file still on disk,
+// the caption becomes the live turn's clickable path (OSC 8 file:// link);
+// a missing file falls back to the bare filename.
+func TestEchoImageLinkedCaption(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "image-1.png")
+	if err := os.WriteFile(path, []byte{9}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	att := provider.Attachment{Filename: "image-1.png", MimeType: "image/png", Data: []byte{1}} // undecodable: caption only
+
+	// markdown.Hyperlink degrades to the bare text without a TTY, so the
+	// pinned contract is the full path in the caption (the link target).
+	var out bytes.Buffer
+	echoImage(&out, att, 100, dir)
+	if s := out.String(); !strings.Contains(s, path) {
+		t.Fatalf("caption must carry the on-disk path:\n%q", s)
+	}
+
+	out.Reset()
+	echoImage(&out, provider.Attachment{Filename: "gone.png", MimeType: "image/png", Data: []byte{1}}, 100, dir)
+	if s := out.String(); strings.Contains(s, dir) || !strings.Contains(s, "gone.png") {
+		t.Fatalf("missing file must fall back to the bare name:\n%q", s)
 	}
 }
