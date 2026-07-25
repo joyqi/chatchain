@@ -69,9 +69,23 @@ var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"")
 // Edit is the multipart POST /images/edits call. A single reference uploads
 // as the `image` field, several as `image[]` entries — mirroring what the
 // official SDKs put on the wire for the two cases.
+//
+// TEXT FIELDS COME FIRST. Relay gateways sniff `model` in the form's leading
+// bytes to route the request; with a multi-MB image part first, the field
+// falls outside the sniff window and zenmux answers 404 "Requested model is
+// not valid" (reproduced live — small images masked the bug). The official
+// SDKs order fields-then-files too.
 func (i Images) Edit(ctx context.Context, req *ImagesEditRequest) (*ImagesResponse, error) {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
+	w.WriteField("model", req.Model)
+	w.WriteField("prompt", req.Prompt)
+	if req.N > 0 {
+		w.WriteField("n", strconv.Itoa(req.N))
+	}
+	if req.Size != "" {
+		w.WriteField("size", req.Size)
+	}
 	field := "image"
 	if len(req.Images) > 1 {
 		field = "image[]"
@@ -88,14 +102,6 @@ func (i Images) Edit(ctx context.Context, req *ImagesEditRequest) (*ImagesRespon
 		if _, err := part.Write(f.Data); err != nil {
 			return nil, err
 		}
-	}
-	w.WriteField("model", req.Model)
-	w.WriteField("prompt", req.Prompt)
-	if req.N > 0 {
-		w.WriteField("n", strconv.Itoa(req.N))
-	}
-	if req.Size != "" {
-		w.WriteField("size", req.Size)
 	}
 	if err := w.Close(); err != nil {
 		return nil, err

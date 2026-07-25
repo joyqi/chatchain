@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -56,7 +57,15 @@ func TestImagesGoldenEdit(t *testing.T) {
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path = r.URL.Path
+		var raw bytes.Buffer
+		r.Body = io.NopCloser(io.TeeReader(r.Body, &raw))
 		r.ParseMultipartForm(1 << 20)
+		// Text fields must precede the file parts: relay gateways sniff
+		// `model` in the form's leading bytes (a multi-MB image first pushed
+		// it out of the window → 404 invalid_model, reproduced live).
+		if i, j := bytes.Index(raw.Bytes(), []byte(`name="model"`)), bytes.Index(raw.Bytes(), []byte(`name="image`)); i < 0 || j < 0 || i > j {
+			t.Errorf("model field must precede file parts (model@%d image@%d)", i, j)
+		}
 		prompt, model = r.FormValue("prompt"), r.FormValue("model")
 		n, size = r.FormValue("n"), r.FormValue("size")
 		fields = map[string][]*struct {
