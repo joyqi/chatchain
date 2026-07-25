@@ -236,11 +236,32 @@ func joinOverflow(over []string) string {
 // reach stay as residue for later lines — height constant either way. A call
 // preview's status row contributes a blank placeholder so its vanishing never
 // shrinks the window.
+//
+// Overwide entries are hard-wrapped on the way in: staged tail rows render
+// inside the frame, where the cell grid CLIPS overwide lines, while overflowed
+// rows soft-wrap in the terminal — pre-wrapping is the only way both stages
+// show the same thing. It also makes the one-entry-one-row assumption
+// (rowsAbove, rebalance, overflow counts) hold by construction. Rows that
+// already fit (markdown, user blocks — producers wrap to width themselves)
+// pass through untouched, and wrapping targets width-1 so no produced row
+// lands in sanitizeOverflow's exact-multiple trap, which would eat its last
+// character. Width 0 (startup, tests) skips wrapping.
 func (r *region) commit(lines []string) {
 	if len(lines) == 0 {
 		return
 	}
 	lines = splitRows(lines)
+	if w := r.screenWidth(); w > 1 {
+		wrapped := make([]string, 0, len(lines))
+		for _, ln := range lines {
+			if ansi.StringWidth(ln) <= w {
+				wrapped = append(wrapped, ln)
+			} else {
+				wrapped = append(wrapped, wrapANSI(ln, w-1)...)
+			}
+		}
+		lines = wrapped
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	debugRegion("commit %q label=%q open=%v residue=%d", lines, r.label, r.open, len(r.residue))

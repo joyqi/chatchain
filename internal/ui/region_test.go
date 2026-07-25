@@ -19,6 +19,45 @@ func TestRegionCommitSplitsEmbeddedNewlines(t *testing.T) {
 	}
 }
 
+// Overwide entries are hard-wrapped on commit: staged in the frame they would
+// be CLIPPED by the cell grid while scrollback soft-wraps them — the class of
+// "the first error shows truncated, then wraps once it scrolls out". Wrapping
+// targets width-1 (sanitizeOverflow eats the last character of exact-multiple
+// rows), and rows that already fit — like UserBlock's full-width rows — pass
+// through untouched.
+func TestRegionCommitWrapsToScreenWidth(t *testing.T) {
+	var scroll []string
+	r := &region{u: &UI{}, emit: func(over []string, snap regionMsg) {
+		scroll = append(scroll, over...)
+	}}
+	r.u.width.Store(10)
+
+	r.commit([]string{"aaaaaaaaaabbbbbbbbbbcc", "\x1b[31mdddddddddddd\x1b[0m", "fits-fine"})
+	want := []string{
+		"aaaaaaaaa", "abbbbbbbb", "bbcc",
+		"\x1b[31mddddddddd", "\x1b[31mddd\x1b[0m",
+		"fits-fine",
+	}
+	all := append(append([]string{}, scroll...), r.tail...)
+	if len(all) != len(want) {
+		t.Fatalf("rows = %q, want %q", all, want)
+	}
+	for i := range want {
+		if all[i] != want[i] {
+			t.Fatalf("row %d = %q, want %q", i, all[i], want[i])
+		}
+	}
+}
+
+// Width 0 (startup before the first resize, emit-seam tests) skips wrapping.
+func TestRegionCommitNoWidthNoWrap(t *testing.T) {
+	r := &region{emit: func([]string, regionMsg) {}}
+	r.commit([]string{strings.Repeat("x", 500)})
+	if len(r.tail) != 1 {
+		t.Fatalf("tail rows = %d, want 1", len(r.tail))
+	}
+}
+
 // The one-row invariant on the preview side: labels (fresh open AND the
 // in-place relabel), rolling preview lines, and the status-row detail are
 // each rendered — and counted in the cursor offset — as exactly one frame
