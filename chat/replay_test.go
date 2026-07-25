@@ -83,7 +83,8 @@ func TestEchoRounds(t *testing.T) {
 
 	for _, want := range []string{
 		"first question",
-		"(2 attachment(s))",
+		"📎 a.png",
+		"📎 b.pdf",
 		"⚙ 2 tool call(s)",
 		"final answer",
 		"second question",
@@ -181,5 +182,36 @@ func TestEchoImageLinkedCaption(t *testing.T) {
 	echoImage(&out, provider.Attachment{Filename: "gone.png", MimeType: "image/png", Data: []byte{1}}, 100, dir)
 	if s := out.String(); strings.Contains(s, dir) || !strings.Contains(s, "gone.png") {
 		t.Fatalf("missing file must fall back to the bare name:\n%q", s)
+	}
+}
+
+// The /edit canvas dedup: a user attachment sharing its name with an
+// assistant image in the echoed window is suppressed (that picture already
+// rendered above); when the source round fell outside the window the marker
+// shows — then it is the only trace of the reference.
+func TestEchoRoundsCanvasDedup(t *testing.T) {
+	img := provider.Attachment{Filename: "gen-1.png", MimeType: "image/png", Data: []byte{1}}
+
+	var buf bytes.Buffer
+	echoRounds(&buf, []provider.Message{
+		{Role: "user", Content: "a cat"},
+		{Role: "assistant", Attachments: []provider.Attachment{img}},
+		{Role: "user", Content: "add a hat", Attachments: []provider.Attachment{img}}, // /edit turn
+		{Role: "assistant", Attachments: []provider.Attachment{
+			{Filename: "gen-2.png", MimeType: "image/png", Data: []byte{2}}}},
+	}, "")
+	if s := buf.String(); strings.Contains(s, "📎") {
+		t.Fatalf("canvas copy must be suppressed:\n%q", s)
+	}
+
+	// Same /edit turn, but the source round is outside the window.
+	buf.Reset()
+	echoRounds(&buf, []provider.Message{
+		{Role: "user", Content: "add a hat", Attachments: []provider.Attachment{img}},
+		{Role: "assistant", Attachments: []provider.Attachment{
+			{Filename: "gen-2.png", MimeType: "image/png", Data: []byte{2}}}},
+	}, "")
+	if s := buf.String(); !strings.Contains(s, "📎 gen-1.png") {
+		t.Fatalf("cut-off canvas must keep its marker:\n%q", s)
 	}
 }

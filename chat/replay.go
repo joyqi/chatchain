@@ -58,6 +58,22 @@ func echoRounds(w io.Writer, msgs []provider.Message, imgDir string) {
 	if width, _, werr := term.GetSize(int(os.Stdout.Fd())); werr == nil && width > 0 {
 		tw = width
 	}
+	// Assistant attachment names in this window: a user attachment with the
+	// same name is the /edit canvas copy of an image RENDERED elsewhere in
+	// the echo — repeating it as a marker is pure noise. When the canvas's
+	// source round fell outside the window the name won't match and the
+	// marker rightly shows (then it IS the only trace of the reference).
+	rendered := map[string]bool{}
+	for _, m := range msgs {
+		if m.Role != "assistant" {
+			continue
+		}
+		for _, a := range m.Attachments {
+			if a.Filename != "" {
+				rendered[a.Filename] = true
+			}
+		}
+	}
 	toolResults := 0
 	// flushTools prints the aggregated tool-activity line for the current round
 	// once something else is about to print (or the replay ends).
@@ -74,8 +90,23 @@ func echoRounds(w io.Writer, msgs []provider.Message, imgDir string) {
 		case "user":
 			flushTools()
 			printUserBlock(w, msg.Content)
-			if n := len(msg.Attachments); n > 0 {
-				DimStyle.Fprintf(w, "(%d attachment(s))\n", n)
+			// Named per-file lines instead of a bare count; canvas copies
+			// (see `rendered`) are suppressed. Files still present in the
+			// session's images dir get the clickable path.
+			for _, att := range msg.Attachments {
+				if rendered[att.Filename] {
+					continue
+				}
+				label := att.Filename
+				if label == "" {
+					label = att.MimeType
+				}
+				if imgDir != "" && att.Filename != "" {
+					if p := filepath.Join(imgDir, att.Filename); fileExists(p) {
+						label = markdown.Hyperlink("file://"+p, p)
+					}
+				}
+				DimStyle.Fprintf(w, "📎 %s\n", label)
 			}
 			fmt.Fprintln(w)
 		case "assistant":
