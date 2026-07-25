@@ -31,10 +31,13 @@ type ImagesRequest struct {
 }
 
 // ImageDatum is one generated image: b64 payload (gpt-image, relays) or a
-// short-lived URL (DALL·E's default response form).
+// short-lived URL (DALL·E's default response form). OpenAI states no type
+// for the inline form (png unless output_format asked otherwise), while
+// relays may declare one — OpenRouter answers JPEG bytes with media_type.
 type ImageDatum struct {
-	B64JSON []byte `json:"b64_json,omitempty"`
-	URL     string `json:"url,omitempty"`
+	B64JSON   []byte `json:"b64_json,omitempty"`
+	URL       string `json:"url,omitempty"`
+	MediaType string `json:"media_type,omitempty"`
 }
 
 type ImagesResponse struct {

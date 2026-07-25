@@ -195,9 +195,7 @@ func (p *ImagenProvider) Chat(ctx context.Context, messages []Message) (string, 
 				return "", fmt.Errorf("imagen: fetching result image: %w", ferr)
 			}
 		}
-		if mime == "" {
-			mime = "image/png"
-		}
+		mime = imageMime(mime, data)
 		p.lastImages = append(p.lastImages, Attachment{
 			Filename: fmt.Sprintf("image-%d%s", i+1, extForMime(mime)),
 			MimeType: mime,

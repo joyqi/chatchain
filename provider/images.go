@@ -115,7 +115,7 @@ func (p *ImagesProvider) Chat(ctx context.Context, messages []Message) (string, 
 		return "", err
 	}
 	for i, d := range resp.Data {
-		data, mime := []byte(d.B64JSON), "image/png"
+		data, mime := []byte(d.B64JSON), imageMime(d.MediaType, d.B64JSON)
 		if len(data) == 0 && d.URL != "" {
 			// DALL·E's default response form: a short-lived link, fetched
 			// immediately (unauthenticated — the URL itself is the token).
@@ -143,6 +143,27 @@ func (p *ImagesProvider) StreamChat(ctx context.Context, messages []Message, w i
 	reasoning.Close()
 	_, err := p.Chat(ctx, messages)
 	return "", "", err
+}
+
+// imageMime settles an inline payload's type: the backend's own declaration
+// when it makes one (parameters stripped — the extension maps and the edit
+// multipart replay match on the bare type), otherwise the bytes themselves.
+// Sniffing is what keeps a JPEG from being filed as .png: OpenAI declares
+// nothing and its default is png, but relays and output_format:jpeg|webp
+// break that assumption.
+func imageMime(declared string, data []byte) string {
+	if declared != "" {
+		if mt, _, err := mime.ParseMediaType(declared); err == nil {
+			declared = mt
+		}
+		if strings.HasPrefix(declared, "image/") {
+			return declared
+		}
+	}
+	if sniffed := http.DetectContentType(data); strings.HasPrefix(sniffed, "image/") {
+		return sniffed
+	}
+	return "image/png"
 }
 
 // maxImageFetch bounds a URL-form result download — far above any legitimate

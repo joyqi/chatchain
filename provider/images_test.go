@@ -260,3 +260,47 @@ func TestImagesJSONEdits(t *testing.T) {
 		t.Fatal("json edits must default to off")
 	}
 }
+
+// Inline payload types: a declared media_type wins (parameters stripped),
+// otherwise the bytes are sniffed — OpenAI declares nothing and defaults to
+// png, but relays answer JPEG and output_format can ask for webp, so a
+// hardcoded png would file the wrong extension and replay the wrong part
+// type on the next edit.
+func TestImageMimeResolution(t *testing.T) {
+	jpeg := []byte{0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0}
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}
+
+	for name, tc := range map[string]struct {
+		declared string
+		data     []byte
+		want     string
+	}{
+		"declared wins":           {"image/jpeg", png, "image/jpeg"},
+		"declared params strip":   {"image/jpeg; charset=binary", png, "image/jpeg"},
+		"sniffed when undeclared": {"", jpeg, "image/jpeg"},
+		"sniffed png":             {"", png, "image/png"},
+		"non-image declaration":   {"application/octet-stream", jpeg, "image/jpeg"},
+		"unknown bytes":           {"", []byte{0, 1, 2, 3}, "image/png"},
+	} {
+		if got := imageMime(tc.declared, tc.data); got != tc.want {
+			t.Errorf("%s: imageMime(%q, …) = %q, want %q", name, tc.declared, got, tc.want)
+		}
+	}
+}
+
+// The relay shape end to end: JPEG bytes announced by media_type must reach
+// LastImages as image/jpeg with a .jpg name (OpenRouter's answer).
+func TestImagesMediaTypeHonored(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[{"b64_json":"/9j/4AAQ","media_type":"image/jpeg"}]}`))
+	}))
+	defer srv.Close()
+	p := NewImages("k", srv.URL, "google/gemini-3.1-flash-lite-image", srv.Client())
+	if _, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "a cat"}}); err != nil {
+		t.Fatal(err)
+	}
+	imgs := p.LastImages()
+	if len(imgs) != 1 || imgs[0].MimeType != "image/jpeg" || imgs[0].Filename != "image-1.jpg" {
+		t.Fatalf("LastImages = %+v", imgs)
+	}
+}
