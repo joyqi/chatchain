@@ -20,6 +20,7 @@ func (s *recSurface) UserBlock(display string) { s.events = append(s.events, "us
 func (s *recSurface) CallPreview(label string) { s.events = append(s.events, "call:"+label) }
 func (s *recSurface) CallDetail(detail string) { s.events = append(s.events, "detail:"+detail) }
 func (s *recSurface) ClosePreview()            { s.events = append(s.events, "settle") }
+func (s *recSurface) Width() int               { return 80 }
 
 func (s *recSurface) joined() string { return strings.Join(s.events, "\n") }
 

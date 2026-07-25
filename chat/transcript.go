@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // The transcript is the session's single write surface for the chat area:
@@ -48,6 +50,7 @@ type transcriptSurface interface {
 	CallPreview(label string)
 	CallDetail(detail string)
 	ClosePreview()
+	Width() int
 }
 
 type transcript struct {
@@ -137,6 +140,39 @@ func (t *transcript) notice(format string, a ...any) {
 // error prints a red one-liner; consecutive errors group into one block.
 func (t *transcript) error(format string, a ...any) {
 	t.grouped(blockError, ErrorStyle.Sprintf(format, a...))
+}
+
+// errorBlock renders a structured error: a red "✗ headline" row over dim
+// detail rows in the tool-result idiom ("  ⎿ " on the first, four-space
+// indent after). Detail rows are pre-wrapped under the hanging indent —
+// wrapping left to the region would restart continuation rows at column
+// zero — sized so no produced row reaches the exact screen width (the region
+// passes rows ≤ width through untouched, and sanitizeOverflow eats a column
+// off exact-width rows). Groups with adjacent error blocks like error().
+func (t *transcript) errorBlock(headline string, detail ...string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.last != blockError {
+		t.beginLocked(blockError)
+	}
+	wrapAt := t.u.Width() - 5
+	if wrapAt < 20 {
+		wrapAt = 20
+	}
+	lines := []string{ErrorStyle.Sprint("✗ " + headline)}
+	indent := "  ⎿ "
+	for _, d := range detail {
+		for _, ln := range strings.Split(d, "\n") {
+			if strings.TrimSpace(ln) == "" {
+				continue
+			}
+			for _, row := range strings.Split(ansi.Wrap(strings.TrimRight(ln, "\r"), wrapAt, ""), "\n") {
+				lines = append(lines, DimStyle.Sprint(indent+row))
+				indent = "    "
+			}
+		}
+	}
+	t.pushLocked(lines)
 }
 
 func (t *transcript) grouped(kind blockKind, line string) {

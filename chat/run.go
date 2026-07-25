@@ -250,8 +250,11 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 		pushStatus()
 	}
 
-	// retry mirrors retryWithCountdown without the \r countdown (the frame
-	// spinner shows the wait instead).
+	// retry re-attempts transient failures with linear backoff. The current
+	// error's classification rides the busy status row ("Rate limited (429) —
+	// retrying …"); nothing lands in the transcript until the turn gives up —
+	// the caller prints the FINAL error once, instead of one red wall per
+	// attempt.
 	retry := func(fn func() error) error {
 		err := fn()
 		if err == nil || !isRetryable(err) {
@@ -264,8 +267,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			return err
 		}
 		for attempt := 1; attempt <= maxRetries; attempt++ {
-			printErr("Error: %v", err)
-			stop := u.Busy(fmt.Sprintf("Rate limited — retrying (attempt %d/%d)", attempt, maxRetries))
+			stop := u.Busy(fmt.Sprintf("%s — retrying (attempt %d/%d)", describeError(err).Headline, attempt, maxRetries))
 			time.Sleep(time.Duration(attempt) * time.Second)
 			stop()
 			err = fn()
@@ -821,7 +823,8 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			continue
 		}
 		if retryErr != nil {
-			printErr("Error: %v", retryErr)
+			report := describeError(retryErr)
+			tr.errorBlock(report.Headline, report.lines()...)
 			history = history[:hist0-1]
 			continue
 		}
