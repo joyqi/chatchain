@@ -463,22 +463,30 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			aspectIdx, sizeIdx, negIdx := -1, -1, -1
 			var aspectVals, sizeVals []string
 			if imgGenOK {
+				// Each knob appears only when the dialect has it: imagen
+				// offers ratios+sizes+negative, images only sizes.
 				opts := imgGen.ImageGenOptions()
 				cur := imgGen.ImageGenParams()
 				var rowLabels []string
 				var rowIdx int
-				aspectVals, rowLabels, rowIdx = choiceRows(cur.AspectRatio, opts.AspectRatios)
-				aspectIdx = len(panels)
-				panels = append(panels, ui.Panel{Title: "Aspect", Kind: ui.PanelList, Items: rowLabels, Cursor: rowIdx,
-					Prompt: "Aspect ratio of generated images"})
-				sizeVals, rowLabels, rowIdx = choiceRows(cur.ImageSize, opts.ImageSizes)
-				sizeIdx = len(panels)
-				panels = append(panels, ui.Panel{Title: "Size", Kind: ui.PanelList, Items: rowLabels, Cursor: rowIdx,
-					Prompt: "Output resolution tier"})
-				negIdx = len(panels)
-				panels = append(panels, ui.Panel{Title: "Negative", Kind: ui.PanelInput, Text: cur.NegativePrompt,
-					Placeholder: "what to avoid (empty = none)", InputWidth: 40,
-					Prompt: "Negative prompt (backend support varies)"})
+				if len(opts.AspectRatios) > 0 {
+					aspectVals, rowLabels, rowIdx = choiceRows(cur.AspectRatio, opts.AspectRatios)
+					aspectIdx = len(panels)
+					panels = append(panels, ui.Panel{Title: "Aspect", Kind: ui.PanelList, Items: rowLabels, Cursor: rowIdx,
+						Prompt: "Aspect ratio of generated images"})
+				}
+				if len(opts.ImageSizes) > 0 {
+					sizeVals, rowLabels, rowIdx = choiceRows(cur.ImageSize, opts.ImageSizes)
+					sizeIdx = len(panels)
+					panels = append(panels, ui.Panel{Title: "Size", Kind: ui.PanelList, Items: rowLabels, Cursor: rowIdx,
+						Prompt: "Output resolution tier"})
+				}
+				if opts.NegativePrompt {
+					negIdx = len(panels)
+					panels = append(panels, ui.Panel{Title: "Negative", Kind: ui.PanelInput, Text: cur.NegativePrompt,
+						Placeholder: "what to avoid (empty = none)", InputWidth: 40,
+						Prompt: "Negative prompt (backend support varies)"})
+				}
 			}
 			r, serr := u.Tabbed(ctx, ui.TabbedSpec{Panels: panels})
 			if serr != nil || r.Cancelled {
@@ -532,10 +540,17 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				}
 			}
 			if imgGenOK {
-				g := provider.ImageGenParams{
-					AspectRatio:    aspectVals[r.Panels[aspectIdx].Cursor],
-					ImageSize:      sizeVals[r.Panels[sizeIdx].Cursor],
-					NegativePrompt: strings.TrimSpace(r.Panels[negIdx].Text),
+				// Start from the current params so knobs without a tab keep
+				// their values.
+				g := imgGen.ImageGenParams()
+				if aspectIdx >= 0 {
+					g.AspectRatio = aspectVals[r.Panels[aspectIdx].Cursor]
+				}
+				if sizeIdx >= 0 {
+					g.ImageSize = sizeVals[r.Panels[sizeIdx].Cursor]
+				}
+				if negIdx >= 0 {
+					g.NegativePrompt = strings.TrimSpace(r.Panels[negIdx].Text)
 				}
 				if g != imgGen.ImageGenParams() {
 					imgGen.SetImageGenParams(g)

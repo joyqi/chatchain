@@ -1,0 +1,189 @@
+package provider
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+// TestImagesGoldenGenerate pins the /images/generations wire: bearer auth,
+// n pinned to 1, size passthrough, b64 response into LastImages.
+func TestImagesGoldenGenerate(t *testing.T) {
+	var path, auth string
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, auth = r.URL.Path, r.Header.Get("Authorization")
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &got)
+		w.Write([]byte(`{"data":[{"b64_json":"CQ=="}]}`))
+	}))
+	defer srv.Close()
+
+	p := NewImages("k", srv.URL, "gpt-image-1", srv.Client())
+	p.SetImageGenParams(ImageGenParams{ImageSize: "1024x1024"})
+	text, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "a cat"}})
+	if err != nil || text != "" {
+		t.Fatalf("Chat: %q %v", text, err)
+	}
+	if path != "/images/generations" || auth != "Bearer k" {
+		t.Fatalf("path=%s auth=%q", path, auth)
+	}
+	if got["model"] != "gpt-image-1" || got["prompt"] != "a cat" || got["n"] != float64(1) || got["size"] != "1024x1024" {
+		t.Fatalf("body = %v", got)
+	}
+	if _, ok := got["response_format"]; ok {
+		t.Fatal("response_format must be omitted (gpt-image rejects it)")
+	}
+	imgs := p.LastImages()
+	if len(imgs) != 1 || imgs[0].MimeType != "image/png" || imgs[0].Filename != "image-1.png" {
+		t.Fatalf("LastImages = %+v", imgs)
+	}
+}
+
+// References switch the call to multipart /images/edits: one ref uploads as
+// `image`, several as `image[]`, with per-part content types and the same
+// form fields.
+func TestImagesGoldenEdit(t *testing.T) {
+	var path, prompt, model, n, size string
+	var fields map[string][]*struct {
+		name, mime string
+		data       []byte
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		r.ParseMultipartForm(1 << 20)
+		prompt, model = r.FormValue("prompt"), r.FormValue("model")
+		n, size = r.FormValue("n"), r.FormValue("size")
+		fields = map[string][]*struct {
+			name, mime string
+			data       []byte
+		}{}
+		for field, files := range r.MultipartForm.File {
+			for _, fh := range files {
+				f, _ := fh.Open()
+				data, _ := io.ReadAll(f)
+				f.Close()
+				fields[field] = append(fields[field], &struct {
+					name, mime string
+					data       []byte
+				}{fh.Filename, fh.Header.Get("Content-Type"), data})
+			}
+		}
+		w.Write([]byte(`{"data":[{"b64_json":"CQ=="}]}`))
+	}))
+	defer srv.Close()
+
+	p := NewImages("k", srv.URL, "gpt-image-1", srv.Client())
+	ref := Attachment{Filename: "image-1.png", MimeType: "image/png", Data: []byte{7}}
+	if _, err := p.Chat(context.Background(), []Message{
+		{Role: "user", Content: "add a robot", Attachments: []Attachment{ref}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if path != "/images/edits" || prompt != "add a robot" || model != "gpt-image-1" || n != "1" || size != "" {
+		t.Fatalf("form: path=%s prompt=%q model=%q n=%q size=%q", path, prompt, model, n, size)
+	}
+	files := fields["image"]
+	if len(files) != 1 || files[0].name != "image-1.png" || files[0].mime != "image/png" || files[0].data[0] != 7 {
+		t.Fatalf("single ref must upload as `image`: %+v", fields)
+	}
+
+	// Two references: the field name becomes image[].
+	if _, err := p.Chat(context.Background(), []Message{
+		{Role: "user", Content: "merge them", Attachments: []Attachment{ref,
+			{Filename: "b.jpg", MimeType: "image/jpeg", Data: []byte{8}}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fields["image[]"]) != 2 {
+		t.Fatalf("multiple refs must upload as image[]: %+v", fields)
+	}
+}
+
+// DALL·E's default response form is a short-lived URL — fetched immediately,
+// mime taken from the response header.
+func TestImagesURLFallback(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	mux.HandleFunc("/blob", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			t.Error("blob fetch must not carry the API key")
+		}
+		// Parameterful content type: the stored mime must come back as the
+		// bare type (extension maps and the /edit replay exact-match it).
+		w.Header().Set("Content-Type", "image/jpeg; charset=binary")
+		w.Write([]byte{9, 9})
+	})
+	mux.HandleFunc("/images/generations", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[{"url":"` + srv.URL + `/blob"}]}`))
+	})
+
+	p := NewImages("k", srv.URL, "dall-e-3", srv.Client())
+	if _, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "a cat"}}); err != nil {
+		t.Fatal(err)
+	}
+	imgs := p.LastImages()
+	if len(imgs) != 1 || imgs[0].MimeType != "image/jpeg" || len(imgs[0].Data) != 2 {
+		t.Fatalf("LastImages = %+v", imgs)
+	}
+}
+
+func TestImagesListModelsFilter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			w.WriteHeader(404)
+			return
+		}
+		w.Write([]byte(`{"data":[
+			{"id":"chat-model","output_modalities":["text"]},
+			{"id":"image-model","output_modalities":["image"]},
+			{"id":"bare-model"}
+		]}`))
+	}))
+	defer srv.Close()
+	p := NewImages("k", srv.URL, "m", srv.Client())
+	names, err := p.ListModels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(names, ",") != "bare-model,image-model" {
+		t.Fatalf("names = %v", names)
+	}
+}
+
+func TestImagesCapabilitySurface(t *testing.T) {
+	var p Provider = NewImages("k", "", "m", nil)
+	if _, ok := p.(Tunable); ok {
+		t.Fatal("images must not be Tunable")
+	}
+	if _, ok := p.(UsageReporter); ok {
+		t.Fatal("images must not be a UsageReporter")
+	}
+	tun, ok := p.(ImageGenTunable)
+	if !ok {
+		t.Fatal("images must expose generation params")
+	}
+	o := tun.ImageGenOptions()
+	if len(o.ImageSizes) == 0 || len(o.AspectRatios) != 0 || o.NegativePrompt {
+		t.Fatalf("options = %+v: the dialect has sizes only", o)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+	pe := NewImages("k", srv.URL, "m", srv.Client())
+	var perm *PermanentError
+	if _, err := pe.Chat(context.Background(), []Message{{Role: "user", Content: "x"}}); !errors.As(err, &perm) {
+		t.Fatalf("empty data must be a PermanentError, got %v", err)
+	}
+	if _, err := pe.Chat(context.Background(), nil); !errors.As(err, &perm) {
+		t.Fatalf("empty prompt must be a PermanentError, got %v", err)
+	}
+}

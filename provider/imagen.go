@@ -65,8 +65,9 @@ func (p *ImagenProvider) ImageGenParams() ImageGenParams     { return p.gen }
 // given backend lacks is ignored or rejected server-side.
 func (p *ImagenProvider) ImageGenOptions() ImageGenOptions {
 	return ImageGenOptions{
-		AspectRatios: []string{"1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"},
-		ImageSizes:   []string{"1K", "2K", "4K"},
+		AspectRatios:   []string{"1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"},
+		ImageSizes:     []string{"1K", "2K", "4K"},
+		NegativePrompt: true,
 	}
 }
 
@@ -109,19 +110,23 @@ func imageCapable(m llm.GModelInfo) bool {
 	return false
 }
 
-// buildRequest derives the predict call from the trailing user message
-// alone: its content is the prompt, its image attachments the reference
-// images (referenceId 1..n). Earlier history is record, not input.
-func (p *ImagenProvider) buildRequest(messages []Message) (*llm.PredictRequest, error) {
-	prompt := ""
-	var refs []Attachment
+// lastUserTurn is the whole input of a stateless image-provider turn: the
+// trailing user message's content and image attachments. Earlier history is
+// record, not input — editing re-attaches explicitly (the /edit command).
+// Shared by every dedicated image dialect (imagen, images).
+func lastUserTurn(messages []Message) (prompt string, refs []Attachment) {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "user" {
-			prompt = messages[i].Content
-			refs = imageAttachments(messages[i].Attachments)
-			break
+			return messages[i].Content, imageAttachments(messages[i].Attachments)
 		}
 	}
+	return "", nil
+}
+
+// buildRequest derives the predict call from the trailing user message alone
+// (lastUserTurn), reference images numbered 1..n.
+func (p *ImagenProvider) buildRequest(messages []Message) (*llm.PredictRequest, error) {
+	prompt, refs := lastUserTurn(messages)
 	if strings.TrimSpace(prompt) == "" {
 		return nil, &PermanentError{Err: fmt.Errorf("imagen: empty prompt")}
 	}

@@ -38,7 +38,7 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "chatchain [openai|anthropic|gemini|vertexai|openresponses|imagen]",
+	Use:   "chatchain [openai|anthropic|gemini|vertexai|openresponses|imagen|images]",
 	Short: "A lightweight cross-platform AI chat CLI",
 	Args:  cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -120,8 +120,8 @@ var rootCmd = &cobra.Command{
 		if pc.Image {
 			if tun, ok := p.(provider.ImageTunable); ok {
 				tun.SetImageOutput(true)
-			} else if p.Type() == "imagen" {
-				fmt.Fprintf(os.Stderr, "Warning: `image: true` is redundant for provider type imagen (it always generates images)\n")
+			} else if _, ok := p.(provider.ImageGenTunable); ok {
+				fmt.Fprintf(os.Stderr, "Warning: `image: true` is redundant for provider type %s (it always generates images)\n", p.Type())
 			}
 		}
 		if pc.Effort != "" {
@@ -464,6 +464,7 @@ var providerEnvKeys = map[string]string{
 	"vertexai":      "GOOGLE_API_KEY",
 	"openresponses": "OPENAI_API_KEY",
 	"imagen":        "GOOGLE_API_KEY", // official Gemini API is its default target
+	"images":        "OPENAI_API_KEY", // official OpenAI API is its default target
 }
 
 func providerEnvKey(providerType string) string {

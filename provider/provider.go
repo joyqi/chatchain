@@ -126,6 +126,9 @@ type ImageGenParams struct {
 type ImageGenOptions struct {
 	AspectRatios []string
 	ImageSizes   []string
+	// NegativePrompt reports whether the dialect carries one at all — the
+	// /model Negative tab appears only when true.
+	NegativePrompt bool
 }
 
 // ImageGenTunable is an optional interface: dedicated image providers expose
@@ -184,10 +187,12 @@ func New(providerType, apiKey, baseURL, model string, temperature *float64, http
 	case "vertexai":
 		return NewVertexAI(apiKey, baseURL, model, temperature, httpClient), nil
 	case "imagen":
-		// A dedicated image provider: temperature does not apply (callers
-		// warn when one is configured — the type is not Tunable).
+		// Dedicated image providers: temperature does not apply (callers
+		// warn when one is configured — the types are not Tunable).
 		return NewImagen(apiKey, baseURL, model, httpClient), nil
+	case "images":
+		return NewImages(apiKey, baseURL, model, httpClient), nil
 	default:
-		return nil, fmt.Errorf("unknown provider type: %s (supported: openai, anthropic, gemini, vertexai, openresponses, imagen)", providerType)
+		return nil, fmt.Errorf("unknown provider type: %s (supported: openai, anthropic, gemini, vertexai, openresponses, imagen, images)", providerType)
 	}
 }

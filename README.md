@@ -220,7 +220,7 @@ tool (works with gpt-5-family models); on Google it adds
 `responseModalities: ["TEXT","IMAGE"]` for official-API models that require
 the opt-in — relays like zenmux generate without it.
 
-#### Dedicated image models — the `imagen` provider type
+#### Dedicated image models — the `imagen` and `images` provider types
 
 Models that ONLY generate images — Doubao Seedream, official Imagen, and the
 other pure image models relay stations host — have no chat endpoint at all;
@@ -248,7 +248,16 @@ providers:
 
 The same knobs are adjustable mid-chat: `/model` grows **Aspect**, **Size**,
 and **Negative** tabs for image providers (a "default" row omits the
-parameter), persisted with the session and replayed on resume.
+parameter), persisted with the session and replayed on resume. Only the tabs
+a dialect actually has appear.
+
+`type: images` is the sibling for the OpenAI Images protocol
+(`/v1/images/generations` + multipart `/v1/images/edits`) — gpt-image
+models, DALL·E, and the relays that mirror the endpoints. Same session
+shape (`/edit`, `/file` references, one image per call); the dialect folds
+dimensions into a single **Size** knob (e.g. `image_size: "1536x1024"`)
+and has no aspect-ratio or negative-prompt parameters. DALL·E's URL-form
+responses are fetched automatically.
 
 Parameter and editing support varies by backend: relays map the full set
 (seedream's aspect ratio, size, negative prompt, and reference-image editing
