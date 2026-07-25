@@ -2,6 +2,8 @@ package chat
 
 import (
 	"bytes"
+	"image"
+	"image/png"
 	"reflect"
 	"strings"
 	"testing"
@@ -114,5 +116,42 @@ func TestEchoRoundsTrailingToolResults(t *testing.T) {
 	echoRounds(&buf, msgs)
 	if !strings.Contains(buf.String(), "⚙ 1 tool call(s)") {
 		t.Errorf("expected trailing tool call line, got:\n%s", buf.String())
+	}
+}
+
+// A replayed assistant image renders as half-blocks with a filename caption —
+// not just the name (the pre-imagen placeholder); undecodable data falls back
+// to the caption line alone.
+func TestEchoRoundsRendersImages(t *testing.T) {
+	var pngBuf bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for i := range img.Pix {
+		img.Pix[i] = 0xff
+	}
+	if err := png.Encode(&pngBuf, img); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	echoRounds(&out, []provider.Message{
+		{Role: "user", Content: "draw"},
+		{Role: "assistant", Attachments: []provider.Attachment{
+			{Filename: "image-1.png", MimeType: "image/png", Data: pngBuf.Bytes()}}},
+	})
+	s := out.String()
+	if !strings.Contains(s, "▀") {
+		t.Fatalf("no half-block rows in echo:\n%q", s)
+	}
+	if !strings.Contains(s, "🖼 image-1.png") {
+		t.Fatalf("caption missing:\n%q", s)
+	}
+
+	out.Reset()
+	echoRounds(&out, []provider.Message{
+		{Role: "assistant", Attachments: []provider.Attachment{
+			{Filename: "broken.png", MimeType: "image/png", Data: []byte{1, 2}}}},
+	})
+	if s := out.String(); strings.Contains(s, "▀") || !strings.Contains(s, "🖼 broken.png") {
+		t.Fatalf("broken image must fall back to the caption line:\n%q", s)
 	}
 }

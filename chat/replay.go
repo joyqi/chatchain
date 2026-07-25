@@ -8,6 +8,7 @@ import (
 
 	"golang.org/x/term"
 
+	"chatchain/internal/imgterm"
 	"chatchain/internal/markdown"
 	"chatchain/provider"
 )
@@ -50,6 +51,10 @@ func lastRounds(history []provider.Message, n int) []provider.Message {
 // not replayed verbatim — each round's tool-result messages collapse into one
 // dim "⚙ N tool call(s)" line. Reasoning is never replayed.
 func echoRounds(w io.Writer, msgs []provider.Message) {
+	tw := 100
+	if width, _, werr := term.GetSize(int(os.Stdout.Fd())); werr == nil && width > 0 {
+		tw = width
+	}
 	toolResults := 0
 	// flushTools prints the aggregated tool-activity line for the current round
 	// once something else is about to print (or the replay ends).
@@ -79,10 +84,6 @@ func echoRounds(w io.Writer, msgs []provider.Message) {
 			// may leave the trailing line unterminated — close it only when
 			// needed, so the round separator is exactly one blank line (the
 			// live loop's spacing).
-			tw := 100
-			if width, _, werr := term.GetSize(int(os.Stdout.Fd())); werr == nil && width > 0 {
-				tw = width
-			}
 			if msg.Content != "" {
 				lw := &lastByteWriter{w: w}
 				mdw := markdown.NewWriterTo(lw, tw)
@@ -92,12 +93,14 @@ func echoRounds(w io.Writer, msgs []provider.Message) {
 					fmt.Fprintln(w)
 				}
 			}
-			if n := len(msg.Attachments); n > 0 {
-				names := make([]string, 0, n)
-				for _, att := range msg.Attachments {
-					names = append(names, att.Filename)
+			// Generated images re-render as half-blocks, mirroring the live
+			// turn (same size caps and indent); a decode failure or non-image
+			// attachment falls back to the name-only line.
+			for i, att := range msg.Attachments {
+				if msg.Content != "" || i > 0 {
+					fmt.Fprintln(w)
 				}
-				DimStyle.Fprintf(w, "🖼 %d image(s): %s\n", n, strings.Join(names, ", "))
+				echoImage(w, att, tw)
 			}
 			if msg.Interrupted {
 				DimStyle.Fprintln(w, "(interrupted)")
@@ -108,6 +111,29 @@ func echoRounds(w io.Writer, msgs []provider.Message) {
 		}
 	}
 	flushTools()
+}
+
+// echoImage renders one replayed attachment: half-block rows plus a dim
+// filename caption, with the live path's indent and size caps.
+func echoImage(w io.Writer, att provider.Attachment, termWidth int) {
+	indent := strings.Repeat(" ", imageIndentCols)
+	if !strings.HasPrefix(att.MimeType, "image/") || len(att.Data) == 0 {
+		DimStyle.Fprintf(w, "%s🖼 %s\n", indent, att.Filename)
+		return
+	}
+	maxCols := imageMaxCols
+	if termWidth-2-imageIndentCols < maxCols {
+		maxCols = termWidth - 2 - imageIndentCols
+	}
+	rows, err := imgterm.Render(att.Data, maxCols, imageMaxRows)
+	if err != nil {
+		DimStyle.Fprintf(w, "%s🖼 %s\n", indent, att.Filename)
+		return
+	}
+	for _, row := range rows {
+		fmt.Fprintln(w, indent+row)
+	}
+	DimStyle.Fprintf(w, "%s🖼 %s\n", indent, att.Filename)
 }
 
 // lastByteWriter tracks the final byte written, so the replay can tell an
