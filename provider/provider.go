@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 type Attachment struct {
@@ -174,6 +175,25 @@ type RawContentProvider interface {
 	UnmarshalRawContent(data []byte) (any, error)
 }
 
+// knownTypes lists the built-in provider types — the New switch, the CLI's
+// usage line, and alias-typo detection all reflect this one table.
+var knownTypes = []string{"openai", "anthropic", "gemini", "vertexai", "openresponses", "imagen", "images"}
+
+// KnownType reports whether t names a built-in provider type. The CLI uses
+// it to distinguish a bare-type invocation from a mistyped config alias
+// (which would otherwise die on a misleading missing-key error).
+func KnownType(t string) bool {
+	for _, k := range knownTypes {
+		if t == k {
+			return true
+		}
+	}
+	return false
+}
+
+// KnownTypes returns the built-in provider type names.
+func KnownTypes() []string { return append([]string{}, knownTypes...) }
+
 func New(providerType, apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) (Provider, error) {
 	switch providerType {
 	case "openai":
@@ -193,6 +213,6 @@ func New(providerType, apiKey, baseURL, model string, temperature *float64, http
 	case "images":
 		return NewImages(apiKey, baseURL, model, httpClient), nil
 	default:
-		return nil, fmt.Errorf("unknown provider type: %s (supported: openai, anthropic, gemini, vertexai, openresponses, imagen, images)", providerType)
+		return nil, fmt.Errorf("unknown provider type: %s (supported: %s)", providerType, strings.Join(knownTypes, ", "))
 	}
 }

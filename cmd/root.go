@@ -54,6 +54,9 @@ var rootCmd = &cobra.Command{
 		}
 
 		providerType, pc := cfg.Get(args[0])
+		if err := checkProviderName(cfg, args[0], providerType); err != nil {
+			return err
+		}
 
 		// Priority: CLI flag > env var > config file
 		if !cmd.Flags().Changed("key") {
@@ -415,6 +418,9 @@ func runList(cmd *cobra.Command, cfg *config.Config, args []string) error {
 
 	// List models for a specific provider
 	providerType, pc := cfg.Get(args[0])
+	if err := checkProviderName(cfg, args[0], providerType); err != nil {
+		return err
+	}
 
 	// Priority: CLI flag > env var > config file
 	if !cmd.Flags().Changed("key") {
@@ -455,6 +461,26 @@ func runList(cmd *cobra.Command, cfg *config.Config, args []string) error {
 		fmt.Printf("  %s\n", m)
 	}
 	return nil
+}
+
+// checkProviderName rejects a name that is neither a configured alias nor a
+// built-in type BEFORE key resolution — a mistyped alias otherwise dies on a
+// misleading "API key is required" error.
+func checkProviderName(cfg *config.Config, name, providerType string) error {
+	if _, configured := cfg.Providers[name]; configured || provider.KnownType(providerType) {
+		return nil
+	}
+	aliases := make([]string, 0, len(cfg.Providers))
+	for a := range cfg.Providers {
+		aliases = append(aliases, a)
+	}
+	sort.Strings(aliases)
+	hint := ""
+	if len(aliases) > 0 {
+		hint = fmt.Sprintf("\n  configured aliases: %s", strings.Join(aliases, ", "))
+	}
+	return fmt.Errorf("unknown provider %q: not a configured alias or a built-in type%s\n  built-in types: %s",
+		name, hint, strings.Join(provider.KnownTypes(), ", "))
 }
 
 var providerEnvKeys = map[string]string{
