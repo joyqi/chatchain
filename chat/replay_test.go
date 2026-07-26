@@ -215,3 +215,38 @@ func TestEchoRoundsCanvasDedup(t *testing.T) {
 		t.Fatalf("cut-off canvas must keep its marker:\n%q", s)
 	}
 }
+
+// Every row of a replayed multi-line message is a FULL-WIDTH block with the
+// prompt gutter on the first row and an aligned indent on the rest: embedded
+// newlines start rows, they are not runes to measure (a single "row" carrying
+// its own line breaks reset the terminal to column 0 and left the background
+// stopping at the text).
+func TestPrintUserBlockMultiline(t *testing.T) {
+	var out bytes.Buffer
+	printUserBlock(&out, "first line\nsecond line\nthird")
+
+	rows := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d, want one per line:\n%q", len(rows), out.String())
+	}
+	width := 0
+	for i, row := range rows {
+		plain := stripANSI(row)
+		if strings.Contains(plain, "\r") {
+			t.Fatalf("row %d carries a control char: %q", i, plain)
+		}
+		want := "  "
+		if i == 0 {
+			want = "❯ "
+		}
+		if !strings.HasPrefix(plain, want) {
+			t.Fatalf("row %d = %q, want the %q gutter", i, plain, want)
+		}
+		w := displayWidth(plain)
+		if i == 0 {
+			width = w
+		} else if w != width {
+			t.Fatalf("row %d width = %d, want %d (padding must reach the full block width)", i, w, width)
+		}
+	}
+}

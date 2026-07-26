@@ -227,23 +227,30 @@ func printUserBlock(w io.Writer, display string) {
 // wrapByWidth hard-wraps plain text into rows whose display width is at most
 // width, breaking on rune boundaries (mirroring how a terminal wraps). CJK runes
 // count as width 2, so a wide rune is never split across rows.
+// Embedded newlines START A ROW, they are not runes to measure: folding them
+// into the width count let a multi-line message render as one "row" carrying
+// its own line breaks — the terminal then broke it at column 0 (no gutter)
+// and the padding was computed against the whole blob, so the block's
+// background stopped at the text. The ui-side twin has always split first.
 func wrapByWidth(s string, width int) []string {
 	if width < 1 {
 		width = 1
 	}
 	var rows []string
-	var b strings.Builder
-	cur := 0
-	for _, r := range s {
-		rw := runeWidth(r)
-		if cur+rw > width {
-			rows = append(rows, b.String())
-			b.Reset()
-			cur = 0
+	for _, line := range strings.Split(s, "\n") {
+		var b strings.Builder
+		cur := 0
+		for _, r := range line {
+			rw := runeWidth(r)
+			if cur+rw > width {
+				rows = append(rows, b.String())
+				b.Reset()
+				cur = 0
+			}
+			b.WriteRune(r)
+			cur += rw
 		}
-		b.WriteRune(r)
-		cur += rw
+		rows = append(rows, b.String())
 	}
-	rows = append(rows, b.String())
 	return rows
 }
