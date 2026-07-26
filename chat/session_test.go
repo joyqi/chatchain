@@ -550,3 +550,16 @@ type jsonEditStub struct {
 
 func (s *jsonEditStub) SetJSONEdits(v bool) { s.on = v }
 func (s *jsonEditStub) JSONEdits() bool     { return s.on }
+
+// Bundles written before titles were funnelled may still hold a newline;
+// the picker flattens on read, because one row per session is what the
+// surface's cursor arithmetic assumes.
+func TestSessionLabelFlattensStoredTitle(t *testing.T) {
+	label := sessionLabel(SessionInfo{Title: "draw a cat\nwith a hat", Model: "m", MessageCount: 2})
+	if strings.ContainsAny(label, "\n\r\t") {
+		t.Fatalf("label spans rows: %q", label)
+	}
+	if !strings.Contains(label, "draw a cat with a hat") {
+		t.Fatalf("label = %q", label)
+	}
+}

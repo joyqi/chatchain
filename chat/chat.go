@@ -158,10 +158,19 @@ func isReadOnlyViewer(input string) bool {
 func sanitizeTitle(s string) string {
 	s = strings.TrimSpace(s)
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = s[:i]
+		s = s[:i] // a model that explains itself: keep the title line only
 	}
 	s = strings.Trim(s, "\"'“”「」` ")
-	return truncateRunes(s, 80)
+	return titleFrom(s, 80)
+}
+
+// titleFrom shapes arbitrary text into a session title: ONE line (a stored
+// newline would break the session picker's row accounting and the window
+// title), control characters dropped, capped on rune boundaries. Every title
+// entry point funnels through it — the LLM's answer, the prompt-derived
+// placeholder image providers rely on, and an explicit /save argument.
+func titleFrom(s string, max int) string {
+	return truncateRunes(flattenLine(s), max)
 }
 
 // truncateRunes truncates on rune boundaries so CJK text is never cut mid-rune.

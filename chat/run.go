@@ -192,13 +192,13 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			// title — an LLM pass through this provider would paint a picture,
 			// not summarize a chat.
 			titled = true
-			placeholder := truncateRunes(strings.TrimSpace(firstUser), 40)
+			placeholder := titleFrom(firstUser, 40)
 			sw.SetTitle(placeholder)
 			u.SetTitle(placeholder)
 			return
 		}
 		titled = true
-		placeholder := truncateRunes(strings.TrimSpace(firstUser), 40)
+		placeholder := titleFrom(firstUser, 40)
 		sw.SetTitle(placeholder)
 		u.SetTitle(placeholder)
 		titleWG.Add(1)
@@ -448,7 +448,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				continue
 			}
 			pendingAttachments = append(pendingAttachments, last.Attachments...)
-			printDim("Redoing: %s", truncateRunes(flattenPrompt(prompt), 60))
+			printDim("Redoing: %s", truncateRunes(flattenLine(prompt), 60))
 			input = prompt
 		}
 		if input == "/model" || strings.HasPrefix(input, "/model ") {
@@ -763,7 +763,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				}
 			}
 			persistTurn() // the whole backlog: persisted has stayed 0
-			if title := strings.TrimSpace(strings.TrimPrefix(input, "/save")); title != "" {
+			if title := titleFrom(strings.TrimPrefix(input, "/save"), 80); title != "" {
 				titled = true // a user-chosen title is never overwritten
 				sw.SetTitle(title)
 				u.SetTitle(title)

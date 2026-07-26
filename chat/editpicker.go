@@ -38,7 +38,7 @@ func generatedImageChoices(history []provider.Message) []imageChoice {
 				if !strings.HasPrefix(att.MimeType, "image/") || len(att.Data) == 0 {
 					continue
 				}
-				out = append(out, imageChoice{att: att, prompt: flattenPrompt(prompt), at: imageTime(att.Filename)})
+				out = append(out, imageChoice{att: att, prompt: flattenLine(prompt), at: imageTime(att.Filename)})
 			}
 		}
 	}
@@ -49,10 +49,12 @@ func generatedImageChoices(history []provider.Message) []imageChoice {
 	return out
 }
 
-// flattenPrompt folds a prompt into ONE line: a label spanning rows would
-// break the surface's one-item-one-row bookkeeping. Truncation is left to
-// the renderer, which alone knows the column budget.
-func flattenPrompt(s string) string {
+// flattenLine folds text into ONE line: newlines and tabs become spaces,
+// runs of whitespace collapse, control characters go. Anything rendered as a
+// single row needs this — a picker label spanning rows breaks the surface's
+// one-item-one-row bookkeeping, and a session title spanning rows breaks the
+// picker and the window title alike.
+func flattenLine(s string) string {
 	s = strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\r' || r == '\t' {
 			return ' '

@@ -976,7 +976,10 @@ func projectHint(meta sessionMeta, slug string) string {
 // project hint stays plain text: picker rows go through width-based truncation
 // that does not skip ANSI escapes, so no color here.
 func sessionLabel(s SessionInfo) string {
-	title := s.Title
+	// Flattened on read too: bundles written before titles were funnelled
+	// through titleFrom may still hold a newline, and one row per session is
+	// what the picker's cursor arithmetic assumes.
+	title := flattenLine(s.Title)
 	if title == "" {
 		title = "(untitled)"
 	}
