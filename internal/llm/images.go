@@ -40,9 +40,21 @@ type ImagesRequest struct {
 // for the inline form (png unless output_format asked otherwise), while
 // relays may declare one — OpenRouter answers JPEG bytes with media_type.
 type ImageDatum struct {
-	B64JSON   []byte `json:"b64_json,omitempty"`
-	URL       string `json:"url,omitempty"`
+	B64JSON []byte `json:"b64_json,omitempty"`
+	URL     string `json:"url,omitempty"`
+	// Backends spell the type declaration three ways: media_type (OpenRouter),
+	// mime_type (xAI), output_format on streaming events. Type() folds them.
 	MediaType string `json:"media_type,omitempty"`
+	MimeType  string `json:"mime_type,omitempty"`
+}
+
+// Type returns the declared mime type, "" when the payload declares none
+// (the caller then sniffs the bytes).
+func (d *ImageDatum) Type() string {
+	if d.MediaType != "" {
+		return d.MediaType
+	}
+	return d.MimeType
 }
 
 type ImagesResponse struct {

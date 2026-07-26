@@ -267,9 +267,10 @@ responses are fetched automatically.
 
 Interactive turns ask for **progressive frames**: a refining thumbnail
 appears in the generation widget and the finished picture replaces it in
-place, exactly like conversational generation. Backends that ignore the
-streaming flags (most relays) answer with the plain body instead — the same
-request serves both, so nothing is generated twice. `imagen` has no
+place, exactly like conversational generation. Verified live on OpenAI and
+zenmux, which both stream; xAI ignores the flags and answers with the plain
+body — the same request serves both, so nothing is generated twice and a
+non-streaming backend simply shows the elapsed clock. `imagen` has no
 streaming form at all, so those turns show only the elapsed clock.
 
 The edit endpoint comes in two wire flavors: OpenAI's native

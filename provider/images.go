@@ -130,7 +130,7 @@ func (p *ImagesProvider) Chat(ctx context.Context, messages []Message) (string, 
 		return "", err
 	}
 	for i, d := range resp.Data {
-		data, mime := []byte(d.B64JSON), imageMime(d.MediaType, d.B64JSON)
+		data, mime := []byte(d.B64JSON), imageMime(d.Type(), d.B64JSON)
 		if len(data) == 0 && d.URL != "" {
 			// DALL·E's default response form: a short-lived link, fetched
 			// immediately (unauthenticated — the URL itself is the token).

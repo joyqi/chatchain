@@ -398,3 +398,26 @@ func TestImagesStreamWithoutCompletion(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// Backends spell the payload's type three ways — media_type (OpenRouter),
+// mime_type (xAI), output_format on streaming events — and some declare
+// nothing. All must land on the same attachment mime.
+func TestImagesTypeDeclarationVariants(t *testing.T) {
+	for name, body := range map[string]string{
+		"media_type": `{"data":[{"b64_json":"/9j/4AAQ","media_type":"image/jpeg"}]}`,
+		"mime_type":  `{"data":[{"b64_json":"/9j/4AAQ","mime_type":"image/jpeg"}]}`,
+		"undeclared": `{"data":[{"b64_json":"/9j/4AAQ"}]}`, // sniffed
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(body))
+		}))
+		p := NewImages("k", srv.URL, "m", srv.Client())
+		if _, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "x"}}); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if imgs := p.LastImages(); len(imgs) != 1 || imgs[0].MimeType != "image/jpeg" || imgs[0].Filename != "image-1.jpg" {
+			t.Errorf("%s: attachment = %+v", name, imgs)
+		}
+		srv.Close()
+	}
+}
