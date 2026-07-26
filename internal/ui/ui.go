@@ -30,9 +30,9 @@ var ErrClosed = errors.New("ui: closed")
 // caller's cue to exit the session loop.
 var ErrInterrupted = errors.New("ui: interrupted")
 
-// Input is one submitted line. Display is what the user saw (paste tags
-// intact, echoed in the user block); Text is what logic should process (paste
-// tags expanded — identical to Display until paste handling lands in P3).
+// Input is one submitted line. Display is the transcript echo: pasted blocks
+// expanded so the user sees what was sent, each trimmed to a readable head.
+// Text is what logic processes — every paste expanded in full.
 type Input struct {
 	Display string
 	Text    string

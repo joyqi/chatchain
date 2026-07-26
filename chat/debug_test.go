@@ -9,8 +9,8 @@ import (
 )
 
 // TestActionFromURL maps API endpoints to short action names, provider-agnostic
-// (Chat is checked before Models because Gemini's generateContent path also
-// contains "/models").
+// (Chat and Image are checked before Models because Gemini's generateContent
+// path — and Imagen's :predict path — also contain "/models").
 func TestActionFromURL(t *testing.T) {
 	cases := map[string]string{
 		"https://api.anthropic.com/v1/messages":                                          "Chat",
@@ -19,6 +19,10 @@ func TestActionFromURL(t *testing.T) {
 		"https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent": "Chat",
 		"https://api.openai.com/v1/models":                                               "Models",
 		"https://generativelanguage.googleapis.com/v1beta/models":                        "Models",
+		"https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0:predict":     "Image",
+		"https://zenmux.ai/v1/publishers/bytedance/models/doubao-seedream-5.0:predict":   "Image",
+		"https://api.openai.com/v1/images/generations":                                   "Image",
+		"https://api.openai.com/v1/images/edits":                                         "Image",
 	}
 	for url, want := range cases {
 		if got := actionFromURL(url); got != want {
@@ -39,6 +43,8 @@ func TestLastUserText(t *testing.T) {
 		{"content parts", `{"messages":[{"role":"user","content":[{"type":"text","text":"pic"}]}]}`, "pic"},
 		{"gemini", `{"contents":[{"role":"user","parts":[{"text":"explain"}]}]}`, "explain"},
 		{"responses input", `{"input":"do it"}`, "do it"},
+		{"images prompt", `{"model":"gpt-image-1","prompt":"a red fox"}`, "a red fox"},
+		{"imagen instances", `{"instances":[{"prompt":"a blue whale"}],"parameters":{"sampleCount":1}}`, "a blue whale"},
 		{"last user wins", `{"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"a"},{"role":"user","content":"second"}]}`, "second"},
 		{"no body", ``, ""},
 		{"model listing", `{}`, ""},

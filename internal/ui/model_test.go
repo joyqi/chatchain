@@ -689,8 +689,10 @@ func TestSlashTabCompletion(t *testing.T) {
 	}
 }
 
-// TestPasteTags: a multi-line paste collapses to a [#N …] tag in the composer;
-// submit expands it in Text while Display keeps the tag.
+// TestPasteTags: a multi-line paste collapses to a [#N …] tag in the
+// composer (a thousand-line blob is unusable to edit), while BOTH sides of
+// the submitted input carry real content — Text in full for the model,
+// Display expanded for the transcript echo.
 func TestPasteTags(t *testing.T) {
 	m := newTestModel(t)
 	reply := make(chan inputResult, 1)
@@ -704,13 +706,67 @@ func TestPasteTags(t *testing.T) {
 	if r.in.Text != "line1\nline2\nline3" {
 		t.Fatalf("Text = %q, want expanded paste", r.in.Text)
 	}
-	if !strings.Contains(r.in.Display, "[#1") {
-		t.Fatalf("Display = %q, want the tag preserved", r.in.Display)
+	if r.in.Display != "line1\nline2\nline3" {
+		t.Fatalf("Display = %q, want the echo expanded", r.in.Display)
 	}
 	// Single-line pastes insert verbatim.
 	m = step(t, m, tea.PasteMsg{Content: "inline"})
 	if got := m.ta.Value(); got != "inline" {
 		t.Fatalf("single-line paste = %q", got)
+	}
+}
+
+// A long paste echoes bounded — head plus a count — so one paste cannot bury
+// the reply, while the model still receives every line.
+func TestPasteEchoTruncates(t *testing.T) {
+	var b strings.Builder
+	for i := 1; i <= 60; i++ {
+		fmt.Fprintf(&b, "line%d\n", i)
+	}
+	content := strings.TrimRight(b.String(), "\n")
+
+	m := newTestModel(t)
+	reply := make(chan inputResult, 1)
+	m = step(t, m, readReqMsg{reply: reply})
+	m = step(t, m, tea.PasteMsg{Content: content})
+	m = typeText(t, m, " please review")
+	m = enter(t, m)
+	r := <-reply
+
+	if !strings.Contains(r.in.Text, "line60") {
+		t.Fatal("Text must carry the whole paste")
+	}
+	echo := strings.Split(r.in.Display, "\n")
+	if len(echo) != pasteEchoMaxLines+1 {
+		t.Fatalf("echo rows = %d, want %d head rows + the count", len(echo), pasteEchoMaxLines+1)
+	}
+	if echo[pasteEchoMaxLines] != "… +40 more lines please review" {
+		t.Fatalf("last echo row = %q", echo[pasteEchoMaxLines])
+	}
+	if strings.Contains(r.in.Display, "line60") {
+		t.Fatal("echo must stop at the cap")
+	}
+}
+
+// ↑ recall restores the composer's own text — the TAG, not the blob — and a
+// re-submit expands it again from the store, so the model never receives a
+// literal placeholder.
+func TestPasteHistoryRecallKeepsTag(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan inputResult, 1)
+	m = step(t, m, readReqMsg{reply: reply})
+	m = step(t, m, tea.PasteMsg{Content: "alpha\nbeta"})
+	m = enter(t, m)
+	<-reply
+
+	m = step(t, m, readReqMsg{reply: reply})
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	if v := m.ta.Value(); !strings.HasPrefix(v, "[#1") {
+		t.Fatalf("recalled composer = %q, want the tag (an editable stand-in)", v)
+	}
+	m = enter(t, m)
+	if r := <-reply; r.in.Text != "alpha\nbeta" {
+		t.Fatalf("re-submitted Text = %q, want the paste expanded again", r.in.Text)
 	}
 }
 

@@ -74,7 +74,9 @@ type model struct {
 	sugIdx   int
 
 	// Paste store: multi-line pastes collapse to "[#N …]" tags in the
-	// composer; Input.Text expands them on submit, Display keeps the tag.
+	// composer and stay collapsed there (including on ↑ recall — a blob is
+	// unusable to edit); submit expands them, in full for Text and bounded
+	// for the transcript echo.
 	pastes []string
 
 	spin        int
@@ -399,10 +401,11 @@ func (m *model) pushHistory(text string) {
 	m.histIdx = len(m.history)
 }
 
-// makeInput builds the Display/Text pair: Display keeps paste tags, Text
-// expands them to the stored paste contents.
+// makeInput builds the Display/Text pair: Text expands paste tags in full
+// (what the model receives), Display expands them bounded (what the
+// transcript echoes). The composer's own value keeps the tags.
 func (m *model) makeInput(text string) Input {
-	return Input{Display: text, Text: expandPasteTags(text, m.pastes)}
+	return Input{Display: expandPasteEcho(text, m.pastes), Text: expandPasteTags(text, m.pastes)}
 }
 
 // historyNavigable: single-row composer content only.
@@ -1015,17 +1018,42 @@ func pasteTag(id int, content string) string {
 	return fmt.Sprintf("[#%d %s… %d lines]", id, first, lines)
 }
 
+// pasteEchoMaxLines caps how much of a pasted block the sent-message echo
+// shows. The composer keeps the tag (a thousand-line blob is unusable to
+// edit, and ↑-recall re-expands on submit), but the transcript should show
+// what was actually sent — bounded, so a big paste does not bury the reply.
+const pasteEchoMaxLines = 20
+
 // pasteTagRe matches the composer paste tags for expansion on submit.
 var pasteTagRe = regexp.MustCompile(`\[#(\d+)[^\]]*\]`)
 
 // expandPasteTags replaces every stored-paste tag with its full content.
 func expandPasteTags(text string, pastes []string) string {
+	return replacePasteTags(text, pastes, func(content string) string { return content })
+}
+
+// expandPasteEcho expands tags for the transcript echo, trimming any paste
+// longer than pasteEchoMaxLines to its head plus a count of what follows.
+func expandPasteEcho(text string, pastes []string) string {
+	return replacePasteTags(text, pastes, func(content string) string {
+		lines := strings.Split(content, "\n")
+		if len(lines) <= pasteEchoMaxLines {
+			return content
+		}
+		return strings.Join(lines[:pasteEchoMaxLines], "\n") +
+			fmt.Sprintf("\n… +%d more lines", len(lines)-pasteEchoMaxLines)
+	})
+}
+
+// replacePasteTags rewrites every stored-paste tag through render; an index
+// with no stored paste (a literal "[#7 …]" the user typed) is left alone.
+func replacePasteTags(text string, pastes []string, render func(content string) string) string {
 	return pasteTagRe.ReplaceAllStringFunc(text, func(tag string) string {
 		mm := pasteTagRe.FindStringSubmatch(tag)
 		idx, err := strconv.Atoi(mm[1])
 		if err != nil || idx < 1 || idx > len(pastes) {
 			return tag
 		}
-		return pastes[idx-1]
+		return render(pastes[idx-1])
 	})
 }

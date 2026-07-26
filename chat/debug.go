@@ -95,8 +95,8 @@ func truncateWidth(s string, w int) string {
 }
 
 // actionFromURL maps an API endpoint to a short action name, provider-agnostic.
-// The Chat cases are checked before Models because Gemini's generateContent path
-// also contains "/models".
+// The Chat and Image cases are checked before Models because Gemini's
+// generateContent path — and Imagen's :predict path — also contain "/models".
 func actionFromURL(rawURL string) string {
 	path := rawURL
 	if u, err := url.Parse(rawURL); err == nil && u.Path != "" {
@@ -109,6 +109,10 @@ func actionFromURL(rawURL string) string {
 		strings.Contains(lower, "/responses"),
 		strings.Contains(lower, "generatecontent"):
 		return "Chat"
+	case strings.Contains(lower, ":predict"),
+		strings.Contains(lower, "/images/generations"),
+		strings.Contains(lower, "/images/edits"):
+		return "Image"
 	case strings.Contains(lower, "/models"):
 		return "Models"
 	}
@@ -161,6 +165,20 @@ func lastUserText(body []byte) string {
 			if mm, ok := cs[i].(map[string]any); ok {
 				if t := contentText(mm["parts"]); t != "" {
 					return t
+				}
+			}
+		}
+	}
+	// Image dialects: OpenAI Images carries a top-level `prompt`, Imagen's
+	// :predict envelope carries it inside instances[].
+	if s, ok := m["prompt"].(string); ok {
+		return s
+	}
+	if ins, ok := m["instances"].([]any); ok {
+		for i := len(ins) - 1; i >= 0; i-- {
+			if mm, ok := ins[i].(map[string]any); ok {
+				if s, ok := mm["prompt"].(string); ok && s != "" {
+					return s
 				}
 			}
 		}

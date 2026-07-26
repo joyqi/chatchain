@@ -59,8 +59,9 @@ result is required) await a reply.
 type UI interface {
     // Input. Blocks until submit. The composer stays live while a turn
     // renders (type-ahead); submits during a turn queue INSIDE ui, and
-    // ReadInput drains the queue. Input separates Display (paste tags
-    // intact, for the user block) from Text (paste-expanded, for sending).
+    // ReadInput drains the queue. Input separates Display (pastes expanded
+    // but bounded, for the user block) from Text (expanded in full, for
+    // sending); the composer itself keeps the tags.
     ReadInput(ctx context.Context, opts ...InputOpt) (Input, error)
 
     // History (append-only scrollback, Println path). Fire-and-forget;
