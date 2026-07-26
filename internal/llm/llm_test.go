@@ -269,3 +269,25 @@ func TestGoogleVertexModelsFallback(t *testing.T) {
 		t.Fatalf("official path result = %v %v", names, err)
 	}
 }
+
+// Streaming images events declare their type as a bare output_format, while
+// relays reuse media_type; both fold to a mime type, and an undeclared event
+// leaves the decision to the caller's byte sniffing.
+func TestImagesStreamEventMediaType(t *testing.T) {
+	for _, tc := range []struct {
+		evt  imagesStreamEvent
+		want string
+	}{
+		{imagesStreamEvent{OutputFormat: "png"}, "image/png"},
+		{imagesStreamEvent{OutputFormat: "jpeg"}, "image/jpeg"},
+		{imagesStreamEvent{OutputFormat: "jpg"}, "image/jpeg"},
+		{imagesStreamEvent{MediaType: "image/webp"}, "image/webp"},
+		{imagesStreamEvent{MediaType: "image/webp", OutputFormat: "png"}, "image/webp"},
+		{imagesStreamEvent{}, ""},
+		{imagesStreamEvent{OutputFormat: "tiff"}, ""},
+	} {
+		if got := tc.evt.mediaType(); got != tc.want {
+			t.Errorf("%+v → %q, want %q", tc.evt, got, tc.want)
+		}
+	}
+}

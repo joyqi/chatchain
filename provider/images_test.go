@@ -304,3 +304,97 @@ func TestImagesMediaTypeHonored(t *testing.T) {
 		t.Fatalf("LastImages = %+v", imgs)
 	}
 }
+
+// Streaming: an installed observer asks the backend for progressive frames,
+// partials reach the observer, and the completed event is the result.
+func TestImagesStreamingPartials(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got = map[string]any{}
+		json.Unmarshal(body, &got)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		for _, ev := range []string{
+			`{"type":"image_generation.partial_image","b64_json":"AQ==","partial_image_index":0}`,
+			`{"type":"image_generation.completed","b64_json":"/9j/4AAQ","media_type":"image/jpeg"}`,
+		} {
+			w.Write([]byte("data: " + ev + "\n\n"))
+			w.(http.Flusher).Flush()
+		}
+	}))
+	defer srv.Close()
+
+	p := NewImages("k", srv.URL, "gpt-image-2", srv.Client())
+	var frames [][]byte
+	p.SetImagePartialObserver(func(b []byte) { frames = append(frames, b) })
+	if _, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "a cat"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got["stream"] != true || got["partial_images"] != float64(1) {
+		t.Fatalf("streaming request = %v", got)
+	}
+	if len(frames) != 1 || frames[0][0] != 1 {
+		t.Fatalf("partial frames = %v", frames)
+	}
+	imgs := p.LastImages()
+	if len(imgs) != 1 || imgs[0].MimeType != "image/jpeg" {
+		t.Fatalf("completed image = %+v", imgs)
+	}
+
+	// No observer (a -m run): no streaming flags, plain unary request.
+	p.SetImagePartialObserver(nil)
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got = map[string]any{}
+		json.Unmarshal(body, &got)
+		w.Write([]byte(`{"data":[{"b64_json":"CQ=="}]}`))
+	}))
+	defer srv2.Close()
+	p2 := NewImages("k", srv2.URL, "gpt-image-2", srv2.Client())
+	if _, err := p2.Chat(context.Background(), []Message{{Role: "user", Content: "a cat"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["stream"]; ok {
+		t.Fatalf("unwatched turn must not ask for streaming: %v", got)
+	}
+}
+
+// A backend that ignores stream:true answers with the plain JSON body — the
+// Content-Type decides how to read it, because asking again would bill a
+// second generation. Relays do exactly this.
+func TestImagesStreamIgnoredByBackend(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":[{"b64_json":"CQ==","media_type":"image/png"}]}`))
+	}))
+	defer srv.Close()
+	p := NewImages("k", srv.URL, "relay-model", srv.Client())
+	called := 0
+	p.SetImagePartialObserver(func([]byte) { called++ })
+	if _, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "a cat"}}); err != nil {
+		t.Fatal(err)
+	}
+	if called != 0 {
+		t.Fatalf("no frames exist in a unary answer, observer called %d times", called)
+	}
+	if len(p.LastImages()) != 1 {
+		t.Fatalf("unary fallback lost the image: %+v", p.LastImages())
+	}
+}
+
+// A stream that ends with partials but never completes is an error, not a
+// half-rendered picture presented as final.
+func TestImagesStreamWithoutCompletion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"type\":\"image_generation.partial_image\",\"b64_json\":\"AQ==\"}\n\n"))
+	}))
+	defer srv.Close()
+	p := NewImages("k", srv.URL, "gpt-image-2", srv.Client())
+	p.SetImagePartialObserver(func([]byte) {})
+	if _, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "x"}}); err == nil ||
+		!strings.Contains(err.Error(), "without a completed image") {
+		t.Fatalf("err = %v", err)
+	}
+}

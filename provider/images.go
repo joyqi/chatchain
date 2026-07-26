@@ -23,12 +23,13 @@ import (
 // live in the single size knob — so ImageGenOptions offers only sizes and
 // the /model surface renders only the Size tab.
 type ImagesProvider struct {
-	model      string
-	client     llm.Images
-	http       *http.Client // URL-form results (DALL·E) are fetched with this
-	gen        ImageGenParams
-	jsonEdits  bool // POST /images/edits as JSON instead of multipart (xAI)
-	lastImages []Attachment
+	model        string
+	client       llm.Images
+	http         *http.Client // URL-form results (DALL·E) are fetched with this
+	gen          ImageGenParams
+	jsonEdits    bool // POST /images/edits as JSON instead of multipart (xAI)
+	imagePartial func([]byte)
+	lastImages   []Attachment
 }
 
 // NewImages builds the images provider; an empty baseURL targets the
@@ -53,6 +54,11 @@ func (p *ImagesProvider) ImageGenParams() ImageGenParams     { return p.gen }
 
 func (p *ImagesProvider) SetJSONEdits(on bool) { p.jsonEdits = on }
 func (p *ImagesProvider) JSONEdits() bool      { return p.jsonEdits }
+
+// SetImagePartialObserver installs (or clears) the progressive-preview sink.
+// Its presence is what asks the backend to stream: an unwatched turn (-m,
+// a quiet round) posts the plain unary request instead.
+func (p *ImagesProvider) SetImagePartialObserver(fn func([]byte)) { p.imagePartial = fn }
 
 func (p *ImagesProvider) ImageGenOptions() ImageGenOptions {
 	return ImageGenOptions{
@@ -94,21 +100,30 @@ func (p *ImagesProvider) Chat(ctx context.Context, messages []Message) (string, 
 	if strings.TrimSpace(prompt) == "" {
 		return "", &PermanentError{Err: fmt.Errorf("images: empty prompt")}
 	}
+	// One partial frame: enough to watch the composition settle without
+	// redrawing the block on every tick (the openresponses preview budget).
+	onPartial := p.imagePartial
+	stream, partials := onPartial != nil, 0
+	if stream {
+		partials = 1
+	}
 	var resp *llm.ImagesResponse
 	var err error
 	if len(refs) == 0 {
 		resp, err = p.client.Generate(ctx, &llm.ImagesRequest{
 			Model: p.model, Prompt: prompt, N: 1, Size: p.gen.ImageSize,
-		})
+			Stream: stream, PartialImages: partials,
+		}, onPartial)
 	} else {
-		req := &llm.ImagesEditRequest{Model: p.model, Prompt: prompt, N: 1, Size: p.gen.ImageSize}
+		req := &llm.ImagesEditRequest{Model: p.model, Prompt: prompt, N: 1, Size: p.gen.ImageSize,
+			Stream: stream, PartialImages: partials}
 		for _, a := range refs {
 			req.Images = append(req.Images, llm.ImageFile{Name: a.Filename, Mime: a.MimeType, Data: a.Data})
 		}
 		if p.jsonEdits {
-			resp, err = p.client.EditJSON(ctx, req)
+			resp, err = p.client.EditJSON(ctx, req, onPartial)
 		} else {
-			resp, err = p.client.Edit(ctx, req)
+			resp, err = p.client.Edit(ctx, req, onPartial)
 		}
 	}
 	if err != nil {

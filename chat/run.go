@@ -1121,6 +1121,11 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcrip
 	var contentBuf, reasonBuf strings.Builder
 	done := make(chan struct{})
 
+	// Progressive frames from a dedicated image provider: this turn runs no
+	// tool, so the first frame raises the widget that hosts it (the final
+	// tr.image morphs that same widget into the picture).
+	defer watchImagePartials(u, p, func() { tr.openCall("image") })()
+
 	go func() {
 		defer close(done)
 		defer contentPw.Close()
@@ -1384,7 +1389,7 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *tran
 	// dropped (fmt.Fprint discards the error; history uses the provider's own
 	// accumulator).
 	defer watchToolComposing(phases, tr, tp, func() { contentPw.Close() })()
-	defer watchImagePartials(u, tp)()
+	defer watchImagePartials(u, tp, nil)()
 
 	go func() {
 		defer close(done)

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"chatchain/internal/imgterm"
@@ -176,12 +177,20 @@ type imagePartialObserver interface {
 // observer raised morphs from spinner-only to a refining preview, and the
 // final image replaces it in place. Runs on the stream goroutine; the ui
 // facade is safe for concurrent use.
-func watchImagePartials(u *ui.UI, tp any) func() {
+// raise, when non-nil, is called before the first frame: a dedicated image
+// provider's turn has no tool-call widget to fill, so it opens one (the
+// transcript's own openCall, which the final tr.image then morphs in place).
+// Tool-driven generation passes nil — its widget is already up.
+func watchImagePartials(u *ui.UI, tp any, raise func()) func() {
 	obs, ok := tp.(imagePartialObserver)
 	if !ok {
 		return func() {}
 	}
+	var once sync.Once
 	obs.SetImagePartialObserver(func(data []byte) {
+		if raise != nil {
+			once.Do(raise)
+		}
 		// Partial frames are full-resolution, low-DETAIL images; render at
 		// about half the final block size so the composition is actually
 		// visible while it refines (frame growth is safe — only shrinks

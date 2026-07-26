@@ -265,6 +265,13 @@ dimensions into a single **Size** knob (e.g. `image_size: "1536x1024"`)
 and has no aspect-ratio or negative-prompt parameters. DALL·E's URL-form
 responses are fetched automatically.
 
+Interactive turns ask for **progressive frames**: a refining thumbnail
+appears in the generation widget and the finished picture replaces it in
+place, exactly like conversational generation. Backends that ignore the
+streaming flags (most relays) answer with the plain body instead — the same
+request serves both, so nothing is generated twice. `imagen` has no
+streaming form at all, so those turns show only the elapsed clock.
+
 The edit endpoint comes in two wire flavors: OpenAI's native
 `/images/edits` is multipart, while some backends (xAI) accept only a JSON
 body and reject multipart outright. Set `json_edits: true` for those, or
