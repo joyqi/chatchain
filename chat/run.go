@@ -550,7 +550,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			if jsonOK {
 				jsonIdx = len(panels)
 				panels = append(panels, ui.Panel{Title: "JSON edits", Kind: ui.PanelSwitch, On: jsonTun.JSONEdits(),
-					Prompt: "Send /images/edits as JSON instead of multipart (xAI requires it)"})
+					Prompt: "Send /images/edits as JSON instead of multipart (some backends require it)"})
 			}
 			r, serr := u.Tabbed(ctx, ui.TabbedSpec{Panels: panels})
 			if serr != nil || r.Cancelled {
