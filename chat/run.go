@@ -552,6 +552,16 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				panels = append(panels, ui.Panel{Title: "JSON edits", Kind: ui.PanelSwitch, On: jsonTun.JSONEdits(),
 					Prompt: "Send /images/edits as JSON instead of multipart"})
 			}
+			// Last tab, and read-only: the knobs above keep their positions
+			// (and their recorded indices) while this one just shows what the
+			// chat is running under. A dedicated image provider takes no
+			// system prompt — its request carries the last user text alone —
+			// so the tab stays out of that surface entirely.
+			if !imageProvider {
+				if sysPanel, ok := systemPromptPanel(history, overlay.Content()); ok {
+					panels = append(panels, sysPanel)
+				}
+			}
 			r, serr := u.Tabbed(ctx, ui.TabbedSpec{Panels: panels})
 			if serr != nil || r.Cancelled {
 				continue
