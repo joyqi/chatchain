@@ -253,7 +253,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				st.rebuildView(p)
 				st.syncCursor()
 				if p.Kind == PanelView && st.search.query != "" {
-					st.collectHits(p, st.search.query)
+					st.recollectHits(p, st.search.query)
 				}
 			}
 		}

@@ -434,6 +434,39 @@ func (st *panelState) collectHits(p Panel, query string) {
 	}
 }
 
+// recollectHits rescans after a live panel's content changed, keeping the
+// walker parked where it was. A plain collectHits would reset it to the first
+// hit, and on a panel that refreshes twice a second (/tools, /debug) that
+// yanks the highlight back under the reader every tick — n could never reach
+// the third hit. The anchor is the hit itself, not its ordinal: content that
+// grew above it shifts every index but not the match the user is reading.
+func (st *panelState) recollectHits(p Panel, query string) {
+	prev := st.currentHit()
+	if prev == nil {
+		st.collectHits(p, query)
+		return
+	}
+	anchor := *prev
+	st.collectHits(p, query)
+	for i, h := range st.search.hits {
+		if h == anchor {
+			st.search.hitIdx = i
+			return
+		}
+	}
+	// The anchored hit is gone (its line changed): settle on the first one
+	// still at or after where it used to be, so the walker does not leap.
+	for i, h := range st.search.hits {
+		if h.line > anchor.line || (h.line == anchor.line && h.off > anchor.off) {
+			st.search.hitIdx = i
+			return
+		}
+	}
+	if n := len(st.search.hits); n > 0 {
+		st.search.hitIdx = n - 1
+	}
+}
+
 // searchStep walks the hits, wrapping around, and asks the next render to
 // centre the landing line.
 func (st *panelState) searchStep(dir int) {

@@ -467,6 +467,75 @@ func TestViewSearchStepWraps(t *testing.T) {
 	}
 }
 
+// TestViewSearchSurvivesRefresh: a live panel (/tools, /debug refresh twice a
+// second) must not yank the walker back to the first hit under the reader —
+// with the walker reset every tick, n could never reach the third hit.
+func TestViewSearchSurvivesRefresh(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan TabbedResult, 1)
+	body := viewBody(60)
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{
+		RefreshEvery: 500,
+		Panels: []Panel{{
+			Title: "Tools", Kind: PanelView, Lines: body,
+			Refresh: func() []string { return body },
+		}},
+	}, reply: reply})
+	st := &m.surf.ps[0]
+
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: '/', Text: "/"}))
+	m = typeText(t, m, "needle")
+	m = enter(t, m)
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: 'n', Text: "n"}))
+	_ = content(m)
+	wantIdx, wantOff := st.search.hitIdx, st.offset
+
+	m = step(t, m, surfTickMsg{gen: m.surfGen})
+	_ = content(m)
+	if st.search.hitIdx != wantIdx {
+		t.Errorf("a refresh moved the walker: hitIdx = %d, want %d", st.search.hitIdx, wantIdx)
+	}
+	if st.offset != wantOff {
+		t.Errorf("a refresh scrolled the body: offset = %d, want %d", st.offset, wantOff)
+	}
+}
+
+// TestViewSearchRefreshReanchorsOnContentShift: the walker is anchored to the
+// HIT, not to its ordinal — content appearing above it renumbers every index
+// while the reader is still looking at the same match.
+func TestViewSearchRefreshReanchorsOnContentShift(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan TabbedResult, 1)
+	body := viewBody(60)
+	live := body
+	m = step(t, m, tabbedOpenMsg{spec: TabbedSpec{
+		RefreshEvery: 500,
+		Panels: []Panel{{
+			Title: "Log", Kind: PanelView, Lines: live,
+			Refresh: func() []string { return live },
+		}},
+	}, reply: reply})
+	st := &m.surf.ps[0]
+
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: '/', Text: "/"}))
+	m = typeText(t, m, "needle")
+	m = enter(t, m)
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: 'n', Text: "n"}))
+	parked := *st.currentHit() // the second hit, at line 30
+
+	// A new matching row arrives at the top: every hit index shifts by one.
+	live = append([]string{"line -1: needle zero"}, body...)
+	m = step(t, m, surfTickMsg{gen: m.surfGen})
+
+	if len(st.search.hits) != 3 {
+		t.Fatalf("hits = %d, want 3 after the new row", len(st.search.hits))
+	}
+	got := st.currentHit()
+	if got == nil || got.line != parked.line+1 {
+		t.Errorf("walker landed on %+v, want the same match, now at line %d", got, parked.line+1)
+	}
+}
+
 // TestViewSearchEscapeLadder: from the walker, q/Esc reopens the query field
 // (the user is refining, not leaving), and Esc there drops the search.
 func TestViewSearchEscapeLadder(t *testing.T) {
