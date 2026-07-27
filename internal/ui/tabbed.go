@@ -819,12 +819,17 @@ func (st *panelState) previewRows(p Panel, cols, rows int) []string {
 // surfaceHint mirrors the v1 promptui help lines exactly, plus whatever an
 // applied search adds: a row panel keeps ALL its keys and gains "c clear"; a
 // View swaps in the n/p walker until Esc puts the query back up.
+//
+// The View walker's hint lists only the SEARCH keys. Its panel keys — scroll,
+// g/G, c copy — all still work, but none of them are advertised while the
+// search is on; the row is for the mode you are in, and q/Esc is one keystroke
+// from the full list.
 func surfaceHint(p Panel, st *panelState) string {
 	if st.search.mode == searchApplied {
 		q := truncateQuery(st.search.query)
 		if p.Kind == PanelView {
 			if n := len(st.search.hits); n > 0 {
-				return fmt.Sprintf("%s %d/%d · n next · p prev · c copy · q/Esc edit", q, st.search.hitIdx+1, n)
+				return fmt.Sprintf("%s %d/%d · n next · p prev · q/Esc edit", q, st.search.hitIdx+1, n)
 			}
 			return q + " no match · q/Esc edit"
 		}
