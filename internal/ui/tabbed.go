@@ -62,6 +62,14 @@ type Panel struct {
 	Lines []string
 	Wrap  bool
 
+	// Search offers "/" on a row panel (List/Multi/Picker/Browser), where it
+	// FILTERS the rows to those matching the query — see search.go. Off by
+	// default, and inert until the rows overflow their window: a short list
+	// needs no search, and the key is better left unbound there. View panels
+	// search unconditionally (they jump-and-highlight instead, colliding with
+	// nothing) and ignore this field.
+	Search bool
+
 	// Height caps the panel's visible rows (0 = default).
 	Height int
 
@@ -151,6 +159,16 @@ type panelState struct {
 	editing bool            // List/Multi Custom: the inline editor is open
 	rows    int             // last visible row budget, for paging
 
+	// Search (search.go). view maps a VISIBLE row to its underlying index and
+	// is always populated — identity when no filter is on. cursor stays an
+	// underlying index throughout (callers read it back that way), while
+	// offset counts visible rows; every move goes through viewPos/setViewPos
+	// so the two never disagree.
+	search        searchState
+	view          []int
+	pendingCenter int   // View: logical line to centre at the next render (-1 = none)
+	wrapStarts    []int // View(Wrap): logical line → first wrapped row, from the last render
+
 	// Picker preview cache, keyed by what the render depends on.
 	prevRows       []string
 	prevIdx        int
@@ -174,6 +192,7 @@ func newSurface(spec TabbedSpec, reply chan TabbedResult, gen int) *surfaceState
 	for i, p := range spec.Panels {
 		st := &s.ps[i]
 		st.checked = map[int]bool{}
+		st.pendingCenter = -1
 		switch p.Kind {
 		case PanelPicker:
 			st.items = append([]string{}, p.Items...)
@@ -226,15 +245,17 @@ func newSurface(spec TabbedSpec, reply chan TabbedResult, gen int) *surfaceState
 					dir, _ = os.UserHomeDir()
 				}
 			}
-			st.setDir(dir)
+			st.setDir(p, dir)
 		}
+		st.rebuildView(p) // identity to start with; every render reads it
 	}
 	return s
 }
 
 // setDir loads a browser panel's directory ("../" + dirs + files, hidden
-// entries skipped) — the v1 readDirItems semantics.
-func (st *panelState) setDir(dir string) {
+// entries skipped) — the v1 readDirItems semantics. Descending drops any
+// filter: the query was aimed at the directory being left.
+func (st *panelState) setDir(p Panel, dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		st.errmsg = err.Error()
@@ -263,6 +284,7 @@ func (st *panelState) setDir(dir string) {
 	st.entries = append(st.entries, files...)
 	st.cursor = 0
 	st.offset = 0
+	st.searchClear(p)
 }
 
 // result collects the commit-all snapshot.
@@ -294,6 +316,12 @@ func (s *surfaceState) setFocus(i int) {
 	if s.ps[s.focus].editing {
 		s.ps[s.focus].editing = false
 		s.ps[s.focus].input.Blur()
+	}
+	// A half-typed query is abandoned on the way out (an APPLIED one stays —
+	// per-panel search survives tabbing away and back), so the field never
+	// holds the cursor from an unfocused tab.
+	if s.ps[s.focus].search.mode == searchTyping {
+		s.ps[s.focus].searchClear(s.spec.Panels[s.focus])
 	}
 	s.focus = i
 	if s.spec.Panels[s.focus].Kind == PanelInput {
@@ -396,10 +424,11 @@ func (m *model) renderSurface(b *strings.Builder) {
 	case PanelPicker:
 		m.renderPicker(b, p, st, w)
 	case PanelList, PanelMulti:
-		h := panelHeight(p, len(st.items))
+		h := panelHeight(p, len(st.view))
 		st.rows = h
 		st.scrollTo(h)
-		for i := st.offset; i < st.offset+h && i < len(st.items); i++ {
+		for vp := st.offset; vp < st.offset+h && vp < len(st.view); vp++ {
+			i := st.view[vp]
 			marker := "  "
 			if i == st.cursor {
 				marker = cyan + "▸ " + sgrReset
@@ -526,11 +555,31 @@ func (m *model) renderSurface(b *strings.Builder) {
 			strings.Repeat(" ", pad) + " " + sgrReset + "\n")
 	case PanelView:
 		lines := st.items
-		if p.Wrap {
-			lines = nil
-			for _, l := range st.items {
-				lines = append(lines, wrapANSI(l, w)...)
+		// Highlight BEFORE wrapping: hits are recorded against logical lines,
+		// and wrapANSI carries the SGR across row boundaries, so a match split
+		// by a wrap stays highlighted on both rows.
+		if q := st.searchDraft(); q != "" {
+			cur := st.currentHit()
+			hl := make([]string, len(lines))
+			for i, l := range lines {
+				off := -1
+				if cur != nil && cur.line == i {
+					off = cur.off
+				}
+				hl[i] = highlightLine(l, q, off)
 			}
+			lines = hl
+		}
+		if p.Wrap {
+			// Remember where each logical line begins so a hit can be centred
+			// in wrapped-row space, which is the only space offset speaks.
+			starts := make([]int, len(lines))
+			var rows []string
+			for i, l := range lines {
+				starts[i] = len(rows)
+				rows = append(rows, wrapANSI(l, w)...)
+			}
+			lines, st.wrapStarts = rows, starts
 		}
 		st.wrapped = len(lines)
 		h := panelHeight(p, len(lines))
@@ -538,6 +587,17 @@ func (m *model) renderSurface(b *strings.Builder) {
 		maxOff := len(lines) - h
 		if maxOff < 0 {
 			maxOff = 0
+		}
+		// A pending jump lands here, where the wrapped geometry is finally
+		// known — the same "key sets the intent, render resolves it" shape the
+		// G key uses with its 1<<30 offset.
+		if st.pendingCenter >= 0 {
+			row := st.pendingCenter
+			if p.Wrap && row < len(st.wrapStarts) {
+				row = st.wrapStarts[row]
+			}
+			st.offset = row - h/2
+			st.pendingCenter = -1
 		}
 		st.offset = clampInt(st.offset, 0, maxOff)
 		if st.hoff < 0 || p.Wrap {
@@ -555,10 +615,11 @@ func (m *model) renderSurface(b *strings.Builder) {
 		if st.errmsg != "" {
 			b.WriteString("\n" + ErrPrefix + st.errmsg)
 		}
-		h := panelHeight(p, len(st.entries))
+		h := panelHeight(p, len(st.view))
 		st.rows = h
-		st.scrollToN(h, len(st.entries))
-		for i := st.offset; i < st.offset+h && i < len(st.entries); i++ {
+		st.scrollTo(h)
+		for vp := st.offset; vp < st.offset+h && vp < len(st.view); vp++ {
+			i := st.view[vp]
 			marker := "  "
 			if i == st.cursor {
 				marker = cyan + "▸ " + sgrReset
@@ -574,6 +635,14 @@ func (m *model) renderSurface(b *strings.Builder) {
 		}
 	}
 
+	// The query field REPLACES the hint row rather than adding one: both are a
+	// single row, so the frame's height is identical in and out of search and
+	// nothing below it moves.
+	if st.search.mode == searchTyping {
+		m.renderSearchRow(b, p, st, w)
+		return
+	}
+
 	hint := surfaceHint(p, st)
 	if len(s.spec.Panels) > 1 {
 		hint = "Tab switch · " + hint
@@ -582,6 +651,44 @@ func (m *model) renderSurface(b *strings.Builder) {
 		hint = fmt.Sprintf("%s · %d%%", hint, pct)
 	}
 	b.WriteString("\n" + faint + ansi.Truncate(hint, maxInt(4, m.width), "…") + sgrReset)
+}
+
+// renderSearchRow draws the query field in the hint row's place, with the
+// live match count trailing it, and parks the REAL terminal cursor in the
+// field (IME preedit anchors to it, as in the Input panel).
+func (m *model) renderSearchRow(b *strings.Builder, p Panel, st *panelState, w int) {
+	ti := &st.search.input
+	boxW := clampInt(32, 4, maxInt(4, w-24))
+	ti.SetWidth(boxW)
+	field := ti.View()
+	if c := ti.Cursor(); c != nil {
+		m.surfCur = c
+		m.surfCur.Y = strings.Count(b.String(), "\n") + 1
+		m.surfCur.X = 1 + inputCursorCols(*ti, c.X)
+	}
+	b.WriteString("\n" + cyan + "/" + sgrReset + field +
+		faint + " · " + searchTypingHint(p, st) + sgrReset)
+}
+
+// searchTypingHint is the live feedback beside the query: how much the filter
+// keeps, or how many hits a View has, plus the keys.
+func searchTypingHint(p Panel, st *panelState) string {
+	q := st.searchDraft()
+	switch {
+	case q == "":
+		return "type to search · Esc cancel"
+	case p.Kind == PanelView:
+		if n := len(st.search.hits); n > 0 {
+			return fmt.Sprintf("%d hits · Enter search · Esc cancel", n)
+		}
+		return "no match · Esc cancel"
+	default:
+		total := st.rowCount(p)
+		if shown, ok := st.filteredCount(p); ok {
+			return fmt.Sprintf("%d of %d · Enter filter · Esc cancel", shown, total)
+		}
+		return "no match · Esc cancel"
+	}
 }
 
 // Picker geometry: the preview claims a share of the width, capped, and only
@@ -622,7 +729,7 @@ func (m *model) renderPicker(b *strings.Builder, p Panel, st *panelState, w int)
 	// The list window follows the item count; the preview gets its own row
 	// budget (a 3-item list must still show a legible thumbnail), clamped so
 	// the inline frame keeps room for the composer and status row.
-	h := panelHeight(p, len(st.items))
+	h := panelHeight(p, len(st.view))
 	st.rows = h
 	st.scrollTo(h)
 
@@ -674,7 +781,8 @@ func (m *model) renderPicker(b *strings.Builder, p Panel, st *panelState, w int)
 			}
 			line = cell + strings.Repeat(" ", pad) + strings.Repeat(" ", pickerGutter)
 		}
-		if i := st.offset + r; r < h && i < len(st.items) {
+		if vp := st.offset + r; r < h && vp < len(st.view) {
+			i := st.view[vp]
 			marker := "  "
 			item := ansi.Truncate(st.items[i], listCols, "…")
 			if i == st.cursor {
@@ -708,8 +816,43 @@ func (st *panelState) previewRows(p Panel, cols, rows int) []string {
 	return st.prevRows
 }
 
-// surfaceHint mirrors the v1 promptui help lines exactly.
+// surfaceHint mirrors the v1 promptui help lines exactly, plus whatever an
+// applied search adds: a row panel keeps ALL its keys and gains "c clear"; a
+// View swaps in the n/p walker until Esc puts the query back up.
 func surfaceHint(p Panel, st *panelState) string {
+	if st.search.mode == searchApplied {
+		q := truncateQuery(st.search.query)
+		if p.Kind == PanelView {
+			if n := len(st.search.hits); n > 0 {
+				return fmt.Sprintf("%s %d/%d · n next · p prev · c copy · q/Esc edit", q, st.search.hitIdx+1, n)
+			}
+			return q + " no match · q/Esc edit"
+		}
+		shown, ok := st.filteredCount(p)
+		lead := fmt.Sprintf("%s %d/%d", q, shown, st.rowCount(p))
+		if !ok {
+			lead = q + " no match"
+		}
+		return lead + " · " + baseHint(p, st) + " · c clear"
+	}
+	if st.searchAvailable(p) {
+		return baseHint(p, st) + " · / search"
+	}
+	return baseHint(p, st)
+}
+
+// truncateQuery renders a query for the hint row, clipped so a long one cannot
+// crowd out the keys behind it.
+func truncateQuery(q string) string {
+	const max = 24
+	r := []rune(q)
+	if len(r) > max {
+		q = string(r[:max]) + "…"
+	}
+	return "\"" + q + "\""
+}
+
+func baseHint(p Panel, st *panelState) string {
 	switch p.Kind {
 	case PanelSlider:
 		return "←→ adjust · g default · G max · Enter confirm · q/Esc cancel"
@@ -742,18 +885,15 @@ func surfaceHint(p Panel, st *panelState) string {
 	}
 }
 
-// scrollPercent mirrors v1: how far through a scrollable panel we are.
+// scrollPercent mirrors v1: how far through a scrollable panel we are. Row
+// panels measure progress through what is VISIBLE, so a filter's percentage
+// describes the filtered list rather than the hidden whole.
 func scrollPercent(p Panel, st *panelState) (int, bool) {
 	switch p.Kind {
-	case PanelList, PanelMulti, PanelPicker:
-		n := len(st.items)
+	case PanelList, PanelMulti, PanelPicker, PanelBrowser:
+		n := len(st.view)
 		if h := panelHeight(p, n); n > h && n > 1 {
-			return int(float64(st.cursor)/float64(n-1)*100 + 0.5), true
-		}
-	case PanelBrowser:
-		n := len(st.entries)
-		if h := panelHeight(p, n); n > h && n > 1 {
-			return int(float64(st.cursor)/float64(n-1)*100 + 0.5), true
+			return int(float64(st.viewPos())/float64(n-1)*100 + 0.5), true
 		}
 	case PanelView:
 		n := len(st.items)
@@ -769,15 +909,17 @@ func scrollPercent(p Panel, st *panelState) (int, bool) {
 	return 0, false
 }
 
-// scrollTo keeps the cursor visible in an h-row window over items.
-func (st *panelState) scrollTo(h int) { st.scrollToN(h, len(st.items)) }
-
-func (st *panelState) scrollToN(h, n int) {
-	if st.cursor < st.offset {
-		st.offset = st.cursor
+// scrollTo keeps the cursor visible in an h-row window. Both coordinates are
+// VISIBLE rows: offset counts them, and the cursor (an underlying index) is
+// translated through the view mapping.
+func (st *panelState) scrollTo(h int) {
+	n := len(st.view)
+	vp := st.viewPos()
+	if vp < st.offset {
+		st.offset = vp
 	}
-	if st.cursor >= st.offset+h {
-		st.offset = st.cursor - h + 1
+	if vp >= st.offset+h {
+		st.offset = vp - h + 1
 	}
 	if st.offset < 0 {
 		st.offset = 0

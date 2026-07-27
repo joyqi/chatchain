@@ -1021,7 +1021,7 @@ func PickSession(projectRoot string) (string, error) {
 		labels[i] = sessionLabel(s)
 	}
 	r, rerr := ui.RunSurface(ui.TabbedSpec{Panels: []ui.Panel{{
-		Title: "Select a session to resume", Kind: ui.PanelList, Items: labels, Height: 15,
+		Title: "Select a session to resume", Kind: ui.PanelList, Items: labels, Height: 15, Search: true,
 	}}})
 	if rerr != nil || r.Cancelled {
 		return "", rerr // cancelled — caller stays put

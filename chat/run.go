@@ -346,8 +346,8 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				cwd, _ = os.UserHomeDir()
 			}
 			r, serr := u.Tabbed(ctx, ui.TabbedSpec{Panels: []ui.Panel{
-				{Title: "Attached", Kind: ui.PanelMulti, Items: rows},
-				{Title: "Add", Kind: ui.PanelBrowser, Dir: cwd},
+				{Title: "Attached", Kind: ui.PanelMulti, Items: rows, Search: true},
+				{Title: "Add", Kind: ui.PanelBrowser, Dir: cwd, Search: true},
 			}})
 			if serr != nil || r.Cancelled {
 				continue
@@ -408,6 +408,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 					Items:   imageChoiceLabels(choices),
 					Details: imageChoiceDetails(choices, sw.imagesPath(), u.Width()),
 					Preview: prev.render,
+					Search:  true,
 				}}})
 				if serr != nil || r.Cancelled {
 					continue
@@ -476,7 +477,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				var modelLabels []string
 				var modelIdx int
 				modelValues, modelLabels, modelIdx = modelRows(p.Model(), models)
-				modelPanel = ui.Panel{Title: "Model", Kind: ui.PanelList, Items: modelLabels, Cursor: modelIdx}
+				modelPanel = ui.Panel{Title: "Model", Kind: ui.PanelList, Items: modelLabels, Cursor: modelIdx, Search: true}
 			}
 			// Tabs assemble by capability: only panels the provider can act on
 			// appear, and the commit below reads them back by recorded index.
@@ -676,8 +677,8 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				deleteRows[i] = sessionLabel(s)
 			}
 			r, serr := u.Tabbed(ctx, ui.TabbedSpec{Panels: []ui.Panel{
-				{Title: "Resume", Kind: ui.PanelList, Items: resumeRows},
-				{Title: "Delete", Kind: ui.PanelMulti, Items: deleteRows},
+				{Title: "Resume", Kind: ui.PanelList, Items: resumeRows, Search: true},
+				{Title: "Delete", Kind: ui.PanelMulti, Items: deleteRows, Search: true},
 			}})
 			if serr != nil || r.Cancelled {
 				continue
@@ -811,7 +812,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				r, serr := u.Tabbed(ctx, ui.TabbedSpec{
 					RefreshEvery: 500,
 					Panels: []ui.Panel{
-						{Title: "Messages", Kind: ui.PanelList, Items: requestRows(reqLog.Entries()),
+						{Title: "Messages", Kind: ui.PanelList, Items: requestRows(reqLog.Entries()), Search: true,
 							Refresh: func() []string { return requestRows(reqLog.Entries()) }},
 						{Title: "Verbose", Kind: ui.PanelSwitch, On: reqLog.Verbose()},
 					},

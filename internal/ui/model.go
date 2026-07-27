@@ -247,6 +247,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if st.cursor >= len(st.items) {
 					st.cursor = maxInt(0, len(st.items)-1)
 				}
+				// Re-filter against the new content: a live panel (/tools,
+				// /debug) grows rows under an applied query, and they must be
+				// judged by it too.
+				st.rebuildView(p)
+				st.syncCursor()
+				if p.Kind == PanelView && st.search.query != "" {
+					st.collectHits(p, st.search.query)
+				}
 			}
 		}
 		gen := msg.gen
@@ -521,6 +529,44 @@ func (m *model) surfaceKey(k tea.Key) {
 		return
 	}
 
+	// An open query field owns the keyboard for the same reason the Custom
+	// editor above does — letters must type. Every keystroke re-applies the
+	// query live (search.go): the list narrows, or the View rides to its first
+	// hit, before Enter is ever pressed.
+	if st.search.mode == searchTyping {
+		switch {
+		case k.Mod == tea.ModCtrl && k.Code == 'c':
+			m.closeSurface(TabbedResult{Cancelled: true})
+		case k.Code == tea.KeyEscape:
+			st.searchClear(p) // ESC in the field leaves search entirely
+		case k.Code == tea.KeyEnter:
+			st.searchApply(p)
+		default:
+			st.search.input, _ = st.search.input.Update(tea.KeyPressMsg(k))
+			st.searchLive(p)
+		}
+		return
+	}
+
+	// A View under an applied search hands n/p/q/Esc to the hit walker; every
+	// other key (scrolling, c copy, g/G) still reaches the panel below.
+	if p.Kind == PanelView && st.search.mode == searchApplied {
+		switch {
+		case k.Code == tea.KeyEscape:
+			st.searchEdit(p)
+			return
+		case k.Text == "q":
+			st.searchEdit(p)
+			return
+		case k.Text == "n":
+			st.searchStep(1)
+			return
+		case k.Text == "p":
+			st.searchStep(-1)
+			return
+		}
+	}
+
 	// Input panels own the keyboard: letters must type, not navigate. Only
 	// the surface-level chords stay routed (Tab/Enter/Esc/Ctrl+C); the rest —
 	// including textinput's emacs-style Ctrl bindings — feed the field.
@@ -571,7 +617,7 @@ func (m *model) surfaceKey(k tea.Key) {
 		if p.Kind == PanelBrowser && st.cursor >= 0 && st.cursor < len(st.entries) {
 			e := st.entries[st.cursor]
 			if e.isDir {
-				st.setDir(e.path) // descend; do not submit
+				st.setDir(p, e.path) // descend; do not submit
 				return
 			}
 			st.chosen = e.path // file chosen; fall through to commit
@@ -647,10 +693,23 @@ func (m *model) surfaceKey(k tea.Key) {
 	}
 	handled := true
 	switch k.Text {
+	case "/":
+		if st.searchAvailable(p) {
+			st.searchOpen(p)
+			return
+		}
+		handled = false
 	case "c":
 		if p.Kind == PanelView {
 			st.copied = copyToClipboard(stripSGRText(strings.Join(st.items, "\n"))) == nil
 			return // keep the ✓ hint until another key
+		}
+		// On a row panel "c" was free, and an applied filter claims it: the
+		// panel's own keys stay untouched, so this is the way back to the
+		// whole list.
+		if st.search.mode == searchApplied {
+			st.searchClear(p)
+			return
 		}
 	case "q":
 		m.closeSurface(TabbedResult{Cancelled: true})
@@ -700,19 +759,18 @@ func (m *model) surfaceKey(k tea.Key) {
 		if p.Kind == PanelSlider {
 			st.value = nil
 		} else {
-			st.cursor, st.offset, st.hoff = 0, 0, 0
+			st.setViewPos(0)
+			st.offset, st.hoff = 0, 0
 		}
 	case "G":
 		switch p.Kind {
 		case PanelSlider:
 			v := p.Max
 			st.value = &v
-		case PanelBrowser:
-			st.cursor = maxInt(0, len(st.entries)-1)
 		case PanelView:
 			st.offset = 1 << 30 // render clamps to the last page
 		default:
-			st.cursor = maxInt(0, len(st.items)-1)
+			st.setViewPos(maxInt(0, len(st.view)-1))
 		}
 	default:
 		handled = false
@@ -722,17 +780,17 @@ func (m *model) surfaceKey(k tea.Key) {
 	}
 }
 
-// surfacePage moves by one visible page (v1 ←→ / Ctrl+B/F semantics).
+// surfacePage moves by one visible page (v1 ←→ / Ctrl+B/F semantics). Row
+// panels step through VISIBLE rows, so a filter's gaps are skipped rather than
+// paged across.
 func (m *model) surfacePage(p Panel, st *panelState, dir int) {
 	step := st.rows
 	if step < 1 {
 		step = 1
 	}
 	switch p.Kind {
-	case PanelList, PanelMulti, PanelPicker:
-		st.cursor = clampInt(st.cursor+dir*step, 0, maxInt(0, len(st.items)-1))
-	case PanelBrowser:
-		st.cursor = clampInt(st.cursor+dir*step, 0, maxInt(0, len(st.entries)-1))
+	case PanelList, PanelMulti, PanelPicker, PanelBrowser:
+		st.setViewPos(st.viewPos() + dir*step)
 	case PanelView:
 		st.offset = maxInt(0, st.offset+dir*step) // upper bound clamped at render
 	}
@@ -741,10 +799,8 @@ func (m *model) surfacePage(p Panel, st *panelState, dir int) {
 // surfaceNav moves the cursor / scroll of the focused panel.
 func (m *model) surfaceNav(p Panel, st *panelState, dir int) {
 	switch p.Kind {
-	case PanelList, PanelMulti, PanelPicker:
-		st.cursor = clampInt(st.cursor+dir, 0, maxInt(0, len(st.items)-1))
-	case PanelBrowser:
-		st.cursor = clampInt(st.cursor+dir, 0, maxInt(0, len(st.entries)-1))
+	case PanelList, PanelMulti, PanelPicker, PanelBrowser:
+		st.setViewPos(st.viewPos() + dir)
 	case PanelView:
 		st.offset = maxInt(0, st.offset+dir) // upper bound clamped at render
 	}
