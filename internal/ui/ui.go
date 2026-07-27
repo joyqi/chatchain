@@ -271,9 +271,15 @@ func (u *UI) Tabbed(ctx context.Context, spec TabbedSpec) (TabbedResult, error) 
 
 // Select opens the single-select surface below the composer and blocks until
 // a choice or cancel (a one-panel Tabbed).
+//
+// Search is on unconditionally here, unlike a hand-built Panel: this facade
+// exists to pick one row out of a list, so a list long enough to scroll is
+// always worth searching. Nothing is spent on the short ones — searchAvailable
+// keeps "/" unbound until the rows overflow their window.
 func (u *UI) Select(ctx context.Context, spec SelectSpec) (SelectResult, error) {
 	r, err := u.Tabbed(ctx, TabbedSpec{Panels: []Panel{{
 		Title: spec.Title, Kind: PanelList, Items: spec.Items, Cursor: spec.Cursor,
+		Search: true,
 	}}})
 	if err != nil || r.Cancelled {
 		return SelectResult{Cancelled: true}, err
