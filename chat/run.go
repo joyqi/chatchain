@@ -165,7 +165,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 	printDim := func(format string, a ...any) { tr.notice(format, a...) }
 
 	var titleWG sync.WaitGroup
-	titled := len(importedHistory) > 0
+	titler := newSessionTitle(func() *SessionWriter { return sw }, func(s string) { u.SetTitle(windowTitle(s)) }, len(importedHistory) > 0)
 
 	persistTurn := func() {
 		if sw != nil && persisted < len(history) {
@@ -176,38 +176,20 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			persisted = len(history)
 		}
 	}
+	// maybeTitle settles the session name at turn end, upgrading the seeded
+	// placeholder to a model-written one (title.go owns the state machine).
 	maybeTitle := func() {
-		if titled || sw == nil {
+		firstUser, firstAssistant, ok := titler.upgrade(history)
+		if !ok {
 			return
 		}
-		firstUser, firstAssistant, imageReply := titleSeeds(history)
-		if firstUser == "" {
-			return
-		}
-		if firstAssistant == "" {
-			if !imageReply {
-				return
-			}
-			// Image-only reply: the placeholder from the prompt is the final
-			// title — an LLM pass through this provider would paint a picture,
-			// not summarize a chat.
-			titled = true
-			placeholder := titleFrom(firstUser, 40)
-			sw.SetTitle(placeholder)
-			u.SetTitle(placeholder)
-			return
-		}
-		titled = true
-		placeholder := titleFrom(firstUser, 40)
-		sw.SetTitle(placeholder)
-		u.SetTitle(placeholder)
 		titleWG.Add(1)
 		go func(fu, fa string, target *SessionWriter) {
 			defer titleWG.Done()
 			tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
-			if title := generateTitleText(tctx, p, fu, fa, target); title != "" {
-				u.SetTitle(title)
+			if name := generateTitleText(tctx, p, fu, fa, target); name != "" {
+				u.SetTitle(windowTitle(name))
 			}
 		}(firstUser, firstAssistant, sw)
 	}
@@ -253,6 +235,8 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 		if persist {
 			persistTurn()
 			maybeTitle()
+		} else {
+			titler.unseed(history)
 		}
 		budget.update(p, history)
 		pushStatus()
@@ -717,7 +701,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				ur.ResetUsage()
 			}
 			pendingAttachments = nil
-			titled = true
+			titler.adopt() // the resumed bundle brings its own name
 			if sess.Meta.Provider == p.Type() && sess.Meta.Model != "" {
 				p.SetModel(sess.Meta.Model)
 			}
@@ -774,10 +758,8 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 				}
 			}
 			persistTurn() // the whole backlog: persisted has stayed 0
-			if title := titleFrom(strings.TrimPrefix(input, "/save"), 80); title != "" {
-				titled = true // a user-chosen title is never overwritten
-				sw.SetTitle(title)
-				u.SetTitle(title)
+			if name := titleFrom(strings.TrimPrefix(input, "/save"), 80); name != "" {
+				titler.adoptName(name) // a user-chosen title is never overwritten
 			} else {
 				maybeTitle() // placeholder + async LLM title, as at turn end
 			}
@@ -893,6 +875,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 		history = append(history, provider.Message{Role: "user", Content: input, Attachments: pendingAttachments})
 		pendingAttachments = nil
 		hist0 := len(history)
+		titler.seed(history) // name the session now, not after the tools finish
 
 		if dispatch != nil {
 			tools = dispatch.Tools()
@@ -928,6 +911,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			report := describeError(retryErr)
 			tr.errorBlock(report.Headline, report.lines()...)
 			history = history[:hist0-1]
+			titler.unseed(history)
 			continue
 		}
 
