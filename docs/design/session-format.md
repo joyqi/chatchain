@@ -140,10 +140,10 @@ type sessionRaw struct {
 
 `meta.title` is the **primary human-readable info** that distinguishes sessions in the `/session` / `--resume` list (the ULID is unreadable). ULID + date alone don't tell the user which is which, so title quality matters. Two-stage:
 
-1. **Immediate placeholder**: when the first user message is persisted, `title` = that message truncated (e.g. first 40 runes). Guarantees a name at all times (even a session abandoned before the first reply has one).
-2. **LLM summary upgrade**: after the first assistant reply completes, **asynchronously** (a goroutine, non-blocking) make one `p.Chat()` call asking for a short title ("≤6 words, no quotes, match the conversation's language"). Input is the first user+assistant turn. On success → overwrite `meta.title`; on failure → keep the placeholder.
+1. **Immediate placeholder**: the moment the first user message is appended, `title` = that message truncated (first 40 runes). Guarantees a name at all times (even a session abandoned before the first reply has one).
+2. **LLM summary upgrade**: fired at the same moment, **asynchronously** (a goroutine racing the turn — not after the reply: a tool-heavy first turn would hold the name hostage for minutes). One `p.Chat()` call asking for a short title ("≤6 words, no quotes, match the message's language"); input is the **first user message only** — the assistant reply is structurally excluded, matching OpenCode/Claude Code/Crush. On success → overwrite `meta.title`; on failure → keep the placeholder (no retry).
 
-Key points: non-blocking; tiny cost (one small call per session, once); reuses `Chat` (no tools, no new interface); skipped under ephemeral mode (`--no-save`); a disable switch (`session.autotitle: false`) is left for later, on by default.
+Key points: non-blocking; the pass rides a **dedicated provider instance** (`titleP`, cmd-constructed clone) because provider per-call state (usage fields, `lastImages`) is not safe for a request concurrent with the streaming turn; a rolled-back first turn takes the name with it, and a generation counter drops a pass that lands after the rollback (`chat/title.go`); dedicated image providers get no pass (asked for a title they would paint) — their placeholder is the final name; tiny cost (one small call per session, once); reuses `Chat` (no tools, no new interface); skipped under ephemeral mode (`--no-save`) until `/save`; a disable switch (`session.autotitle: false`) is left for later, on by default.
 
 ## 5. RawContent serialization (key design)
 
@@ -272,7 +272,7 @@ All interactive surfaces (`/model`, `/session`, the startup pickers) support **c
 **Decided:**
 - Auto-persist by default + `--no-save` (ephemeral) switch (no disk, no title, no autotitle call).
 - ULID session ids; lists distinguished by the auto-generated `meta.title` (§4.4).
-- Two-stage title: immediate placeholder + async LLM summary after the first reply.
+- Two-stage title: immediate placeholder + async LLM summary of the first user message, both at first send.
 
 **Follow-up / orthogonal:**
 - Per-message token usage / timing (cost auditing) — optional field, addable later.

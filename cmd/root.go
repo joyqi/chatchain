@@ -354,7 +354,19 @@ var rootCmd = &cobra.Command{
 		if !term.IsTerminal(int(os.Stdout.Fd())) {
 			return fmt.Errorf("interactive mode requires a terminal; use -m/--message for piped input")
 		}
-		return chat.Run(p, systemPrompt, systemInteractive, importedHistory, dispatch, mgr, sw, newSession, interact, contextWindow, agentOpts, reqLog)
+		// The async session-title pass runs while the turn is still streaming,
+		// and provider instances keep per-call state (usage, image results)
+		// that is not safe for a concurrent request — so titles ride their own
+		// instance. Effort and image output are deliberately not applied: a
+		// six-word title needs neither. Dedicated image providers get none —
+		// asked for a title they would paint one.
+		var titleP provider.Provider
+		if _, ok := p.(provider.ImageGenTunable); !ok {
+			if titleP, err = provider.New(providerType, apiKey, baseURL, model, temp, reqLog.HTTPClient()); err != nil {
+				return err
+			}
+		}
+		return chat.Run(p, titleP, systemPrompt, systemInteractive, importedHistory, dispatch, mgr, sw, newSession, interact, contextWindow, agentOpts, reqLog)
 	},
 }
 

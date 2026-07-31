@@ -108,39 +108,27 @@ func isRetryable(err error) bool {
 
 const userPrompt = "❯ "
 
-// titleSeeds scans history for the async-title inputs: the first user text,
-// the first assistant TEXT reply, and whether an assistant instead replied
-// with images only (dedicated image providers). In the image-only case there
-// is no text for an LLM to summarize — and asking this provider would paint,
-// not title — so the caller titles from the prompt alone.
-func titleSeeds(history []provider.Message) (firstUser, firstAssistant string, imageReply bool) {
+// firstUserText is what a session is named after: the first user message
+// with any text. The assistant reply is deliberately NOT an input — the name
+// must not wait for it (a tool-heavy first turn takes minutes), so neither
+// the placeholder nor the model pass may depend on it.
+func firstUserText(history []provider.Message) string {
 	for _, m := range history {
-		if firstUser == "" && m.Role == "user" {
-			firstUser = m.Content
-		}
-		if firstAssistant == "" && m.Role == "assistant" {
-			if m.Content != "" {
-				firstAssistant = m.Content
-			} else if len(m.Attachments) > 0 {
-				imageReply = true
-			}
+		if m.Role == "user" && m.Content != "" {
+			return m.Content
 		}
 	}
-	return firstUser, firstAssistant, imageReply
+	return ""
 }
 
-func generateTitleText(ctx context.Context, p provider.Provider, firstUser, firstAssistant string, sw *SessionWriter) string {
-	prompt := fmt.Sprintf("Write a short title (at most 6 words, no quotes, no trailing punctuation) for the conversation below, in the same language the conversation uses. Return only the title itself:\n\nUser: %s\n\nAssistant: %s",
-		truncateRunes(firstUser, 500), truncateRunes(firstAssistant, 500))
+func generateTitleText(ctx context.Context, p provider.Provider, firstUser string) string {
+	prompt := fmt.Sprintf("Write a short title (at most 6 words, no quotes, no trailing punctuation) summarizing the user message below, in the same language the message uses. Return only the title itself:\n\n%s",
+		truncateRunes(firstUser, 500))
 	title, err := p.Chat(ctx, []provider.Message{{Role: "user", Content: prompt}})
 	if err != nil {
 		return ""
 	}
-	title = sanitizeTitle(title)
-	if title != "" {
-		sw.SetTitle(title)
-	}
-	return title
+	return sanitizeTitle(title)
 }
 
 // isReadOnlyViewer reports whether input is a command that only opens a
@@ -156,12 +144,30 @@ func isReadOnlyViewer(input string) bool {
 }
 
 func sanitizeTitle(s string) string {
-	s = strings.TrimSpace(s)
+	s = strings.TrimSpace(stripThink(s))
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i] // a model that explains itself: keep the title line only
 	}
 	s = strings.Trim(s, "\"'“”「」` ")
 	return titleFrom(s, 80)
+}
+
+// stripThink removes <think>…</think> blocks — reasoning models behind
+// chatcomp relays leak them into plain content, and a chain of thought must
+// never become the session title. An unclosed tag means everything after it
+// is thought.
+func stripThink(s string) string {
+	for {
+		open := strings.Index(s, "<think>")
+		if open < 0 {
+			return s
+		}
+		end := strings.Index(s[open:], "</think>")
+		if end < 0 {
+			return s[:open]
+		}
+		s = s[:open] + s[open+end+len("</think>"):]
+	}
 }
 
 // titleFrom shapes arbitrary text into a session title: ONE line (a stored

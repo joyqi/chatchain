@@ -30,7 +30,7 @@ type SessionFactory func() (*SessionWriter, error)
 //
 // Invariant: after ui.New() nothing may write to the terminal except through
 // the facade — no spinner, no raw OSC/ANSI escapes, no direct stdout.
-func Run(p provider.Provider, systemPrompt string, systemInteractive bool, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, newSession SessionFactory, interact *Interactor, contextWindow int, agent AgentOptions, reqLog *RequestLog) error {
+func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive bool, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, newSession SessionFactory, interact *Interactor, contextWindow int, agent AgentOptions, reqLog *RequestLog) error {
 	// ---- pre-Program phase: plain stdout, the Program hasn't claimed the
 	// terminal yet. The OSC background query MUST happen here (during the
 	// Program it would race the event loop's stdin ownership).
@@ -176,22 +176,27 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			persisted = len(history)
 		}
 	}
-	// maybeTitle settles the session name at turn end, upgrading the seeded
-	// placeholder to a model-written one (title.go owns the state machine).
-	maybeTitle := func() {
-		firstUser, firstAssistant, ok := titler.upgrade(history)
-		if !ok {
+	// titleNow names the session the moment its first user message exists:
+	// the prompt-derived placeholder synchronously, then a model-written
+	// summary of that same message as an async pass (title.go owns the state
+	// machine). The pass rides its own provider instance — the turn is still
+	// streaming on p, whose per-call state (usage, image results) is not
+	// safe for a concurrent request. titleP is nil for dedicated image
+	// providers (asked for a title they would paint one), so their
+	// placeholder simply stands as the name.
+	titleNow := func() {
+		firstUser, gen, ok := titler.seed(history)
+		if !ok || titleP == nil {
 			return
 		}
+		titleP.SetModel(p.Model())
 		titleWG.Add(1)
-		go func(fu, fa string, target *SessionWriter) {
+		go func() {
 			defer titleWG.Done()
 			tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
-			if name := generateTitleText(tctx, p, fu, fa, target); name != "" {
-				u.SetTitle(windowTitle(name))
-			}
-		}(firstUser, firstAssistant, sw)
+			titler.land(gen, generateTitleText(tctx, titleP, firstUser))
+		}()
 	}
 
 	compactDeclined := 0
@@ -234,7 +239,6 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 		}
 		if persist {
 			persistTurn()
-			maybeTitle()
 		} else {
 			titler.unseed(history)
 		}
@@ -761,7 +765,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 			if name := titleFrom(strings.TrimPrefix(input, "/save"), 80); name != "" {
 				titler.adoptName(name) // a user-chosen title is never overwritten
 			} else {
-				maybeTitle() // placeholder + async LLM title, as at turn end
+				titleNow() // placeholder + async LLM title, as at first send
 			}
 			tr.notice("Session saved: %s — auto-saving from now on.", sw.ID())
 			continue
@@ -875,7 +879,7 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 		history = append(history, provider.Message{Role: "user", Content: input, Attachments: pendingAttachments})
 		pendingAttachments = nil
 		hist0 := len(history)
-		titler.seed(history) // name the session now, not after the tools finish
+		titleNow() // name the session now — the model pass races the turn
 
 		if dispatch != nil {
 			tools = dispatch.Tools()
@@ -921,7 +925,6 @@ func Run(p provider.Provider, systemPrompt string, systemInteractive bool, impor
 		persistTurn()
 		budget.update(p, history)
 		pushStatus()
-		maybeTitle()
 	}
 }
 

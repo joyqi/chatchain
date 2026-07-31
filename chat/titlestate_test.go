@@ -34,14 +34,18 @@ func userTurn(text string) []provider.Message {
 	return []provider.Message{{Role: "user", Content: text}}
 }
 
-// TestTitleSeedsBeforeTheReply is the whole point of seeding early: a first
-// turn that spends minutes in tool calls must not leave the session nameless
-// while it works. The placeholder comes from the user's message alone, so it
-// is available before the provider is ever called.
+// TestTitleSeedsBeforeTheReply is the whole point of naming at send time: a
+// first turn that spends minutes in tool calls must not leave the session
+// poorly named while it works. The placeholder comes from the user's message
+// alone, and the same call releases that message for the async model pass —
+// nothing here ever waits for the assistant.
 func TestTitleSeedsBeforeTheReply(t *testing.T) {
 	p := newTitleProbe(false)
-	p.t.seed(userTurn("refactor the session writer"))
+	fu, _, ok := p.t.seed(userTurn("refactor the session writer"))
 
+	if !ok || fu != "refactor the session writer" {
+		t.Errorf("seed = (%q, %v), want the message released for the model pass", fu, ok)
+	}
 	if got := p.name(); got != "refactor the session writer" {
 		t.Errorf("session title = %q, want the prompt-derived placeholder", got)
 	}
@@ -50,7 +54,8 @@ func TestTitleSeedsBeforeTheReply(t *testing.T) {
 	}
 }
 
-// TestTitleSeedOnlyOnce: later messages never rename a session.
+// TestTitleSeedOnlyOnce: later messages never rename a session, and the model
+// pass fires only for the seed that newly named it.
 func TestTitleSeedOnlyOnce(t *testing.T) {
 	p := newTitleProbe(false)
 	history := userTurn("first question")
@@ -58,25 +63,50 @@ func TestTitleSeedOnlyOnce(t *testing.T) {
 	history = append(history,
 		provider.Message{Role: "assistant", Content: "sure"},
 		provider.Message{Role: "user", Content: "second question"})
-	p.t.seed(history)
 
+	if _, _, ok := p.t.seed(history); ok {
+		t.Error("a second seed released another model pass")
+	}
 	if got := p.name(); got != "first question" {
 		t.Errorf("title = %q, want the FIRST message's placeholder", got)
 	}
 }
 
-// TestTitleResumedSessionUntouched: a resumed bundle arrives named, and
-// neither seeding nor upgrading may take that away.
+// TestTitleLandUpgradesThePlaceholder: the async pass's answer replaces the
+// placeholder on both sinks.
+func TestTitleLandUpgradesThePlaceholder(t *testing.T) {
+	p := newTitleProbe(false)
+	_, gen, _ := p.t.seed(userTurn("how do I profile Go allocations"))
+	p.t.land(gen, "Profiling Go allocations")
+
+	if got := p.name(); got != "Profiling Go allocations" {
+		t.Errorf("title = %q, want the model-written one", got)
+	}
+	if got := p.lastWindow(); got != "Profiling Go allocations" {
+		t.Errorf("window title = %q, want the model-written one", got)
+	}
+}
+
+// TestTitleLandEmptyKeepsThePlaceholder: a failed pass changes nothing, and
+// there is no retry — the placeholder is a complete fallback on its own.
+func TestTitleLandEmptyKeepsThePlaceholder(t *testing.T) {
+	p := newTitleProbe(false)
+	_, gen, _ := p.t.seed(userTurn("a question"))
+	p.t.land(gen, "")
+
+	if got := p.name(); got != "a question" {
+		t.Errorf("title = %q, want the placeholder kept", got)
+	}
+}
+
+// TestTitleResumedSessionUntouched: a resumed bundle arrives named; neither
+// the placeholder nor a model pass may take that away.
 func TestTitleResumedSessionUntouched(t *testing.T) {
 	p := newTitleProbe(true)
 	p.sw.meta.Title = "an earlier chat"
-	history := []provider.Message{
-		{Role: "user", Content: "new question"},
-		{Role: "assistant", Content: "an answer"},
-	}
-	p.t.seed(history)
-	if _, _, ok := p.t.upgrade(history); ok {
-		t.Error("a resumed session asked for a model-written title")
+
+	if _, _, ok := p.t.seed(userTurn("new question")); ok {
+		t.Error("a resumed session released a model pass")
 	}
 	if got := p.name(); got != "an earlier chat" {
 		t.Errorf("title = %q, want the resumed one", got)
@@ -87,13 +117,12 @@ func TestTitleResumedSessionUntouched(t *testing.T) {
 }
 
 // TestTitleUnseedOnRollback: a failed or discarded turn takes its user message
-// out of the history, and the placeholder was derived from nothing else — so
-// the name has to go back too, or the session keeps a name for a message it no
-// longer contains.
+// out of the history, and the name was derived from nothing else — so it has
+// to go back too, and the pass that was racing the turn must not land late.
 func TestTitleUnseedOnRollback(t *testing.T) {
 	p := newTitleProbe(false)
 	history := userTurn("a question that errored")
-	p.t.seed(history)
+	_, gen, _ := p.t.seed(history)
 	if p.name() == "" {
 		t.Fatal("placeholder not seeded")
 	}
@@ -107,10 +136,35 @@ func TestTitleUnseedOnRollback(t *testing.T) {
 	if got := p.lastWindow(); got != "" {
 		t.Errorf("window title = %q, want it cleared", got)
 	}
-	// And the NEXT message gets to supply one.
-	p.t.seed(userTurn("what actually worked"))
-	if got := p.name(); got != "what actually worked" {
-		t.Errorf("title = %q, want the next message's placeholder", got)
+	// The pass fired for the rolled-back message may still be in flight; its
+	// answer names a message the session no longer contains.
+	p.t.land(gen, "A Question That Errored")
+	if got := p.name(); got != "" {
+		t.Errorf("a stale pass landed after the rollback: %q", got)
+	}
+	// And the NEXT message gets to supply both placeholder and pass.
+	fu, gen2, ok := p.t.seed(userTurn("what actually worked"))
+	if !ok || fu != "what actually worked" {
+		t.Fatalf("re-seed = (%q, %v), want a fresh pass released", fu, ok)
+	}
+	p.t.land(gen2, "What actually worked")
+	if got := p.name(); got != "What actually worked" {
+		t.Errorf("title = %q, want the fresh pass landed", got)
+	}
+}
+
+// TestTitleRollbackRevertsALandedTitle: on a fast pass the model title can
+// arrive before the turn fails. The rollback still takes it with it — the
+// text it summarized is gone either way.
+func TestTitleRollbackRevertsALandedTitle(t *testing.T) {
+	p := newTitleProbe(false)
+	_, gen, _ := p.t.seed(userTurn("a question"))
+	p.t.land(gen, "A Model Title")
+
+	p.t.unseed(nil)
+
+	if got := p.name(); got != "" {
+		t.Errorf("title = %q, want the landed title given back too", got)
 	}
 }
 
@@ -128,104 +182,47 @@ func TestTitleUnseedKeepsASurvivingTurn(t *testing.T) {
 	}
 }
 
-// TestTitleUnseedNeverTouchesASettledName: once a turn earned a title, a later
-// rollback must not strip it.
-func TestTitleUnseedNeverTouchesASettledName(t *testing.T) {
+// TestTitleAdoptNameWins: an explicit /save title outranks the model pass —
+// one already in flight is dropped on landing — and no rollback strips it.
+func TestTitleAdoptNameWins(t *testing.T) {
 	p := newTitleProbe(false)
-	history := []provider.Message{
-		{Role: "user", Content: "a question"},
-		{Role: "assistant", Content: "an answer"},
-	}
-	p.t.seed(history)
-	if _, _, ok := p.t.upgrade(history); !ok {
-		t.Fatal("upgrade declined a complete turn")
+	_, gen, _ := p.t.seed(userTurn("a question"))
+	p.t.adoptName("my chosen name")
+
+	p.t.land(gen, "Model Title")
+	if got := p.name(); got != "my chosen name" {
+		t.Errorf("title = %q, want the chosen one", got)
 	}
 	p.t.unseed(nil)
-
-	if got := p.name(); got != "a question" {
-		t.Errorf("title = %q, want the settled name kept", got)
+	if got := p.name(); got != "my chosen name" {
+		t.Errorf("title after rollback = %q, want the chosen one kept", got)
 	}
 }
 
-// TestTitleUpgradeWaitsForAReply: with no reply yet the name stays a
-// placeholder and NOTHING is settled, so a later turn still gets to upgrade it.
-func TestTitleUpgradeWaitsForAReply(t *testing.T) {
-	p := newTitleProbe(false)
-	history := userTurn("a question")
-	p.t.seed(history)
-	if _, _, ok := p.t.upgrade(history); ok {
-		t.Error("upgrade asked for a title with no reply to summarize")
-	}
-
-	history = append(history, provider.Message{Role: "assistant", Content: "an answer"})
-	fu, fa, ok := p.t.upgrade(history)
-	if !ok || fu != "a question" || fa != "an answer" {
-		t.Errorf("upgrade = (%q, %q, %v), want the turn's seeds", fu, fa, ok)
-	}
-}
-
-// TestTitleUpgradeSeedsWhenSeedingWasSkipped covers /save on an ephemeral
-// chat: there was no writer to name while the turns ran, so the upgrade has to
-// lay the placeholder down itself.
-func TestTitleUpgradeSeedsWhenSeedingWasSkipped(t *testing.T) {
+// TestTitleSeedWaitsForAWriter covers /save on an ephemeral chat: there was
+// no writer to name while the turns ran, so nothing fires until /save mints
+// one — and then the same seed call does placeholder and pass both.
+func TestTitleSeedWaitsForAWriter(t *testing.T) {
 	p := newTitleProbe(false)
 	p.sw = nil // ephemeral: nothing is persisting yet
 	history := []provider.Message{
 		{Role: "user", Content: "a question"},
 		{Role: "assistant", Content: "an answer"},
 	}
-	p.t.seed(history) // no writer: nothing happens
+	if _, _, ok := p.t.seed(history); ok {
+		t.Fatal("seeded without a writer")
+	}
 	if len(p.window) != 0 {
-		t.Fatalf("seeded without a writer: %v", p.window)
+		t.Fatalf("window written without a writer: %v", p.window)
 	}
 
 	p.sw = &SessionWriter{} // /save mints one
-	if _, _, ok := p.t.upgrade(history); !ok {
-		t.Fatal("upgrade declined after the writer appeared")
+	fu, _, ok := p.t.seed(history)
+	if !ok || fu != "a question" {
+		t.Fatalf("seed after the writer appeared = (%q, %v)", fu, ok)
 	}
 	if got := p.name(); got != "a question" {
-		t.Errorf("title = %q, want the placeholder laid down by upgrade", got)
-	}
-}
-
-// TestTitleImageReplyIsFinal: a dedicated image provider has no model to
-// summarize with — asking it for a title would paint a picture — so the
-// prompt-derived placeholder settles as the final name.
-func TestTitleImageReplyIsFinal(t *testing.T) {
-	p := newTitleProbe(false)
-	history := []provider.Message{
-		{Role: "user", Content: "draw a cat"},
-		{Role: "assistant", Attachments: []provider.Attachment{{Filename: "1.png"}}},
-	}
-	p.t.seed(history)
-	if _, _, ok := p.t.upgrade(history); ok {
-		t.Error("an image reply asked for a model-written title")
-	}
-	if got := p.name(); got != "draw a cat" {
-		t.Errorf("title = %q, want the prompt placeholder", got)
-	}
-	// Settled: a later text turn must not rename it.
-	history = append(history,
-		provider.Message{Role: "user", Content: "another"},
-		provider.Message{Role: "assistant", Content: "text"})
-	if _, _, ok := p.t.upgrade(history); ok {
-		t.Error("a settled image title was upgraded later")
-	}
-}
-
-// TestTitleAdoptNameWins: an explicit /save title outranks any model pass.
-func TestTitleAdoptNameWins(t *testing.T) {
-	p := newTitleProbe(false)
-	p.t.adoptName("my chosen name")
-	history := []provider.Message{
-		{Role: "user", Content: "a question"},
-		{Role: "assistant", Content: "an answer"},
-	}
-	if _, _, ok := p.t.upgrade(history); ok {
-		t.Error("a user-chosen title was sent for a model rewrite")
-	}
-	if got := p.name(); got != "my chosen name" {
-		t.Errorf("title = %q, want the chosen one", got)
+		t.Errorf("title = %q, want the placeholder", got)
 	}
 }
 
@@ -247,4 +244,23 @@ func TestTitleFollowsAWriterSwap(t *testing.T) {
 	if got := p.name(); got != "" {
 		t.Errorf("the swapped-in session was renamed: %q", got)
 	}
+}
+
+// TestTitleLandRacesTheLoop pins the locking contract: land arrives from the
+// pass goroutine while the loop seeds and unseeds. Run with -race (CI does).
+func TestTitleLandRacesTheLoop(t *testing.T) {
+	p := newTitleProbe(false)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			p.t.land(i%3, "Racing Title")
+		}
+	}()
+	history := userTurn("a question")
+	for i := 0; i < 100; i++ {
+		p.t.seed(history)
+		p.t.unseed(nil)
+	}
+	<-done
 }

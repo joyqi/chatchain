@@ -7,32 +7,23 @@ import (
 	"chatchain/provider"
 )
 
-// titleSeeds drives maybeTitle: image-only assistant replies (dedicated image
-// providers) must yield a prompt-derived title with NO LLM pass — asking an
-// image provider for a title would paint a picture.
-func TestTitleSeeds(t *testing.T) {
-	img := provider.Attachment{Filename: "image-1.png", MimeType: "image/png", Data: []byte{1}}
-
-	u, a, imageReply := titleSeeds([]provider.Message{{Role: "user", Content: "draw a cat"}})
-	if u != "draw a cat" || a != "" || imageReply {
-		t.Fatalf("no assistant yet: %q %q %v", u, a, imageReply)
+// firstUserText is the sole naming input: the first user message with any
+// text. An attachment-only opener defers to the next message, and the
+// assistant reply is never consulted — the name must not wait for it.
+func TestFirstUserText(t *testing.T) {
+	if got := firstUserText(nil); got != "" {
+		t.Fatalf("empty history: %q", got)
 	}
-
-	u, a, imageReply = titleSeeds([]provider.Message{
-		{Role: "user", Content: "draw a cat"},
-		{Role: "assistant", Attachments: []provider.Attachment{img}},
-	})
-	if u != "draw a cat" || a != "" || !imageReply {
-		t.Fatalf("image-only reply: %q %q %v", u, a, imageReply)
+	if got := firstUserText([]provider.Message{{Role: "user", Content: "draw a cat"}}); got != "draw a cat" {
+		t.Fatalf("single message: %q", got)
 	}
-
-	u, a, imageReply = titleSeeds([]provider.Message{
+	if got := firstUserText([]provider.Message{
 		{Role: "system", Content: "sys"},
+		{Role: "user", Attachments: []provider.Attachment{{Filename: "a.png"}}},
+		{Role: "assistant", Content: "what a nice picture"},
 		{Role: "user", Content: "hi"},
-		{Role: "assistant", Content: "hello!"},
-	})
-	if u != "hi" || a != "hello!" || imageReply {
-		t.Fatalf("text reply: %q %q %v", u, a, imageReply)
+	}); got != "hi" {
+		t.Fatalf("attachment-only opener must defer to the next text: %q", got)
 	}
 }
 
@@ -69,5 +60,20 @@ func TestSanitizeTitle(t *testing.T) {
 	}
 	if got := sanitizeTitle("Cat\tportrait"); got != "Cat portrait" {
 		t.Fatalf("tab survived: %q", got)
+	}
+}
+
+// Reasoning models behind chatcomp relays leak <think> blocks into plain
+// content; a chain of thought must never become the session title.
+func TestSanitizeTitleStripsThink(t *testing.T) {
+	for name, tc := range map[string]struct{ in, want string }{
+		"block before title": {"<think>\nthe user wants…\n</think>\nCat portrait", "Cat portrait"},
+		"unclosed tag":       {"<think>never closed, all thought", ""},
+		"multiple blocks":    {"A<think>x</think>B<think>y</think>C", "ABC"},
+		"no block":           {"Cat portrait", "Cat portrait"},
+	} {
+		if got := sanitizeTitle(tc.in); got != tc.want {
+			t.Errorf("%s: sanitizeTitle(%q) = %q, want %q", name, tc.in, got, tc.want)
+		}
 	}
 }
