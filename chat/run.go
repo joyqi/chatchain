@@ -783,7 +783,9 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 			if name := titleFrom(strings.TrimPrefix(input, "/save"), 80); name != "" {
 				titler.adoptName(name) // a user-chosen title is never overwritten
 			} else {
-				titleNow() // placeholder + async LLM title, as at first send
+				// The chat was named at first send even without a writer;
+				// the freshly minted bundle catches up with that name.
+				titler.reapply()
 			}
 			tr.notice("Session saved: %s — auto-saving from now on.", sw.ID())
 			continue

@@ -199,30 +199,40 @@ func TestTitleAdoptNameWins(t *testing.T) {
 	}
 }
 
-// TestTitleSeedWaitsForAWriter covers /save on an ephemeral chat: there was
-// no writer to name while the turns ran, so nothing fires until /save mints
-// one — and then the same seed call does placeholder and pass both.
-func TestTitleSeedWaitsForAWriter(t *testing.T) {
+// TestTitleEphemeralNamesTheWindow covers a --no-save chat: no writer
+// exists, but the window title is worth having — seed and the model pass
+// both run against the window sink alone, and when /save mints a writer,
+// reapply hands it the name the window already carries.
+func TestTitleEphemeralNamesTheWindow(t *testing.T) {
 	p := newTitleProbe(false)
-	p.sw = nil // ephemeral: nothing is persisting yet
-	history := []provider.Message{
-		{Role: "user", Content: "a question"},
-		{Role: "assistant", Content: "an answer"},
+	p.sw = nil // ephemeral: nothing is persisting
+	fu, gen, ok := p.t.seed(userTurn("a question"))
+	if !ok || fu != "a question" {
+		t.Fatalf("ephemeral seed = (%q, %v), want the pass released", fu, ok)
 	}
-	if _, _, ok := p.t.seed(history); ok {
-		t.Fatal("seeded without a writer")
-	}
-	if len(p.window) != 0 {
-		t.Fatalf("window written without a writer: %v", p.window)
+	if got := p.lastWindow(); got != "a question" {
+		t.Fatalf("window title = %q, want the placeholder", got)
 	}
 
-	p.sw = &SessionWriter{} // /save mints one
-	fu, _, ok := p.t.seed(history)
-	if !ok || fu != "a question" {
-		t.Fatalf("seed after the writer appeared = (%q, %v)", fu, ok)
+	p.t.land(gen, "A Model Title")
+	if got := p.lastWindow(); got != "A Model Title" {
+		t.Errorf("window title = %q, want the landed pass", got)
 	}
-	if got := p.name(); got != "a question" {
-		t.Errorf("title = %q, want the placeholder", got)
+
+	p.sw = &SessionWriter{} // /save mints the bundle mid-chat
+	p.t.reapply()
+	if got := p.name(); got != "A Model Title" {
+		t.Errorf("minted writer title = %q, want the window's name reapplied", got)
+	}
+}
+
+// TestTitleReapplyWithoutAName: /save before any message — nothing to hand
+// over, and the minted writer stays untouched for the next seed to name.
+func TestTitleReapplyWithoutAName(t *testing.T) {
+	p := newTitleProbe(false)
+	p.t.reapply()
+	if got := p.name(); got != "" {
+		t.Errorf("title = %q, want untouched", got)
 	}
 }
 

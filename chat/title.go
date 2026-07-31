@@ -40,10 +40,12 @@ type sessionTitle struct {
 	writer func() *SessionWriter
 	window func(string) // window-title sink
 
-	mu     sync.Mutex // the async pass's land races the loop's moves
-	seeded bool       // a placeholder is on the session
-	titled bool       // settled: resumed or user-chosen — never overwritten
-	gen    int        // seed generation; land drops a pass unseed outlived
+	mu      sync.Mutex // the async pass's land races the loop's moves
+	seeded  bool       // a placeholder is on the session
+	titled  bool       // settled: resumed or user-chosen — never overwritten
+	gen     int        // seed generation; land drops a pass unseed outlived
+	current string     // the name as last set — reapply hands it to a writer
+	// minted AFTER naming happened (/save on an ephemeral chat)
 }
 
 // newSessionTitle wires the sinks. A resumed session arrives already named, so
@@ -61,7 +63,10 @@ func (t *sessionTitle) sw() *SessionWriter {
 }
 
 // set writes a name to both the session and the window. Callers hold mu.
+// An ephemeral chat has no writer (nil-safe no-op) — the window still gets
+// the name, and current remembers it for a writer minted later (/save).
 func (t *sessionTitle) set(name string) {
+	t.current = name
 	t.sw().SetTitle(name) // nil-safe
 	if t.window != nil {
 		t.window(name)
@@ -88,11 +93,13 @@ func (t *sessionTitle) adoptName(name string) {
 
 // seed lands the placeholder derived from the first user message and, on the
 // one call that newly seeds, releases that message and the generation so the
-// caller can fire the model pass.
+// caller can fire the model pass. An ephemeral chat seeds too — the window
+// title is worth having even when nothing persists, and /save reapplies the
+// name to the bundle it mints.
 func (t *sessionTitle) seed(history []provider.Message) (firstUser string, gen int, ok bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.seeded || t.sw() == nil {
+	if t.seeded {
 		return "", 0, false
 	}
 	firstUser = firstUserText(history)
@@ -115,6 +122,18 @@ func (t *sessionTitle) land(gen int, name string) {
 		return
 	}
 	t.set(name)
+}
+
+// reapply hands the current name to the CURRENT writer: /save mints the
+// bundle mid-chat, after the ephemeral session was already named at first
+// send, so the fresh meta must catch up with what the window shows. A pass
+// still in flight needs nothing — its land resolves the live writer.
+func (t *sessionTitle) reapply() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.current != "" {
+		t.sw().SetTitle(t.current)
+	}
 }
 
 // unseed drops a name whose message is no longer in the history — seeding
