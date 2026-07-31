@@ -140,10 +140,17 @@ func findConfigFile(dir string) string {
 func (c *Config) loadFile(path string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Warning: config %s: %v (ignored)\n", path, err)
+		}
 		return
 	}
 	var fc Config
 	if err := yaml.Unmarshal(data, &fc); err != nil {
+		// LOUD, never silent: swallowing a parse error here discards the
+		// whole file and reads as "chatchain stopped loading my config"
+		// with no clue why (a notify field type change proved it).
+		fmt.Fprintf(os.Stderr, "Warning: config %s: %v (file ignored)\n", path, err)
 		return
 	}
 	for name, pc := range fc.Providers {
