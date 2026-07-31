@@ -366,7 +366,7 @@ var rootCmd = &cobra.Command{
 				return err
 			}
 		}
-		return chat.Run(p, titleP, systemPrompt, systemInteractive, importedHistory, dispatch, mgr, sw, newSession, interact, contextWindow, agentOpts, reqLog)
+		return chat.Run(p, titleP, systemPrompt, systemInteractive, importedHistory, dispatch, mgr, sw, newSession, interact, contextWindow, agentOpts, pc.Notify == nil || *pc.Notify, reqLog)
 	},
 }
 

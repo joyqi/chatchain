@@ -19,6 +19,9 @@ type (
 	titleMsg       string
 	setCommandsMsg []string // slash command table for suggestions/completion
 
+	progressMsg ProgressState
+	notifyMsg   string // attention ping: reaches the terminal only while unfocused
+
 	busyOnMsg     struct{ label string }
 	busyDetailMsg string
 	busyOffMsg    struct{}

@@ -45,6 +45,12 @@ type ProviderConfig struct {
 	// NoSave starts sessions ephemeral (the --no-save behavior): nothing
 	// persists unless the user runs /save mid-chat. --resume overrides it.
 	NoSave bool `yaml:"no_save"`
+	// Notify controls the attention ping sent while the terminal is
+	// unfocused and the chat needs the user (approval gate, turn end). On —
+	// the default — both standard channels fire (BEL and an OSC 9 desktop
+	// notification) and the terminal's own settings decide presentation;
+	// false silences both.
+	Notify *bool `yaml:"notify"`
 	// MCPServers selects which of the top-level mcp_servers this provider
 	// loads, by name. nil (key absent) = all of them; an empty list = none;
 	// names must exist in the top-level map (a typo fails loudly).

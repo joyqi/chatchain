@@ -190,6 +190,21 @@ mcp_servers:
 	}
 }
 
+// notify parses as a switch and defaults to nil — absent means ON, so only
+// an explicit false silences the attention channels.
+func TestNotifyField(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "c.yaml")
+	os.WriteFile(cfgPath, []byte("providers:\n  quiet:\n    type: openai\n    notify: false\n  norm:\n    type: openai\n"), 0o644)
+	cfg := Load(cfgPath)
+	if _, pc := cfg.Get("quiet"); pc.Notify == nil || *pc.Notify {
+		t.Errorf("notify: false not parsed (got %v)", pc.Notify)
+	}
+	if _, pc := cfg.Get("norm"); pc.Notify != nil {
+		t.Errorf("notify must default nil (on), got %v", *pc.Notify)
+	}
+}
+
 // no_save parses and defaults false.
 func TestNoSaveField(t *testing.T) {
 	dir := t.TempDir()

@@ -3,6 +3,8 @@ package ui
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -47,6 +49,10 @@ type model struct {
 
 	status StatusData
 	title  string
+
+	progress  ProgressState // terminal-native progress indicator (View emits)
+	focused   bool          // terminal focus (ReportFocus); gates Notify
+	notifyOut io.Writer     // bell/notification sink (stdout; tests inject)
 
 	flushTail func() // region.flushTail, run via cmd on width changes
 
@@ -106,7 +112,51 @@ func newModel(widthO, heightO *atomic.Int64) *model {
 	})
 	ta.SetWidth(80)
 	ta.Focus()
-	return &model{ta: ta, width: 80, widthO: widthO, heightO: heightO}
+	return &model{ta: ta, width: 80, widthO: widthO, heightO: heightO,
+		focused: true, notifyOut: os.Stdout}
+}
+
+// progressBarState maps the facade state onto the OSC 9;4 wire states. Input
+// and Error carry a FULL bar (Value 100): warning and error are states of the
+// whole turn, and a 0% sliver would be invisible in terminals that render the
+// percentage (Windows Terminal) — Indeterminate ignores the value.
+func progressBarState(s ProgressState) tea.ProgressBarState {
+	switch s {
+	case ProgressBusy:
+		return tea.ProgressBarIndeterminate
+	case ProgressInput:
+		return tea.ProgressBarWarning
+	case ProgressError:
+		return tea.ProgressBarError
+	}
+	return tea.ProgressBarNone
+}
+
+// notifyCmd carries an attention ping to the terminal — only while it is
+// unfocused: whoever is already watching needs no bell. BOTH standard
+// channels ride one write: the OSC 9 desktop notification (its BEL merely
+// terminates the sequence) followed by a bare BEL that actually rings —
+// hosts listen to one or the other (cmux surfaces OSC 9, plain terminals
+// ring), and each terminal's own settings decide presentation. The write
+// happens on the cmd goroutine, outside the renderer: both sequences are
+// cursor-neutral, and the text is pre-sanitized by the facade.
+func (m *model) notifyCmd(text string) tea.Cmd {
+	if m.focused {
+		return nil
+	}
+	if strings.HasPrefix(text, "4;") {
+		// An OSC 9 payload opening "4;" parses as a PROGRESS REPORT in every
+		// terminal that supports both — a leading space keeps it a
+		// notification. Guarded here at the mechanism, not by call-site
+		// convention: the text is an arbitrary content digest.
+		text = " " + text
+	}
+	seq := ansi.Notify(text) + "\a"
+	out := m.notifyOut
+	return func() tea.Msg {
+		io.WriteString(out, seq)
+		return nil
+	}
 }
 
 func (m *model) Init() tea.Cmd {
@@ -158,6 +208,21 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case titleMsg:
 		m.title = string(msg)
+		return m, nil
+
+	case progressMsg:
+		m.progress = ProgressState(msg)
+		return m, nil
+
+	case notifyMsg:
+		return m, m.notifyCmd(string(msg))
+
+	case tea.FocusMsg:
+		m.focused = true
+		return m, nil
+
+	case tea.BlurMsg:
+		m.focused = false
 		return m, nil
 
 	case setCommandsMsg:
@@ -928,6 +993,10 @@ func (m *model) View() tea.View {
 
 	view := tea.NewView(b.String())
 	view.WindowTitle = m.title
+	view.ReportFocus = true // FocusMsg/BlurMsg gate the attention channel
+	if m.progress != ProgressNone {
+		view.ProgressBar = &tea.ProgressBar{State: progressBarState(m.progress), Value: 100}
+	}
 	if m.surfCur != nil {
 		view.Cursor = m.surfCur // an input field owns the real cursor
 	}

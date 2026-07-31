@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"chatchain/internal/agents"
+	"chatchain/internal/host"
 	"chatchain/internal/markdown"
 	"chatchain/internal/ui"
 	mcpmgr "chatchain/mcp"
@@ -30,7 +31,7 @@ type SessionFactory func() (*SessionWriter, error)
 //
 // Invariant: after ui.New() nothing may write to the terminal except through
 // the facade — no spinner, no raw OSC/ANSI escapes, no direct stdout.
-func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive bool, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, newSession SessionFactory, interact *Interactor, contextWindow int, agent AgentOptions, reqLog *RequestLog) error {
+func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive bool, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, newSession SessionFactory, interact *Interactor, contextWindow int, agent AgentOptions, notify bool, reqLog *RequestLog) error {
 	// ---- pre-Program phase: plain stdout, the Program hasn't claimed the
 	// terminal yet. The OSC background query MUST happen here (during the
 	// Program it would race the event loop's stdin ownership).
@@ -134,6 +135,12 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 	defer func() { sw.Close() }() // sw may be swapped by /session
 	u.SetTitle(windowTitle(sw.Title()))
 	u.SetSlashCommands(activeSlashCommands)
+
+	// The presenter fans lifecycle state and attention pings out to the
+	// detected terminal hosts (internal/host): cmux gets its sidebar, the
+	// plain terminal gets OSC 9;4 + notifications, per-capability fallback.
+	pres := host.NewPresenter(host.SystemEnv(), host.NewANSI(u), notify)
+	defer pres.Close()
 
 	pushStatus := func() {
 		sd := ui.StatusData{Model: statusModelLabel(p.Model(), p.Type())}
@@ -317,6 +324,8 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 		if input == "" {
 			continue
 		}
+		// The user acted: a lingering error state has been seen — clear it.
+		pres.SetState(host.StateIdle)
 		if !isReadOnlyViewer(input) {
 			titleWG.Wait()
 		}
@@ -902,6 +911,7 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 		// this slot (progress.go); the stream loops attach the handlers.
 		turnCtx = withTurnProgress(turnCtx)
 		sink := u.StartStream(cancelTurn)
+		pres.SetState(host.StateBusy)
 		var reply, thinking string
 		retryErr := retry(func() error {
 			history = history[:hist0] // tool rounds append; reset per attempt
@@ -910,7 +920,7 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 			ctxm.note(history[hist0-1]) // the send moves the meter immediately
 			var err error
 			if isToolProvider && len(tools) > 0 {
-				reply, thinking, err = toolLoop(turnCtx, u, sink, tr, tp, dispatch, &history, tools, sendOverlay, approved, sw.ImagesDir, ctxm)
+				reply, thinking, err = toolLoop(turnCtx, u, sink, tr, tp, dispatch, &history, tools, sendOverlay, approved, sw.ImagesDir, ctxm, pres)
 			} else {
 				reply, thinking, err = streamTurn(turnCtx, u, sink, tr, p, ctxm, func(w io.Writer, r io.WriteCloser) (string, string, error) {
 					return p.StreamChat(turnCtx, agents.ComposeSendHistory(history, sendOverlay), w, r)
@@ -923,11 +933,14 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 		cancelTurn()
 
 		if errors.Is(retryErr, errInterrupted) {
+			pres.SetState(host.StateIdle) // the user did the interrupting
 			interruptTurn(hist0-1, reply, thinking)
 			continue
 		}
 		if retryErr != nil {
 			report := describeError(retryErr)
+			pres.SetState(host.StateError) // stands until the user acts
+			pres.Notify(host.Event{Kind: host.KindFailed, Text: report.Headline})
 			tr.errorBlock(report.Headline, report.lines()...)
 			history = history[:hist0-1]
 			titler.unseed(history)
@@ -945,6 +958,14 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 		ctxm.reset()
 		budget.update(p, history)
 		pushStatus()
+		pres.SetState(host.StateIdle)
+		// The notification banner carries a digest of the answer, not a fixed
+		// phrase — the user deciding whether to switch back deserves a peek.
+		digest := notifyDigest(reply)
+		if reply == "" && len(amsg.Attachments) > 0 {
+			digest = "Image ready"
+		}
+		pres.Notify(host.Event{Kind: host.KindDone, Text: digest})
 	}
 }
 
@@ -1241,7 +1262,7 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcrip
 // toolLoop is the v2 twin of executeWithTools: rounds of streaming +
 // tool execution rendered through the ui frame (Busy labels instead of the
 // stderr spinner; per-tool cancel scopes instead of raw-mode watches).
-func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, approved map[string]bool, imgDir func() string, ctxm *ctxMeter) (string, string, error) {
+func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, approved map[string]bool, imgDir func() string, ctxm *ctxMeter, pres *host.Presenter) (string, string, error) {
 	// No round cap: the user is the brake (ESC cancels the turn; approval
 	// gates cover mutating tools) — industry parity with the major CLIs.
 	for {
@@ -1278,10 +1299,16 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 			// only with the user's consent — once, or for the whole session.
 			// The widget header above shows what is being approved.
 			if needsApproval(dispatch, tc.Name) && !approved[tc.Name] {
+				// The turn is now blocked on the user: needs-input state on
+				// every host, and a ping if they wandered off.
+				pres.SetState(host.StateNeedsInput)
+				pres.Notify(host.Event{Kind: host.KindNeedsInput,
+					Text: fmt.Sprintf("%s wants to modify files", displayToolName(tc.Name))})
 				choice, aerr := u.Select(ctx, ui.SelectSpec{
 					Title: fmt.Sprintf("%s wants to modify files — allow?", displayToolName(tc.Name)),
 					Items: []string{"Allow once", "Allow for this session", "Deny"},
 				})
+				pres.SetState(host.StateBusy) // resolved either way; end states override
 				if aerr != nil {
 					return "", "", aerr
 				}

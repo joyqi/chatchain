@@ -170,6 +170,22 @@ func stripThink(s string) string {
 	}
 }
 
+// notifyDigest shapes a completed reply into the attention ping's text — the
+// first content line with its markdown dressing stripped, capped for a
+// notification banner. A digest beats a fixed phrase: the user deciding
+// whether to switch back deserves a peek at the answer (Claude Code does the
+// same). The fallback covers empty replies.
+func notifyDigest(reply string) string {
+	for _, line := range strings.Split(reply, "\n") {
+		line = strings.TrimLeft(line, "#>-*+ \t")
+		line = strings.NewReplacer("**", "", "`", "").Replace(line)
+		if line = strings.TrimSpace(line); line != "" {
+			return titleFrom(line, 60)
+		}
+	}
+	return "Response ready"
+}
+
 // titleFrom shapes arbitrary text into a session title: ONE line (a stored
 // newline would break the session picker's row accounting and the window
 // title), control characters dropped, capped on rune boundaries. Every title

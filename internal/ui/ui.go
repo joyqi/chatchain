@@ -46,6 +46,21 @@ type StatusData struct {
 	Estimated bool // token figure is a local estimate (≈ prefix)
 }
 
+// ProgressState drives the terminal's NATIVE progress indicator (ConEmu
+// OSC 9;4 — Ghostty draws a bar at the top of the window, Windows Terminal a
+// tab ring + taskbar state, iTerm2 and kitty their own): Busy while a turn
+// works, Input while it is blocked on the user, Error when it failed. The
+// bubbletea renderer owns emission — it diffs states and clears the bar on
+// exit — so this never touches raw escapes.
+type ProgressState int
+
+const (
+	ProgressNone  ProgressState = iota
+	ProgressBusy                // turn streaming / tools running → indeterminate
+	ProgressInput               // blocked on the user (approval gate) → warning
+	ProgressError               // turn failed → error, until the user acts
+)
+
 // SelectSpec is the minimal single-select surface (P2); tabbed/multi/slider
 // fidelity arrives in P3.
 type SelectSpec struct {
@@ -223,6 +238,17 @@ func (u *UI) SetStatus(s StatusData) { u.p.Send(statusMsg(s)) }
 
 // SetTitle sets the terminal window title.
 func (u *UI) SetTitle(title string) { u.p.Send(titleMsg(sanitizeWindowTitle(title))) }
+
+// SetProgress updates the terminal's native progress indicator.
+func (u *UI) SetProgress(s ProgressState) { u.p.Send(progressMsg(s)) }
+
+// Notify pings the user — only while the terminal is UNFOCUSED (focus
+// reporting): whoever is already watching needs no bell. Both standard
+// channels fire in one write, an OSC 9 desktop notification carrying the
+// text and a BEL; the terminal's own settings decide presentation. The
+// global on/off policy lives ABOVE this facade (internal/host.Presenter) —
+// here only the focus mechanism gates.
+func (u *UI) Notify(text string) { u.p.Send(notifyMsg(sanitizeWindowTitle(text))) }
 
 // sanitizeWindowTitle strips control characters and bounds the length for a
 // tab label. The renderer emits the title as a raw OSC sequence
