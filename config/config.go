@@ -26,6 +26,11 @@ type ProviderConfig struct {
 	// support it: low|medium|high|xhigh|max ("" = provider default). A
 	// resumed session's own effort still overrides it.
 	Effort string `yaml:"effort"`
+	// TopP is the nucleus-sampling parameter (0.0–1.0; absent = provider
+	// default). Config-only, no UI surface: an advanced knob — adjust either
+	// temperature or top_p, not both, and note reasoning models reject or
+	// ignore it (anthropic's extended thinking excludes it entirely).
+	TopP *float64 `yaml:"top_p"`
 	// Image enables image GENERATION for providers that support it: google
 	// sends responseModalities TEXT+IMAGE (models needing the opt-in),
 	// openresponses advertises the image_generation built-in tool. The

@@ -90,6 +90,7 @@ type RespRequest struct {
 	Instructions *string        `json:"instructions,omitempty"`
 	Input        []any          `json:"input"` // RespMsg / RespFunctionCall / RespFunctionCallOutput / json.RawMessage (verbatim replay)
 	Temperature  *float64       `json:"temperature,omitempty"`
+	TopP         *float64       `json:"top_p,omitempty"`
 	Reasoning    *RespReasoning `json:"reasoning,omitempty"`
 	Tools        []any          `json:"tools,omitempty"` // RespTool / RespBuiltinTool
 	Stream       bool           `json:"stream,omitempty"`
@@ -151,8 +152,8 @@ type RespEvent struct {
 	Arguments string          `json:"arguments"` // function_call_arguments.done
 	Item      json.RawMessage `json:"item"`      // output_item.* (verbatim, for replay)
 	// PartialImageB64 carries image_generation_call.partial_image frames.
-	PartialImageB64 string `json:"partial_image_b64"`
-	Response  *RespResponse   `json:"response"`  // response.completed/failed/incomplete
+	PartialImageB64 string        `json:"partial_image_b64"`
+	Response        *RespResponse `json:"response"` // response.completed/failed/incomplete
 	// "error" terminal events carry these at the top level.
 	Code    string `json:"code"`
 	Message string `json:"message"`

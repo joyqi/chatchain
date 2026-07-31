@@ -12,6 +12,7 @@ type baseProvider struct {
 	providerType string
 	model        string
 	temperature  *float64
+	topP         *float64
 	effort       string
 	lastInput    int
 	lastOutput   int
@@ -24,6 +25,7 @@ func (b *baseProvider) Model() string               { return b.model }
 func (b *baseProvider) SetModel(m string)           { b.model = m }
 func (b *baseProvider) SetTemperature(t *float64)   { b.temperature = t }
 func (b *baseProvider) Temperature() *float64       { return b.temperature }
+func (b *baseProvider) SetTopP(p *float64)          { b.topP = p }
 func (b *baseProvider) SetEffort(level string)      { b.effort = level }
 func (b *baseProvider) Effort() string              { return b.effort }
 func (b *baseProvider) LastUsage() (int, int, bool) { return b.lastInput, b.lastOutput, b.lastUsageOK }

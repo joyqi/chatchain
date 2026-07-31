@@ -190,6 +190,20 @@ mcp_servers:
 	}
 }
 
+// top_p parses as an optional float and defaults nil (= omit the parameter).
+func TestTopPField(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "c.yaml")
+	os.WriteFile(cfgPath, []byte("providers:\n  tuned:\n    type: openai\n    top_p: 0.9\n  norm:\n    type: openai\n"), 0o644)
+	cfg := Load(cfgPath)
+	if _, pc := cfg.Get("tuned"); pc.TopP == nil || *pc.TopP != 0.9 {
+		t.Errorf("top_p = %v, want 0.9", pc.TopP)
+	}
+	if _, pc := cfg.Get("norm"); pc.TopP != nil {
+		t.Errorf("top_p must default nil, got %v", *pc.TopP)
+	}
+}
+
 // notify parses as a switch and defaults to nil — absent means ON, so only
 // an explicit false silences the attention channels.
 func TestNotifyField(t *testing.T) {

@@ -72,6 +72,7 @@ type ChatCompRequest struct {
 	Model           string             `json:"model"`
 	Messages        []any              `json:"messages"` // ChatMsg or json.RawMessage (verbatim replay)
 	Temperature     *float64           `json:"temperature,omitempty"`
+	TopP            *float64           `json:"top_p,omitempty"`
 	ReasoningEffort string             `json:"reasoning_effort,omitempty"`
 	Tools           []ChatTool         `json:"tools,omitempty"`
 	Stream          bool               `json:"stream,omitempty"`

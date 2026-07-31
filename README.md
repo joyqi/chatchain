@@ -151,6 +151,8 @@ providers:
     model: gpt-5.2
     system_file: ${appHome}/prompts/reviewer.md  # prompt from a file (inline `system` wins)
     effort: high             # default reasoning effort: low|medium|high|xhigh|max
+    top_p: 0.9               # nucleus sampling, 0.0-1.0 (advanced: tune this OR temperature, not both;
+                             # reasoning models reject/ignore it — omit to use the provider default)
     mcp_servers: [github]    # load only these MCP servers; [] = none; key absent = all
 
   claude:

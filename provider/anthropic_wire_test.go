@@ -33,6 +33,8 @@ func TestAnthropicGoldenRequest(t *testing.T) {
 	temp := 0.7
 	p := NewAnthropic("sk-ant-test", srv.URL, "claude-sonnet-4-6", &temp, srv.Client())
 	p.SetEffort("high")
+	topP := 0.9
+	p.SetTopP(&topP)
 
 	msgs := []Message{
 		{Role: "system", Content: "sys"},
@@ -61,7 +63,7 @@ func TestAnthropicGoldenRequest(t *testing.T) {
 		t.Fatalf("x-api-key=%q anthropic-version=%q path=%q", apiKey, version, path)
 	}
 	want := map[string]any{
-		"model": "claude-sonnet-4-6", "max_tokens": 4096, "temperature": 0.7,
+		"model": "claude-sonnet-4-6", "max_tokens": 4096, "temperature": 0.7, "top_p": 0.9,
 		"output_config": map[string]any{"effort": "high"},
 		"system":        []any{map[string]any{"type": "text", "text": "sys"}},
 		"stream":        true,

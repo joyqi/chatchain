@@ -34,6 +34,8 @@ func TestOpenAIGoldenRequest(t *testing.T) {
 	temp := 0.7
 	p := NewOpenAI("sk-test", srv.URL, "gpt-4o", &temp, srv.Client())
 	p.SetEffort("high")
+	topP := 0.9
+	p.SetTopP(&topP)
 
 	rawAssistant := `{"role":"assistant","content":"prev","reasoning":"think","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}`
 	msgs := []Message{
@@ -55,7 +57,7 @@ func TestOpenAIGoldenRequest(t *testing.T) {
 		t.Fatalf("auth=%q path=%q", auth, path)
 	}
 	want := map[string]any{
-		"model": "gpt-4o", "temperature": 0.7, "reasoning_effort": "high",
+		"model": "gpt-4o", "temperature": 0.7, "top_p": 0.9, "reasoning_effort": "high",
 		"stream": true, "stream_options": map[string]any{"include_usage": true},
 	}
 	for k, v := range want {

@@ -70,6 +70,7 @@ func (p *OpenAIProvider) buildRequest(messages []Message) *llm.ChatCompRequest {
 	req := &llm.ChatCompRequest{
 		Model:           p.model,
 		Temperature:     p.temperature,
+		TopP:            p.topP,
 		ReasoningEffort: p.effort,
 	}
 	for _, msg := range messages {

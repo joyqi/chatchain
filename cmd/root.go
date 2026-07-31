@@ -137,6 +137,16 @@ var rootCmd = &cobra.Command{
 				fmt.Fprintf(os.Stderr, "Warning: `effort` does not apply to provider type %s (ignored)\n", p.Type())
 			}
 		}
+		if pc.TopP != nil {
+			if *pc.TopP < 0 || *pc.TopP > 1 {
+				return fmt.Errorf("config top_p %v: want 0.0-1.0", *pc.TopP)
+			}
+			if tun, ok := p.(provider.TopPTunable); ok {
+				tun.SetTopP(pc.TopP)
+			} else {
+				fmt.Fprintf(os.Stderr, "Warning: `top_p` does not apply to provider type %s (ignored)\n", p.Type())
+			}
+		}
 		if temp != nil {
 			if _, ok := p.(provider.Tunable); !ok {
 				fmt.Fprintf(os.Stderr, "Warning: --temperature does not apply to provider type %s (ignored)\n", p.Type())

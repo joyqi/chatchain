@@ -67,6 +67,8 @@ func TestGoogleGoldenRequest(t *testing.T) {
 	temp := 0.5
 	p := NewGemini("gk", srv.URL, "gemini-2.5-pro", &temp, srv.Client())
 	p.SetEffort("high")
+	topP := 0.9
+	p.SetTopP(&topP)
 	msgs := []Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "look", Attachments: []Attachment{{Filename: "a.png", MimeType: "image/png", Data: []byte{9}}}},
@@ -86,6 +88,9 @@ func TestGoogleGoldenRequest(t *testing.T) {
 	gc := got["generationConfig"].(map[string]any)
 	if gc["temperature"].(float64) != 0.5 {
 		t.Fatalf("generationConfig = %v", gc)
+	}
+	if gc["topP"].(float64) != 0.9 {
+		t.Fatalf("generationConfig topP = %v", gc)
 	}
 	tc := gc["thinkingConfig"].(map[string]any)
 	if tc["includeThoughts"] != true || tc["thinkingLevel"] != "HIGH" {

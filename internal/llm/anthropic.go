@@ -85,6 +85,7 @@ type AnthropicRequest struct {
 	Messages     []AnthropicMsg         `json:"messages"`
 	System       []AnthropicTextBlock   `json:"system,omitempty"` // top-level, not a message role
 	Temperature  *float64               `json:"temperature,omitempty"`
+	TopP         *float64               `json:"top_p,omitempty"`
 	OutputConfig *AnthropicOutputConfig `json:"output_config,omitempty"`
 	Tools        []AnthropicTool        `json:"tools,omitempty"`
 	Stream       bool                   `json:"stream,omitempty"`

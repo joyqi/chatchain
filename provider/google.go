@@ -210,6 +210,10 @@ func (p *GoogleProvider) buildRequest(messages []Message) *llm.GenerateRequest {
 		temp := float32(*p.temperature)
 		cfg.Temperature = &temp
 	}
+	if p.topP != nil {
+		topP := float32(*p.topP)
+		cfg.TopP = &topP
+	}
 	if p.effort != "" {
 		cfg.ThinkingConfig = &llm.GThinkingConfig{
 			IncludeThoughts: true,
@@ -223,7 +227,7 @@ func (p *GoogleProvider) buildRequest(messages []Message) *llm.GenerateRequest {
 		// models reject the IMAGE modality.
 		cfg.ResponseModalities = []string{"TEXT", "IMAGE"}
 	}
-	if cfg.Temperature != nil || cfg.ThinkingConfig != nil || cfg.ResponseModalities != nil {
+	if cfg.Temperature != nil || cfg.TopP != nil || cfg.ThinkingConfig != nil || cfg.ResponseModalities != nil {
 		req.GenerationConfig = cfg
 	}
 	return req

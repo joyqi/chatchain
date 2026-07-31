@@ -45,6 +45,8 @@ func TestOpenResponsesGoldenRequest(t *testing.T) {
 	temp := 0.7
 	p := NewOpenResponses("sk-test", srv.URL, "gpt-5", &temp, srv.Client())
 	p.SetEffort("high")
+	topP := 0.9
+	p.SetTopP(&topP)
 
 	// Raw output items as persisted by a previous round (session resume path):
 	// a reasoning item with provider-specific fields, a message item (must be
@@ -76,7 +78,7 @@ func TestOpenResponsesGoldenRequest(t *testing.T) {
 		t.Fatalf("auth=%q path=%q", auth, path)
 	}
 	want := map[string]any{
-		"model": "gpt-5", "temperature": 0.7, "instructions": "sys",
+		"model": "gpt-5", "temperature": 0.7, "top_p": 0.9, "instructions": "sys",
 		"reasoning": map[string]any{"effort": "high"}, "stream": true,
 	}
 	for k, v := range want {

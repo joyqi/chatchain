@@ -51,6 +51,7 @@ func (p *AnthropicProvider) buildRequest(messages []Message) *llm.AnthropicReque
 		Model:       p.model,
 		MaxTokens:   4096,
 		Temperature: p.temperature,
+		TopP:        p.topP,
 	}
 	if p.effort != "" {
 		req.OutputConfig = &llm.AnthropicOutputConfig{Effort: p.effort}

@@ -77,6 +77,7 @@ func (p *OpenResponsesProvider) buildRequest(messages []Message) *llm.RespReques
 	req := &llm.RespRequest{
 		Model:       p.model,
 		Temperature: p.temperature,
+		TopP:        p.topP,
 	}
 	if p.effort != "" {
 		req.Reasoning = &llm.RespReasoning{Effort: p.effort}

@@ -83,6 +83,15 @@ type Tunable interface {
 	Effort() string
 }
 
+// TopPTunable is implemented by text providers that accept nucleus sampling.
+// Config-only by design (`top_p:` in the provider config, no UI surface): an
+// advanced knob with model-specific caveats — reasoning models reject or
+// ignore it, anthropic's extended thinking excludes it — and the usual
+// guidance is to adjust either temperature or top_p, not both.
+type TopPTunable interface {
+	SetTopP(p *float64) // nil = provider default (omit the parameter)
+}
+
 // ImageTunable is an optional interface: providers whose image generation
 // needs an explicit request-side opt-in expose a runtime switch (config
 // `image: true`, the /model Image tab). Only providers whose request
