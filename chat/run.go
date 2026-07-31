@@ -144,6 +144,14 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 	}
 	pushStatus()
 
+	// The live context meter (nil without token accounting): the status
+	// line's ctx figure moves while a turn streams, instead of jumping once
+	// at turn end — a long tool loop used to freeze it for minutes.
+	var ctxm *ctxMeter
+	if tokenAware {
+		ctxm = newCtxMeter(budget, p, pushStatus)
+	}
+
 	// The transcript is the ONLY writer to the chat area from here on: every
 	// block (input, thinking, content, tool calls, notices, echoes) declares
 	// itself and the transcript alone spaces them (transcript.go).
@@ -242,6 +250,7 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 		} else {
 			titler.unseed(history)
 		}
+		ctxm.reset()
 		budget.update(p, history)
 		pushStatus()
 	}
@@ -880,6 +889,9 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 		pendingAttachments = nil
 		hist0 := len(history)
 		titleNow() // name the session now — the model pass races the turn
+		// A failed or retried turn rolls its live estimates back with its
+		// messages; each attempt below re-lands the message's own.
+		turnSnap := budget.snap()
 
 		if dispatch != nil {
 			tools = dispatch.Tools()
@@ -893,11 +905,14 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 		var reply, thinking string
 		retryErr := retry(func() error {
 			history = history[:hist0] // tool rounds append; reset per attempt
+			ctxm.reset()
+			budget.restore(turnSnap)
+			ctxm.note(history[hist0-1]) // the send moves the meter immediately
 			var err error
 			if isToolProvider && len(tools) > 0 {
-				reply, thinking, err = toolLoop(turnCtx, u, sink, tr, tp, dispatch, &history, tools, sendOverlay, approved, sw.ImagesDir)
+				reply, thinking, err = toolLoop(turnCtx, u, sink, tr, tp, dispatch, &history, tools, sendOverlay, approved, sw.ImagesDir, ctxm)
 			} else {
-				reply, thinking, err = streamTurn(turnCtx, u, sink, tr, p, func(w io.Writer, r io.WriteCloser) (string, string, error) {
+				reply, thinking, err = streamTurn(turnCtx, u, sink, tr, p, ctxm, func(w io.Writer, r io.WriteCloser) (string, string, error) {
 					return p.StreamChat(turnCtx, agents.ComposeSendHistory(history, sendOverlay), w, r)
 				})
 			}
@@ -916,6 +931,10 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 			tr.errorBlock(report.Headline, report.lines()...)
 			history = history[:hist0-1]
 			titler.unseed(history)
+			// The rolled-back turn takes its live estimates with it.
+			ctxm.reset()
+			budget.restore(turnSnap)
+			pushStatus()
 			continue
 		}
 
@@ -923,6 +942,7 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 		collectImages(p, tr, u.Width, sw.ImagesDir, &amsg)
 		history = append(history, amsg)
 		persistTurn()
+		ctxm.reset()
 		budget.update(p, history)
 		pushStatus()
 	}
@@ -1111,7 +1131,7 @@ func watchToolComposing(phases *turnPhases, tr *transcript, tp provider.ToolProv
 // content/reasoning writers and returns its final (reply, thinking, err).
 // A ctx cancel (ESC/Ctrl+C via the ui scope) maps to errInterrupted with the
 // partials the user actually saw — same contract as streamResponse.
-func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, p any, call func(w io.Writer, r io.WriteCloser) (string, string, error)) (string, string, error) {
+func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, p any, ctxm *ctxMeter, call func(w io.Writer, r io.WriteCloser) (string, string, error)) (string, string, error) {
 	reasonPr, reasonPw := io.Pipe()
 	contentPr, contentPw := io.Pipe()
 	var reply, thinking string
@@ -1181,7 +1201,8 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcrip
 		phases.end() // the thinking widget takes over from the status spinner
 		meter := tr.openThinking()
 		meter.add(string(firstChunk[:firstN]))
-		io.Copy(meter, reasonPr) // count only; the tee already keeps the text
+		ctxm.Write(firstChunk[:firstN])
+		io.Copy(meter, io.TeeReader(reasonPr, ctxm)) // count only; the tee already keeps the text
 		tr.settleThinking(start)
 
 		firstN, readErr = contentPr.Read(firstChunk)
@@ -1205,7 +1226,8 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcrip
 	phases.end() // streaming output is its own progress from here
 	mdw, msink := newContent()
 	mdw.Write(firstChunk[:firstN])
-	io.Copy(mdw, contentPr)
+	ctxm.Write(firstChunk[:firstN])
+	io.Copy(mdw, io.TeeReader(contentPr, ctxm))
 	mdw.Flush()
 	msink.flush()
 	<-done
@@ -1219,11 +1241,11 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcrip
 // toolLoop is the v2 twin of executeWithTools: rounds of streaming +
 // tool execution rendered through the ui frame (Busy labels instead of the
 // stderr spinner; per-tool cancel scopes instead of raw-mode watches).
-func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, approved map[string]bool, imgDir func() string) (string, string, error) {
+func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, approved map[string]bool, imgDir func() string, ctxm *ctxMeter) (string, string, error) {
 	// No round cap: the user is the brake (ESC cancels the turn; approval
 	// gates cover mutating tools) — industry parity with the major CLIs.
 	for {
-		content, reasoning, toolCalls, err := streamToolRound(ctx, u, sink, tr, tp, agents.ComposeSendHistory(*history, overlay), tools)
+		content, reasoning, toolCalls, err := streamToolRound(ctx, u, sink, tr, tp, agents.ComposeSendHistory(*history, overlay), tools, ctxm)
 		if err != nil {
 			return content, reasoning, err
 		}
@@ -1237,6 +1259,10 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 		}
 		collectImages(tp, tr, u.Width, imgDir, &msg)
 		*history = append(*history, msg)
+		// The round's stream just ended, so its real usage is fresh: settle
+		// the meter here instead of at turn end — the remaining rounds can
+		// run for minutes.
+		ctxm.settle(*history)
 
 		for _, tc := range toolCalls {
 			header := CodeStyle.Sprint(toolCallHeader(tc))
@@ -1296,13 +1322,17 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 			printToolResult(lc, resultText, isError)
 			lc.flush()
 
-			*history = append(*history, provider.Message{
+			result := provider.Message{
 				Role:         "tool",
 				Content:      resultText,
 				ToolCallID:   tc.ID,
 				ToolCallName: tc.Name,
 				IsError:      isError,
-			})
+			}
+			*history = append(*history, result)
+			// A tool result consumes context the moment it lands — a big file
+			// read should move the meter now, not a round later.
+			ctxm.note(result)
 
 			if ctx.Err() != nil { // tool cancelled via ESC propagates as interrupt
 				return "", "", errInterrupted
@@ -1346,7 +1376,7 @@ func (c *contentTap) Write(p []byte) (int, error) {
 
 // streamToolRound is the v2 twin of streamToolRound (interactive only —
 // Once keeps the v1 quiet path).
-func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, history []provider.Message, tools []provider.ToolDef) (string, string, []provider.ToolCall, error) {
+func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, history []provider.Message, tools []provider.ToolDef, ctxm *ctxMeter) (string, string, []provider.ToolCall, error) {
 	reasonPr, reasonPw := io.Pipe()
 	contentPr, contentPw := io.Pipe()
 	var content, reasoning string
@@ -1444,7 +1474,8 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *tran
 		phases.end() // the thinking widget takes over from the status spinner
 		meter := tr.openThinking()
 		meter.add(string(firstChunk[:firstN]))
-		io.Copy(meter, reasonPr) // count only; the tee already keeps the text
+		ctxm.Write(firstChunk[:firstN])
+		io.Copy(meter, io.TeeReader(reasonPr, ctxm)) // count only; the tee already keeps the text
 		tr.settleThinking(start)
 
 		firstN, readErr = contentPr.Read(firstChunk)
@@ -1475,7 +1506,8 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *tran
 		phases.end() // streaming output is its own progress from here
 		mdw, msink := newContent()
 		mdw.Write(firstChunk[:firstN])
-		io.Copy(mdw, contentPr)
+		ctxm.Write(firstChunk[:firstN])
+		io.Copy(mdw, io.TeeReader(contentPr, ctxm))
 		mdw.Flush()
 		msink.flush()
 		tr.closeContent()

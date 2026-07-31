@@ -1,6 +1,12 @@
 package chat
 
-import "testing"
+import (
+	"context"
+	"io"
+	"testing"
+
+	"chatchain/provider"
+)
 
 func TestParseWindowSize(t *testing.T) {
 	ok := map[string]int{
@@ -57,6 +63,67 @@ func TestTokenCounter(t *testing.T) {
 		t.Errorf("count of short sentence = %d, want small positive", n)
 	}
 }
+
+// The live meter moves the ctx figure DURING a turn: streamed deltas batch
+// into an ≈ estimate, appended messages land immediately, a settle replaces
+// everything with real usage, and a snapshot restore rolls a failed turn's
+// estimates back out.
+func TestCtxMeterLiveFlow(t *testing.T) {
+	b := &contextBudget{window: 100_000, counter: newTokenCounter(), used: 10_000, haveUsage: true}
+	pushes := 0
+	m := newCtxMeter(b, usageStub{in: 12_000, out: 500}, func() { pushes++ })
+	m.every = 0 // no throttle in tests: every Write flushes and pushes
+
+	snap := b.snap()
+	m.Write([]byte("some streamed output tokens"))
+	if b.used <= 10_000 || b.haveUsage {
+		t.Fatalf("after stream delta: used=%d haveUsage=%v, want a marked estimate above the base", b.used, b.haveUsage)
+	}
+	m.note(provider.Message{Role: "tool", Content: "a big tool result"})
+	if pushes == 0 {
+		t.Fatal("the status line was never pushed")
+	}
+
+	m.settle(nil)
+	if b.used != 12_500 || !b.haveUsage {
+		t.Fatalf("after settle: used=%d haveUsage=%v, want the provider's real figure", b.used, b.haveUsage)
+	}
+
+	// A failed turn: estimates roll back with the messages.
+	m.Write([]byte("estimates from a turn that will fail"))
+	b.restore(snap)
+	if b.used != 10_000 || !b.haveUsage {
+		t.Fatalf("after restore: used=%d haveUsage=%v, want the snapshot", b.used, b.haveUsage)
+	}
+}
+
+// A nil meter (provider without token accounting) is a no-op everywhere —
+// the call sites stay unconditional.
+func TestCtxMeterNilSafe(t *testing.T) {
+	var m *ctxMeter
+	if n, err := m.Write([]byte("abc")); n != 3 || err != nil {
+		t.Fatalf("nil Write = (%d, %v)", n, err)
+	}
+	m.note(provider.Message{Content: "x"})
+	m.settle(nil)
+	m.reset()
+}
+
+// usageStub is a minimal UsageReporter-bearing provider for settle tests.
+type usageStub struct{ in, out int }
+
+func (usageStub) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (usageStub) Chat(context.Context, []provider.Message) (string, error) {
+	return "", nil
+}
+func (usageStub) StreamChat(context.Context, []provider.Message, io.Writer, io.WriteCloser) (string, string, error) {
+	return "", "", nil
+}
+func (usageStub) Type() string                  { return "stub" }
+func (usageStub) Model() string                 { return "stub" }
+func (usageStub) SetModel(string)               {}
+func (s usageStub) LastUsage() (int, int, bool) { return s.in, s.out, true }
+func (usageStub) ResetUsage()                   {}
 
 func TestShouldOfferCompact(t *testing.T) {
 	// Window 100k, threshold 80% → 80k. Snooze step 5% → 5k.

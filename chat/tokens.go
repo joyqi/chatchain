@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"chatchain/provider"
 
@@ -127,6 +128,27 @@ func (b *contextBudget) update(p provider.Provider, history []provider.Message) 
 
 func (b *contextBudget) setWindow(n int) { b.window = n }
 
+// budgetSnap captures usage at a turn boundary so a failed or retried turn
+// can roll its live estimates back along with its messages.
+type budgetSnap struct {
+	used      int
+	haveUsage bool
+}
+
+func (b *contextBudget) snap() budgetSnap     { return budgetSnap{b.used, b.haveUsage} }
+func (b *contextBudget) restore(s budgetSnap) { b.used, b.haveUsage = s.used, s.haveUsage }
+
+// liveAdd folds an in-flight estimate into used while a turn streams. The
+// figure is provisional — haveUsage drops so the status line shows ≈ — until
+// a settle point (round end, turn end) replaces it with real usage.
+func (b *contextBudget) liveAdd(n int) {
+	if n <= 0 {
+		return
+	}
+	b.used += n
+	b.haveUsage = false
+}
+
 // reseed recomputes usage from history with the local tokenizer and drops any
 // provider-reported figure. Used when the active conversation is replaced
 // wholesale — compaction, or resuming a different session — so the provider's
@@ -158,6 +180,88 @@ func (b *contextBudget) shouldOfferCompact(extra, declinedAt int) bool {
 		return false
 	}
 	return declinedAt == 0 || b.used+extra >= declinedAt+b.window*compactSnoozePercent/100
+}
+
+// ctxMeterPushEvery throttles mid-stream status pushes: the render sink
+// already sends one UI message per delta, so the meter must not double that.
+const ctxMeterPushEvery = 250 * time.Millisecond
+
+// ctxMeter moves the status line's context figure DURING a turn instead of
+// once at its end: streamed output ticks the estimate up, appended messages
+// (the user's send, tool results) land immediately, and each completed round
+// settles the figure with the provider's real usage. A nil meter (provider
+// without token accounting) is a no-op everywhere.
+//
+// Every method runs on the chat-loop goroutine — the stream tees sit on the
+// READ side of the render pipes, not on the provider's writer — so the
+// budget needs no lock.
+type ctxMeter struct {
+	budget  *contextBudget
+	p       provider.Provider // bound at construction: the settle source
+	push    func()
+	every   time.Duration
+	last    time.Time
+	pending strings.Builder // deltas batched since the last flush: counting
+	// per SSE chunk would overcount (chunk boundaries split tokens)
+}
+
+func newCtxMeter(budget *contextBudget, p provider.Provider, push func()) *ctxMeter {
+	return &ctxMeter{budget: budget, p: p, push: push, every: ctxMeterPushEvery}
+}
+
+// Write is the stream tee: batch the delta, and on the throttle boundary
+// fold the batch into the estimate and push the status line.
+func (m *ctxMeter) Write(b []byte) (int, error) {
+	if m == nil {
+		return len(b), nil
+	}
+	m.pending.Write(b)
+	if time.Since(m.last) >= m.every {
+		m.last = time.Now()
+		m.flushPending()
+		m.push()
+	}
+	return len(b), nil
+}
+
+func (m *ctxMeter) flushPending() {
+	if m.pending.Len() == 0 {
+		return
+	}
+	m.budget.liveAdd(m.budget.counter.count(m.pending.String()))
+	m.pending.Reset()
+}
+
+// note folds freshly appended messages — the user's send, a tool result —
+// into the estimate right away: a 50k-token file read should move the meter
+// when it lands, not a round later.
+func (m *ctxMeter) note(msgs ...provider.Message) {
+	if m == nil {
+		return
+	}
+	m.flushPending()
+	m.budget.liveAdd(m.budget.counter.countMessages(msgs))
+	m.push()
+}
+
+// settle replaces the running estimate with the provider's real usage at a
+// round boundary (stream just ended, LastUsage is fresh).
+func (m *ctxMeter) settle(history []provider.Message) {
+	if m == nil {
+		return
+	}
+	m.pending.Reset() // superseded by the real figure
+	m.budget.update(m.p, history)
+	m.push()
+}
+
+// reset drops any unflushed batch at a turn boundary so it cannot leak into
+// the next turn's estimate. The budget itself is the caller's business.
+func (m *ctxMeter) reset() {
+	if m == nil {
+		return
+	}
+	m.pending.Reset()
 }
 
 // status renders "used / window (pct)"; a leading ≈ marks a local estimate.
