@@ -7,7 +7,58 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// A cancelled run must actually END. The default CommandContext kill
+// reached only the DIRECT child (the sandbox wrapper or bash), and any
+// surviving descendant holding the output pipe wedged Wait — ESC on a
+// long tool call looked completely dead while the work kept running.
+func TestRunCancelKillsTheTree(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(300 * time.Millisecond); cancel() }()
+	start := time.Now()
+	res := Run(ctx, Options{Command: "sleep 30 & sleep 30 & wait"})
+	if el := time.Since(start); el > 10*time.Second {
+		t.Fatalf("cancelled run took %v, want a prompt return", el)
+	}
+	if !res.Cancelled {
+		t.Fatalf("result = %+v, want Cancelled", res)
+	}
+}
+
+// The group kill must reach THROUGH the sandbox wrapper: the direct child
+// is sandbox-exec / bwrap, and bash lives a level below it.
+func TestRunCancelKillsTheSandboxedTree(t *testing.T) {
+	if !Available() {
+		t.Skip("no sandbox on this platform")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(300 * time.Millisecond); cancel() }()
+	start := time.Now()
+	res := Run(ctx, Options{Command: "sleep 30", Sandbox: &Sandbox{Root: t.TempDir()}})
+	if el := time.Since(start); el > 10*time.Second {
+		t.Fatalf("cancelled sandboxed run took %v, want a prompt return", el)
+	}
+	if !res.Cancelled {
+		t.Fatalf("result = %+v, want Cancelled", res)
+	}
+}
+
+// A background child that outlives bash must not wedge the run either:
+// bash exits, the child still holds the inherited output pipe, and
+// WaitDelay bounds the wait — the run reports as exited with whatever
+// output made it through.
+func TestRunBackgroundChildDoesNotWedge(t *testing.T) {
+	start := time.Now()
+	res := Run(context.Background(), Options{Command: "sleep 30 & echo started"})
+	if el := time.Since(start); el > 15*time.Second {
+		t.Fatalf("run with a lingering child took %v, want the WaitDelay bound", el)
+	}
+	if !res.Exited || !strings.Contains(res.Output, "started") {
+		t.Fatalf("result = %+v, want Exited with the foreground output", res)
+	}
+}
 
 func run(t *testing.T, opts Options) Result {
 	t.Helper()

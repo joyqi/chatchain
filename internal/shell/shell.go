@@ -87,6 +87,7 @@ func Run(ctx context.Context, opts Options) Result {
 		cmd = exec.CommandContext(ctx, bashPath, "-c", opts.Command)
 	}
 	cmd.Dir = opts.Dir
+	hardenProcess(cmd) // cancellation kills the TREE, and Wait cannot wedge
 
 	var buf cappedBuffer
 	cmd.Stdout = &buf
@@ -99,6 +100,14 @@ func Run(ctx context.Context, opts Options) Result {
 		res.TimedOut = true
 	case errors.Is(ctx.Err(), context.Canceled):
 		res.Cancelled = true
+	case errors.Is(runErr, exec.ErrWaitDelay):
+		// The command exited but a background child kept the output pipe
+		// open past WaitDelay: the run is complete — the straggler's future
+		// output is forfeit, which beats wedging the chat loop forever.
+		res.Exited = true
+		if cmd.ProcessState != nil {
+			res.ExitCode = cmd.ProcessState.ExitCode()
+		}
 	case runErr == nil:
 		res.Exited = true
 	default:
