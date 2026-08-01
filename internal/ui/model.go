@@ -285,6 +285,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.waiter = msg.reply
 		return m, nil
 
+	case takeQueuedMsg:
+		// Steering drain: pop the contiguous PREFIX of plain messages — a
+		// slash command stops the take (commands run between turns, and
+		// skipping past one would reorder it against the messages behind it).
+		var taken []Input
+		for len(m.queue) > 0 && !strings.HasPrefix(m.queue[0], "/") {
+			taken = append(taken, m.makeInput(m.queue[0]))
+			m.queue = m.queue[1:]
+		}
+		msg.reply <- taken
+		return m, nil
+
 	case readCancelMsg:
 		if m.waiter == msg.reply {
 			m.waiter = nil

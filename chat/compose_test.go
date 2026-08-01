@@ -871,3 +871,30 @@ func TestRenderDiffBackgrounds(t *testing.T) {
 		t.Errorf("token reset not re-armed with the background: %q", rows[1])
 	}
 }
+
+// A mid-turn injected user message (steering) is a stronger boundary than
+// content: the running group settles first, the ❯ block lands, and the next
+// round's activity opens a fresh group.
+func TestUserSettlesOpenGroup(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.openCall("[a]")
+	tr.finishCall("[a]", "ok", false, time.Second)
+	tr.user("also check the tests") // steering injection at the round boundary
+	tr.openCall("[b]")
+
+	classic := append([]string{"[a]"}, classicResult("ok", false)...)
+	want := []string{
+		"call:[a]",
+		"line:" + eventLine("[a]", "ok", false),
+		"call:" + working,
+		"detail:1 tool",
+		"settle", "print:" + strings.Join(classic, "|"),
+		"print:", "user:also check the tests",
+		"print:", "call:[b]", // fresh group, own separator
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}

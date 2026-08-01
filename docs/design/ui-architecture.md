@@ -251,6 +251,18 @@ shared turn-state races. Adopted instead:
   turn runs are queued inside ui (rendered as dim "queued" lines under the
   composer); the next ReadInput drains them in order. On Ctrl+C/ESC mid-turn,
   ui atomically clears the queue back into the composer draft.
+- **Steering (mid-turn injection).** Tool-loop round boundaries are request
+  boundaries, and queued PLAIN messages inject there: toolLoop's steer hook
+  (ui.TakeQueuedMessages — the contiguous non-command prefix; a slash
+  command stops the take so ordering survives) appends them to history as
+  user messages, so the NEXT round's request carries them and the model
+  reacts mid-task. The transcript settles the running activity group first
+  (a user speaking outranks content as a boundary) and echoes the ❯ block
+  in place. A turn-level retry re-lands taken injections after the history
+  reset — the queue no longer holds them. Streaming turns without tools
+  have no boundary: their queue still drains at turn end, and interrupts
+  still fold the *remaining* queue into the draft (injected messages are
+  already part of the turn and follow its finalize table).
 - **Interrupt routing is injected, not surfaced**: `StartStream(cancel)` /
   `Busy` register cancel scopes on a ui-side stack (turn > tool). ESC cancels
   the top scope, Ctrl+C the turn; the partial-output tee/finalize logic stays

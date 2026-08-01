@@ -920,14 +920,36 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 		sink := u.StartStream(cancelTurn)
 		pres.SetState(host.StateBusy)
 		var reply, thinking string
+		// Steering: messages typed while a tool round runs inject at the next
+		// request boundary — the model reacts mid-task instead of after the
+		// whole turn. The closure owns the bookkeeping (echo, meter, replay
+		// record); toolLoop just appends what it returns. A retried attempt
+		// re-lands the already-taken injections right after the send — the
+		// queue no longer holds them, so the reset must not eat them.
+		var injected []provider.Message
+		steer := func() []provider.Message {
+			var out []provider.Message
+			for _, in := range u.TakeQueuedMessages() {
+				tr.user(in.Display)
+				m := provider.Message{Role: "user", Content: in.Text}
+				out = append(out, m)
+				injected = append(injected, m)
+				ctxm.note(m)
+			}
+			return out
+		}
 		retryErr := retry(func() error {
 			history = history[:hist0] // tool rounds append; reset per attempt
+			history = append(history, injected...)
 			ctxm.reset()
 			budget.restore(turnSnap)
 			ctxm.note(history[hist0-1]) // the send moves the meter immediately
+			for _, m := range injected {
+				ctxm.note(m)
+			}
 			var err error
 			if isToolProvider && len(tools) > 0 {
-				reply, thinking, err = toolLoop(turnCtx, u, sink, tr, tp, dispatch, &history, tools, sendOverlay, approved, sw.ImagesDir, ctxm, pres)
+				reply, thinking, err = toolLoop(turnCtx, u, sink, tr, tp, dispatch, &history, tools, sendOverlay, approved, sw.ImagesDir, ctxm, pres, steer)
 			} else {
 				reply, thinking, err = streamTurn(turnCtx, u, sink, tr, p, ctxm, func(w io.Writer, r io.WriteCloser) (string, string, error) {
 					return p.StreamChat(turnCtx, agents.ComposeSendHistory(history, sendOverlay), w, r)
@@ -1279,7 +1301,10 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcrip
 // toolLoop is the v2 twin of executeWithTools: rounds of streaming +
 // tool execution rendered through the ui frame (Busy labels instead of the
 // stderr spinner; per-tool cancel scopes instead of raw-mode watches).
-func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, approved map[string]bool, imgDir func() string, ctxm *ctxMeter, pres *host.Presenter) (string, string, error) {
+// steer (nil-safe) drains mid-turn type-ahead at each round boundary — the
+// only place a user message can legally enter the conversation (a round's
+// tool results must directly follow its calls).
+func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, approved map[string]bool, imgDir func() string, ctxm *ctxMeter, pres *host.Presenter, steer func() []provider.Message) (string, string, error) {
 	// No round cap: the user is the brake (ESC cancels the turn; approval
 	// gates cover mutating tools) — industry parity with the major CLIs.
 	interactive := func(name string) bool { return isInteractive(dispatch, name) }
@@ -1441,6 +1466,13 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 			if ctx.Err() != nil { // tool cancelled via ESC propagates as interrupt
 				return "", "", errInterrupted
 			}
+		}
+
+		// Round boundary: anything the user typed while the round ran joins
+		// the conversation NOW, so the next request carries it (steer already
+		// echoed the ❯ block and settled the activity group).
+		if steer != nil {
+			*history = append(*history, steer()...)
 		}
 	}
 }

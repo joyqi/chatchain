@@ -172,10 +172,14 @@ func (t *transcript) pushLocked(lines []string) {
 	}
 }
 
-// user renders the submitted input as the ❯ block.
+// user renders the submitted input as the ❯ block. A mid-turn injection
+// (steering) lands while an activity group is running — the user speaking is
+// a stronger boundary than content, so the group settles first; at a normal
+// turn start the group is empty and the settle is a no-op.
 func (t *transcript) user(display string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.settleGroupLocked()
 	t.beginLocked(blockUser)
 	t.u.UserBlock(display)
 }

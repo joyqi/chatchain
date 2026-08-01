@@ -179,6 +179,21 @@ func (u *UI) ReadInput(ctx context.Context) (Input, error) {
 	}
 }
 
+// TakeQueuedMessages pops the contiguous run of PLAIN queued messages (a
+// slash command stops the take — commands run between turns) for mid-turn
+// steering: the caller injects them into the conversation at the next
+// request boundary. Returns nil when the queue head is empty or a command.
+func (u *UI) TakeQueuedMessages() []Input {
+	reply := make(chan []Input, 1)
+	u.p.Send(takeQueuedMsg{reply: reply})
+	select {
+	case taken := <-reply:
+		return taken
+	case <-u.done:
+		return nil
+	}
+}
+
 // PrintLines commits styled lines to scrollback (above the frame).
 func (u *UI) PrintLines(lines ...string) {
 	if len(lines) == 0 {

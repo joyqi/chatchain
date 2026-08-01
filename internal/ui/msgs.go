@@ -14,6 +14,7 @@ type inputResult struct {
 type (
 	readReqMsg    struct{ reply chan inputResult }
 	readCancelMsg struct{ reply chan inputResult } // revoke a waiter that gave up
+	takeQueuedMsg struct{ reply chan []Input }     // steering: drain plain queued messages mid-turn
 
 	statusMsg      StatusData
 	titleMsg       string

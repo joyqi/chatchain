@@ -1787,3 +1787,43 @@ func TestTabbedPickerColumnAlignment(t *testing.T) {
 		}
 	}
 }
+
+// TestTakeQueuedMessages: the steering drain pops the contiguous PREFIX of
+// plain messages — a slash command stops the take (it must not be reordered
+// against the messages queued behind it), and an empty or command-headed
+// queue takes nothing.
+func TestTakeQueuedMessages(t *testing.T) {
+	m := newTestModel(t)
+	for _, s := range []string{"first", "second", "/model", "third"} {
+		m = typeText(t, m, s)
+		m = enter(t, m)
+	}
+
+	reply := make(chan []Input, 1)
+	m = step(t, m, takeQueuedMsg{reply: reply})
+	taken := <-reply
+	if len(taken) != 2 || taken[0].Text != "first" || taken[1].Text != "second" {
+		t.Fatalf("taken = %+v, want [first second]", taken)
+	}
+	if len(m.queue) != 2 || m.queue[0] != "/model" || m.queue[1] != "third" {
+		t.Fatalf("queue after take = %v, want [/model third]", m.queue)
+	}
+	if c := content(m); strings.Contains(c, "first") || !strings.Contains(c, "/model") {
+		t.Fatalf("queue rows must reflect the take:\n%s", c)
+	}
+
+	// Command at the head: nothing to take.
+	reply = make(chan []Input, 1)
+	m = step(t, m, takeQueuedMsg{reply: reply})
+	if taken := <-reply; taken != nil {
+		t.Fatalf("command-headed queue must take nothing, got %+v", taken)
+	}
+
+	// Empty queue: nil.
+	m.queue = nil
+	reply = make(chan []Input, 1)
+	m = step(t, m, takeQueuedMsg{reply: reply})
+	if taken := <-reply; taken != nil {
+		t.Fatalf("empty queue must take nothing, got %+v", taken)
+	}
+}
