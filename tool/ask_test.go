@@ -37,6 +37,42 @@ func TestAskSetAbsentWithoutInteractor(t *testing.T) {
 	}
 }
 
+// The ask tools report the interactive capability, and it routes through both
+// dispatcher layers (Registry and Merge) by name — a non-interactive tool and
+// an unknown name stay false.
+func TestInteractiveCapability(t *testing.T) {
+	it := &fakeInteractor{}
+	reg := &Registry{index: make(map[string]Tool)}
+	tools, _ := newAskSet(Env{Interact: it}, yaml.Node{})
+	reg.add(tools)
+	shell, err := newShellSet(Env{}, yaml.Node{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.add(shell)
+
+	for _, name := range []string{"choose", "confirm"} {
+		if !reg.Interactive(name) {
+			t.Errorf("Registry.Interactive(%s) = false, want true", name)
+		}
+	}
+	if reg.Interactive("bash") {
+		t.Error("bash must not be interactive")
+	}
+	if reg.Interactive("nope") {
+		t.Error("unknown tool must not be interactive")
+	}
+
+	merged := Merge(reg)
+	ir, ok := merged.(InteractionReporter)
+	if !ok {
+		t.Fatal("merged dispatcher must expose InteractionReporter")
+	}
+	if !ir.Interactive("choose") || ir.Interactive("bash") {
+		t.Error("merged routing wrong: want choose=true, bash=false")
+	}
+}
+
 func TestChooseParsesAndFormats(t *testing.T) {
 	fi := &fakeInteractor{res: AskResult{Answers: []AskAnswer{
 		{Selected: []string{"OAuth"}},

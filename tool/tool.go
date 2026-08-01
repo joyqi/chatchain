@@ -53,6 +53,22 @@ type ApprovalReporter interface {
 	RequiresApproval(name string) bool
 }
 
+// interactiveTool is an optional Tool interface: a tool whose call puts its
+// own surface in front of the user (the ask set). Such calls have no
+// execution to narrate — the chat layer keeps them out of the activity panel
+// and routes the waiting state to the attention channels instead.
+type interactiveTool interface {
+	Interactive() bool
+}
+
+// InteractionReporter is an optional Dispatcher capability mirroring
+// ApprovalReporter: it reports whether a named tool's calls are interactive
+// (they open their own user-facing surface). Parts without the capability —
+// e.g. the MCP manager — are never interactive.
+type InteractionReporter interface {
+	Interactive(name string) bool
+}
+
 // Env carries host context the toolsets need at construction time.
 type Env struct {
 	// ProjectRoot anchors project-scoped tools — the agent set's skill
@@ -249,6 +265,20 @@ func (r *Registry) RequiresApproval(name string) bool {
 	return ok && a.RequiresApproval()
 }
 
+// Interactive reports whether the named built-in tool runs its own user
+// interaction (via the optional interactiveTool interface).
+func (r *Registry) Interactive(name string) bool {
+	if r == nil {
+		return false
+	}
+	t, ok := r.index[name]
+	if !ok {
+		return false
+	}
+	i, ok := t.(interactiveTool)
+	return ok && i.Interactive()
+}
+
 // CallTool dispatches a call to the matching built-in tool.
 func (r *Registry) CallTool(ctx context.Context, name string, args map[string]any) (string, bool, error) {
 	if r == nil {
@@ -320,6 +350,20 @@ func (m *multiDispatcher) RequiresApproval(name string) bool {
 			if def.Name == name {
 				ar, ok := p.(ApprovalReporter)
 				return ok && ar.RequiresApproval(name)
+			}
+		}
+	}
+	return false
+}
+
+// Interactive routes the question to the part owning the tool name; parts
+// without the InteractionReporter capability are never interactive.
+func (m *multiDispatcher) Interactive(name string) bool {
+	for _, p := range m.parts {
+		for _, def := range p.Tools() {
+			if def.Name == name {
+				ir, ok := p.(InteractionReporter)
+				return ok && ir.Interactive(name)
 			}
 		}
 	}

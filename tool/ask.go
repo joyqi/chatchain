@@ -29,6 +29,11 @@ const (
 
 type chooseTool struct{ it Interactor }
 
+// Interactive marks the call as running its own user surface (the tabbed
+// questionnaire) — the chat layer routes it to the attention channels
+// instead of the activity panel.
+func (t *chooseTool) Interactive() bool { return true }
+
 func (t *chooseTool) Def() provider.ToolDef {
 	return provider.ToolDef{
 		Name: "choose",
@@ -177,6 +182,9 @@ func boolArg(m map[string]any, key string, def bool) bool {
 }
 
 type confirmTool struct{ it Interactor }
+
+// Interactive: see chooseTool.Interactive.
+func (t *confirmTool) Interactive() bool { return true }
 
 func (t *confirmTool) Def() provider.ToolDef {
 	return provider.ToolDef{
