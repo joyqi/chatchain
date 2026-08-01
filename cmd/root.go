@@ -107,9 +107,18 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("--model/-M is required when using --message/-m")
 		}
 
+		// Temperature: the -t flag wins over the config default. Everything
+		// downstream (provider construction, session meta, the /model slider)
+		// flows from this one resolution.
 		var temp *float64
-		if cmd.Flags().Changed("temperature") {
+		switch {
+		case cmd.Flags().Changed("temperature"):
 			temp = &temperature
+		case pc.Temperature != nil:
+			if *pc.Temperature < 0 || *pc.Temperature > 2 {
+				return fmt.Errorf("config temperature %v: want 0.0-2.0", *pc.Temperature)
+			}
+			temp = pc.Temperature
 		}
 
 		// Always install the recording transport: the /debug command browses
@@ -149,7 +158,7 @@ var rootCmd = &cobra.Command{
 		}
 		if temp != nil {
 			if _, ok := p.(provider.Tunable); !ok {
-				fmt.Fprintf(os.Stderr, "Warning: --temperature does not apply to provider type %s (ignored)\n", p.Type())
+				fmt.Fprintf(os.Stderr, "Warning: temperature does not apply to provider type %s (ignored)\n", p.Type())
 			}
 		}
 		if pc.JSONEdits {

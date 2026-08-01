@@ -26,6 +26,10 @@ type ProviderConfig struct {
 	// support it: low|medium|high|xhigh|max ("" = provider default). A
 	// resumed session's own effort still overrides it.
 	Effort string `yaml:"effort"`
+	// Temperature is the default sampling temperature (0.0–2.0; absent =
+	// provider default). Precedence: config < a resumed session's own value
+	// < the -t flag < a /model adjustment.
+	Temperature *float64 `yaml:"temperature"`
 	// TopP is the nucleus-sampling parameter (0.0–1.0; absent = provider
 	// default). Config-only, no UI surface: an advanced knob — adjust either
 	// temperature or top_p, not both, and note reasoning models reject or
