@@ -201,8 +201,13 @@ groupable delta), and the outcome lands as its own "?" record block — the
 user's answers, replayed the same way on resume. PresentExpanded (file
 mutations: edit_file/write_file) is a group boundary like content: the
 running group settles, the call takes a standalone widget, and the result
-expands into a colored unified diff (± rows, cyan @@ hunks) under a
-"header · +A -R" line. The diff arrives through the tool.Artifact context
+expands into an annotated diff listing under a "header · +A -R" line: a dim
+line-number gutter (@@ headers translate into running counters — new-file
+numbers for +/context, old-file for -; "⋮" between hunks), chroma
+syntax-highlighted code (file-extension lexer, theme following the
+light/dark detection), and 256-color background blocks marking ± rows
+(re-armed after every chroma reset so token styling can't cut the block
+short); context rows stay dim. The diff arrives through the tool.Artifact context
 side channel — display-only, never in the model-facing result text (a full
 diff there costs tokens) — generated with go-udiff; the row budget follows
 the live screen height floored at 24, overwide rows truncate (wrapping

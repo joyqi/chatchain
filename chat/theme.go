@@ -33,9 +33,20 @@ func detectCodeTheme() {
 		bgUnsupported = true
 	}
 	ui.SetDarkBackground(dark) // adaptive ui shades (input background)
+	themeDark = dark           // showcase diff block shades (diff.go)
 	if dark {
 		markdown.SetCodeTheme("monokai")
+		diffCodeTheme = "monokai"
 	} else {
 		markdown.SetCodeTheme("github")
+		diffCodeTheme = "github"
 	}
 }
+
+// themeDark / diffCodeTheme mirror the detected background for the showcase
+// diff renderer: the 256-color ± block shades and the chroma style must both
+// track light/dark, and the markdown package keeps its own copy private.
+var (
+	themeDark     = true
+	diffCodeTheme = "monokai"
+)

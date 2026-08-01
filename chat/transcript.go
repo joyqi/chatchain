@@ -447,7 +447,7 @@ func (t *transcript) settleShowcase(header string, art *tool.Artifact, result st
 			}
 		}
 		lines = append([]string{header + dim(fmt.Sprintf("  +%d -%d", adds, dels))},
-			renderDiff(art.Lines, t.diffBudgetLocked(), t.u.Width())...)
+			renderDiff(art.Title, art.Lines, t.diffBudgetLocked(), t.u.Width())...)
 	} else {
 		lines = []string{header}
 		lc := &lineCommitter{commit: func(ls ...string) { lines = append(lines, ls...) }}
@@ -473,42 +473,6 @@ func (t *transcript) diffBudgetLocked() int {
 
 // diffMinRows floors the showcase diff budget on small terminals.
 const diffMinRows = 24
-
-// renderDiff styles unified-diff hunk lines for the scrollback: additions
-// green, deletions red, hunk headers cyan, context dim; rows beyond the
-// budget collapse into a "… +N more lines" tail, and overwide rows TRUNCATE
-// (wrapping would wreck the column alignment diffs live by). Width ≤ 3
-// (startup, tests) skips truncation.
-func renderDiff(lines []string, budget, width int) []string {
-	shown, extra := lines, 0
-	if len(lines) > budget {
-		shown = lines[:budget-1]
-		extra = len(lines) - len(shown)
-	}
-	out := make([]string, 0, len(shown)+1)
-	for _, ln := range shown {
-		var styled string
-		switch {
-		case strings.HasPrefix(ln, "@@"):
-			styled = CodeStyle.Sprint(ln)
-		case strings.HasPrefix(ln, "+"):
-			styled = DiffAddStyle.Sprint(ln)
-		case strings.HasPrefix(ln, "-"):
-			styled = DiffDelStyle.Sprint(ln)
-		default:
-			styled = DimStyle.Sprint(ln) // context rows, "\ No newline…"
-		}
-		row := "  " + styled
-		if width > 3 && ansi.StringWidth(row) > width-1 {
-			row = ansi.Truncate(row, width-2, "…")
-		}
-		out = append(out, row)
-	}
-	if extra > 0 {
-		out = append(out, dim(fmt.Sprintf("  … +%d more lines", extra)))
-	}
-	return out
-}
 
 // settleGroupLocked folds the group into its settled scrollback form and
 // resets it. Groups without recorded events keep their widget (a composing

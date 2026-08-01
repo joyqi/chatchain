@@ -10,6 +10,8 @@ import (
 
 	"chatchain/provider"
 	"chatchain/tool"
+
+	"github.com/fatih/color"
 )
 
 // recSurface records the transcript's surface calls in order.
@@ -721,7 +723,7 @@ func TestShowcaseSettlesGroupAndExpandsDiff(t *testing.T) {
 
 	classic := append([]string{"[read_file path:a]"}, classicResult("ok", false)...)
 	diffBlock := append([]string{"[edit_file path:a]" + dim("  +1 -1")},
-		renderDiff(art.Lines, 30, 80)...)
+		renderDiff("a", art.Lines, 30, 80)...)
 	want := []string{
 		"user:edit it",
 		"print:", "call:[read_file path:a]",
@@ -741,9 +743,10 @@ func TestShowcaseSettlesGroupAndExpandsDiff(t *testing.T) {
 // The diff budget follows the live screen height (floored at diffMinRows):
 // rows beyond it collapse into the "… +N more lines" tail.
 func TestShowcaseDiffBudget(t *testing.T) {
-	lines := make([]string, 40)
-	for i := range lines {
-		lines[i] = fmt.Sprintf("+row-%d", i)
+	lines := make([]string, 0, 41)
+	lines = append(lines, "@@ -0,0 +1,40 @@")
+	for i := 0; i < 40; i++ {
+		lines = append(lines, fmt.Sprintf("+row-%d", i))
 	}
 	s := &recSurface{} // Height() = 30 → budget 30: 29 rows + tail
 	tr := newTranscript(s, nil)
@@ -754,8 +757,11 @@ func TestShowcaseDiffBudget(t *testing.T) {
 	if !strings.Contains(out, "… +11 more lines") {
 		t.Fatalf("missing truncation tail:\n%s", out)
 	}
-	if !strings.Contains(out, "+row-28") || strings.Contains(out, "+row-29") {
+	if !strings.Contains(out, "row-28") || strings.Contains(out, "row-29") {
 		t.Fatalf("budget must cut after row 28:\n%s", out)
+	}
+	if strings.Contains(out, "@@") {
+		t.Fatalf("hunk headers must translate into line numbers, not render:\n%s", out)
 	}
 }
 
@@ -780,11 +786,88 @@ func TestShowcaseFallsBackClassic(t *testing.T) {
 // Overwide diff rows TRUNCATE to the screen width — wrapping would wreck the
 // column alignment diffs live by.
 func TestRenderDiffTruncatesWideRows(t *testing.T) {
-	rows := renderDiff([]string{"+" + strings.Repeat("x", 200)}, 24, 40)
+	rows := renderDiff("", []string{"+" + strings.Repeat("x", 200)}, 24, 40)
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(rows))
 	}
 	if w := displayWidth(stripANSI(rows[0])); w > 39 {
 		t.Fatalf("row width = %d, must stay under the screen width", w)
+	}
+}
+
+// Hunk headers translate into the line-number gutter: additions and context
+// carry new-file numbers, deletions old-file numbers, and a "⋮" row marks
+// the boundary between hunks.
+func TestParseDiffRows(t *testing.T) {
+	rows := parseDiffRows([]string{
+		"@@ -3,2 +3,3 @@",
+		" ctx",
+		"-gone",
+		"+new-a",
+		"+new-b",
+		"@@ -20,1 +21,1 @@",
+		"-old",
+		"+fresh",
+		"\\ No newline at end of file",
+	})
+	type want struct {
+		kind rune
+		num  int
+		gap  bool
+	}
+	wants := []want{
+		{' ', 3, false},
+		{'-', 4, false},
+		{'+', 4, false},
+		{'+', 5, false},
+		{0, 0, true}, // hunk boundary
+		{'-', 20, false},
+		{'+', 21, false},
+	}
+	if len(rows) != len(wants) {
+		t.Fatalf("rows = %d, want %d: %+v", len(rows), len(wants), rows)
+	}
+	for i, w := range wants {
+		if rows[i].gap != w.gap || (!w.gap && (rows[i].kind != w.kind || rows[i].num != w.num)) {
+			t.Errorf("row %d = %+v, want %+v", i, rows[i], w)
+		}
+	}
+}
+
+// With color on, ± rows carry their background blocks (re-armed after every
+// chroma reset so token styling can't cut the block short), the gutter is
+// dim, and a fresh-file "-0,0" hunk numbers from 1.
+func TestRenderDiffBackgrounds(t *testing.T) {
+	old := color.NoColor
+	color.NoColor = false
+	defer func() { color.NoColor = old }()
+
+	rows := renderDiff("main.go", []string{
+		"@@ -0,0 +1,2 @@",
+		"+package main",
+		"+var x = 1",
+	}, 24, 100)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2:\n%q", len(rows), rows)
+	}
+	bgAdd, _ := diffBG()
+	for i, row := range rows {
+		if !strings.Contains(row, bgAdd) {
+			t.Errorf("row %d missing the addition background: %q", i, row)
+		}
+		if !strings.HasSuffix(row, "\x1b[0m") {
+			t.Errorf("row %d must end SGR-self-contained: %q", i, row)
+		}
+	}
+	if !strings.Contains(stripANSI(rows[0]), "1 + package main") {
+		t.Errorf("gutter numbering wrong: %q", stripANSI(rows[0]))
+	}
+	if !strings.Contains(stripANSI(rows[1]), "2 + var x = 1") {
+		t.Errorf("gutter numbering wrong: %q", stripANSI(rows[1]))
+	}
+	// chroma emits per-token resets on go code; every reset must re-arm the bg.
+	if inner := strings.TrimSuffix(rows[1], "\x1b[0m"); strings.Contains(inner, "\x1b[0m") &&
+		!strings.Contains(inner, "\x1b[0m"+bgAdd) {
+		t.Errorf("token reset not re-armed with the background: %q", rows[1])
 	}
 }
