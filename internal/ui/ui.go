@@ -105,6 +105,15 @@ func (u *UI) CallDetail(detail string) { u.region.setCallDetail(detail) }
 // CallBody replaces the call widget's body rows (progressive image frames).
 func (u *UI) CallBody(rows []string) { u.region.setCallBody(rows) }
 
+// CallLine appends one row to the call widget's rolling body (a completed
+// activity event scrolling through the group panel).
+func (u *UI) CallLine(line string) { u.region.previewLine(line) }
+
+// PauseClock freezes the call widget's elapsed figure while the user is
+// being consulted; ResumeClock continues it where it froze.
+func (u *UI) PauseClock()  { u.region.pauseClock() }
+func (u *UI) ResumeClock() { u.region.resumeClock() }
+
 // ClosePreview deferred-closes whatever preview is open: the next committed
 // lines morph it away in place.
 func (u *UI) ClosePreview() { u.region.closePreview() }

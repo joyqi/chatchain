@@ -163,6 +163,11 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 	// block (input, thinking, content, tool calls, notices, echoes) declares
 	// itself and the transcript alone spaces them (transcript.go).
 	tr := newTranscript(u, budget.counter)
+	if reqLog != nil {
+		// /debug on doubles as the no-collapse switch: with recording on, the
+		// activity group settles after every event (classic per-call blocks).
+		tr.verbose = reqLog.Verbose
+	}
 
 	if mgr != nil {
 		go reportMCPFailures(mgr, tr, u)
@@ -1119,23 +1124,33 @@ func composingLabel(name string) string {
 // a live "⎿ elapsed · ESC" row) while the model streams a call's arguments —
 // otherwise a large write_file call is dead air. Argument text is not staged;
 // the widget is the whole display. toolLoop later expands the header to its
-// full form (the clock keeps running) and the result commit settles it. The
+// full form (the clock keeps running) and finishCall records the event. The
 // returned cleanup detaches the observer; the widget deliberately persists.
-func watchToolComposing(phases *turnPhases, tr *transcript, tp provider.ToolProvider, onFirst func()) func() {
+//
+// skip (nil = never) suppresses the raise for interactive tools — their call
+// never enters the activity panel, and a widget raised for one would sit
+// zombie behind the tool's own surface. The raise therefore waits for a
+// NAMED delta: an anonymous first chunk cannot be classified yet.
+func watchToolComposing(phases *turnPhases, tr *transcript, tp provider.ToolProvider, skip func(name string) bool, onFirst func()) func() {
 	obs, ok := tp.(provider.ToolCallStreamObserver)
 	if !ok {
 		return func() {}
 	}
 	var mu sync.Mutex
 	var last string
+	seen := false
 	obs.SetToolCallObserver(func(name, delta string) {
 		if delta == "" {
 			return // atomic backends (google): toolLoop raises the widget
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		if last == "" && onFirst != nil {
+		if !seen && onFirst != nil {
 			onFirst() // first delta: the caller ends the content stream early
+		}
+		seen = true
+		if name == "" || (skip != nil && skip(name)) {
+			return
 		}
 		label := composingLabel(name)
 		if label == last {
@@ -1165,7 +1180,7 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcrip
 	// Progressive frames from a dedicated image provider: this turn runs no
 	// tool, so the first frame raises the widget that hosts it (the final
 	// tr.image morphs that same widget into the picture).
-	defer watchImagePartials(u, p, func() { tr.openCall("image") })()
+	defer watchImagePartials(u, p, func() { tr.imageWidget() })()
 
 	go func() {
 		defer close(done)
@@ -1267,8 +1282,9 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcrip
 func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, approved map[string]bool, imgDir func() string, ctxm *ctxMeter, pres *host.Presenter) (string, string, error) {
 	// No round cap: the user is the brake (ESC cancels the turn; approval
 	// gates cover mutating tools) — industry parity with the major CLIs.
+	interactive := func(name string) bool { return isInteractive(dispatch, name) }
 	for {
-		content, reasoning, toolCalls, err := streamToolRound(ctx, u, sink, tr, tp, agents.ComposeSendHistory(*history, overlay), tools, ctxm)
+		content, reasoning, toolCalls, err := streamToolRound(ctx, u, sink, tr, tp, agents.ComposeSendHistory(*history, overlay), tools, ctxm, interactive)
 		if err != nil {
 			return content, reasoning, err
 		}
@@ -1290,36 +1306,71 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 		for _, tc := range toolCalls {
 			header := CodeStyle.Sprint(toolCallHeader(tc))
 
+			// Interactive tools (the ask set) bring their own surface — the
+			// activity panel stays out of the way, the attention channels
+			// carry the waiting state, and the Q&A lands as its own record.
+			if isInteractive(dispatch, tc.Name) {
+				pres.SetState(host.StateNeedsInput)
+				pres.Notify(host.Event{Kind: host.KindNeedsInput,
+					Text: fmt.Sprintf("%s needs your input", displayToolName(tc.Name))})
+				tr.pauseForInput("waiting for your input")
+				toolCtx, cancel := context.WithCancel(ctx)
+				pop := u.PushCancelScope(cancel)
+				resultText, isError, callErr := dispatch.CallTool(toolCtx, tc.Name, tc.Arguments)
+				pop()
+				cancel()
+				tr.resumeFromInput()
+				pres.SetState(host.StateBusy)
+				if callErr != nil {
+					resultText = fmt.Sprintf("Error calling tool: %v", callErr)
+					isError = true
+				}
+				tr.askRecord(resultText, isError)
+				result := provider.Message{
+					Role:         "tool",
+					Content:      resultText,
+					ToolCallID:   tc.ID,
+					ToolCallName: tc.Name,
+					IsError:      isError,
+				}
+				*history = append(*history, result)
+				ctxm.note(result)
+				if ctx.Err() != nil {
+					return "", "", errInterrupted
+				}
+				continue
+			}
+
 			// The lifecycle widget: "⠋ [name args…]" over a live "⎿ elapsed ·
-			// ESC" row. Composing already raised it (the header expands in
-			// place, the clock keeps running); atomic backends raise it here.
-			// It spins through approval and execution, and settles into the
-			// committed header + result below.
+			// ESC" row, shared by the whole activity group. Composing already
+			// raised it (the header expands in place, the clock keeps
+			// running); atomic backends raise it here. It spins through
+			// approval and execution; finishCall records the event.
 			tr.openCall(header)
 
 			// Approval gate: state-changing tools (tool.ApprovalReporter) run
 			// only with the user's consent — once, or for the whole session.
-			// The widget header above shows what is being approved.
+			// The widget header above shows what is being approved; the group
+			// clock pauses while the user deliberates.
 			if needsApproval(dispatch, tc.Name) && !approved[tc.Name] {
 				// The turn is now blocked on the user: needs-input state on
 				// every host, and a ping if they wandered off.
 				pres.SetState(host.StateNeedsInput)
 				pres.Notify(host.Event{Kind: host.KindNeedsInput,
 					Text: fmt.Sprintf("%s wants to modify files", displayToolName(tc.Name))})
+				tr.pauseForInput("waiting for approval")
 				choice, aerr := u.Select(ctx, ui.SelectSpec{
 					Title: fmt.Sprintf("%s wants to modify files — allow?", displayToolName(tc.Name)),
 					Items: []string{"Allow once", "Allow for this session", "Deny"},
 				})
+				tr.resumeFromInput()
 				pres.SetState(host.StateBusy) // resolved either way; end states override
 				if aerr != nil {
 					return "", "", aerr
 				}
 				if choice.Cancelled || choice.Index == 2 {
 					const declined = "The user declined this call."
-					tr.settleCall(header)
-					lc := &lineCommitter{commit: tr.toolLines}
-					printToolResult(lc, declined, true)
-					lc.flush()
+					tr.finishCall(header, declined, true, 0)
 					*history = append(*history, provider.Message{
 						Role:         "tool",
 						Content:      declined,
@@ -1336,7 +1387,9 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 
 			toolCtx, cancel := context.WithCancel(ctx)
 			pop := u.PushCancelScope(cancel)
+			started := time.Now()
 			resultText, isError, callErr := dispatch.CallTool(toolCtx, tc.Name, tc.Arguments)
+			dur := time.Since(started)
 			pop()
 			cancel()
 			if callErr != nil {
@@ -1344,12 +1397,10 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 				isError = true
 			}
 
-			// Settle: the widget morphs in place into its final collapsed
-			// form — the spinner disappears as the result writes back.
-			tr.settleCall(header)
-			lc := &lineCommitter{commit: tr.toolLines}
-			printToolResult(lc, resultText, isError)
-			lc.flush()
+			// The group records the completed call (body row, counters); its
+			// summary — or the classic block, for a lone call — lands when a
+			// content boundary settles the group.
+			tr.finishCall(header, resultText, isError, dur)
 
 			result := provider.Message{
 				Role:         "tool",
@@ -1404,8 +1455,9 @@ func (c *contentTap) Write(p []byte) (int, error) {
 }
 
 // streamToolRound is the v2 twin of streamToolRound (interactive only —
-// Once keeps the v1 quiet path).
-func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, history []provider.Message, tools []provider.ToolDef, ctxm *ctxMeter) (string, string, []provider.ToolCall, error) {
+// Once keeps the v1 quiet path). interactive marks tool names whose
+// composing deltas must not raise the activity widget.
+func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, history []provider.Message, tools []provider.ToolDef, ctxm *ctxMeter, interactive func(name string) bool) (string, string, []provider.ToolCall, error) {
 	reasonPr, reasonPw := io.Pipe()
 	contentPr, contentPw := io.Pipe()
 	var content, reasoning string
@@ -1445,8 +1497,8 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *tran
 	// after the full arg stream. Later provider writes to the closed pipe are
 	// dropped (fmt.Fprint discards the error; history uses the provider's own
 	// accumulator).
-	defer watchToolComposing(phases, tr, tp, func() { contentPw.Close() })()
-	defer watchImagePartials(u, tp, nil)()
+	defer watchToolComposing(phases, tr, tp, interactive, func() { contentPw.Close() })()
+	defer watchImagePartials(u, tp, func() { tr.imageWidget() })()
 
 	go func() {
 		defer close(done)

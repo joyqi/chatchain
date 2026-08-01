@@ -34,26 +34,28 @@ const tailKeep = 4
 // under one mutex, so concurrent writers (stream goroutine, MCP reporter)
 // keep global ordering.
 type region struct {
-	mu      sync.Mutex
-	u       *UI
-	emit    func(over []string, snap regionMsg) // test seam; nil = via u.p
-	tail    []string                            // committed-pending lines shown in the frame
-	residue []string                            // stale preview rows awaiting in-place replacement
-	label   string                              // preview header label ("" = no preview)
-	ptail   []string                            // preview rolling source lines (≤ previewWindow)
-	open    bool                                // preview receiving lines (false once closed/deferred)
-	since   time.Time                           // call preview: lifecycle start (zero = plain preview)
-	detail  string                              // call preview: live status-row prefix ("1.2k tokens")
+	mu       sync.Mutex
+	u        *UI
+	emit     func(over []string, snap regionMsg) // test seam; nil = via u.p
+	tail     []string                            // committed-pending lines shown in the frame
+	residue  []string                            // stale preview rows awaiting in-place replacement
+	label    string                              // preview header label ("" = no preview)
+	ptail    []string                            // preview rolling source lines (≤ previewWindow)
+	open     bool                                // preview receiving lines (false once closed/deferred)
+	since    time.Time                           // call preview: lifecycle start (zero = plain preview)
+	pausedAt time.Time                           // call clock frozen here (user being consulted)
+	detail   string                              // call preview: live status-row prefix ("1.2k tokens")
 }
 
 // regionMsg is the display snapshot the model renders.
 type regionMsg struct {
-	tail    []string
-	residue []string
-	label   string
-	ptail   []string
-	since   time.Time // non-zero: render the "⎿ [detail ·] Ns · ESC" row and tick
-	detail  string
+	tail     []string
+	residue  []string
+	label    string
+	ptail    []string
+	since    time.Time // non-zero: render the "⎿ [detail ·] Ns · ESC" row and tick
+	pausedAt time.Time // non-zero: the elapsed figure freezes here
+	detail   string
 }
 
 func (r *region) previewRowsLocked() int {
@@ -90,12 +92,13 @@ func (r *region) rebalanceLocked() []string {
 
 func (r *region) snapshotLocked() regionMsg {
 	return regionMsg{
-		tail:    append([]string{}, r.tail...),
-		residue: append([]string{}, r.residue...),
-		label:   r.label,
-		ptail:   append([]string{}, r.ptail...),
-		since:   r.since,
-		detail:  r.detail,
+		tail:     append([]string{}, r.tail...),
+		residue:  append([]string{}, r.residue...),
+		label:    r.label,
+		ptail:    append([]string{}, r.ptail...),
+		since:    r.since,
+		pausedAt: r.pausedAt,
+		detail:   r.detail,
 	}
 }
 
@@ -277,6 +280,7 @@ func (r *region) commit(lines []string) {
 		r.label = ""
 		r.ptail = nil
 		r.since = time.Time{}
+		r.pausedAt = time.Time{}
 		r.detail = ""
 	} else {
 		r.consumeResidueLocked(len(lines))
@@ -295,6 +299,7 @@ func (r *region) openPreview(label string) {
 	defer r.mu.Unlock()
 	r.foldOpenLocked(label)
 	r.since = time.Time{}
+	r.pausedAt = time.Time{}
 	over := r.rebalanceLocked() // header row may steal a tail line
 	r.publishLocked(over)
 }
@@ -316,9 +321,39 @@ func (r *region) openCallPreview(label string) {
 	}
 	r.foldOpenLocked(label)
 	r.since = time.Now()
+	r.pausedAt = time.Time{}
 	r.detail = ""
 	over := r.rebalanceLocked()
 	r.publishLocked(over)
+}
+
+// pauseClock freezes the call widget's elapsed figure (the user is being
+// consulted — an approval prompt, an interactive tool's surface — and human
+// deliberation must not count as activity time). A no-op without a live call
+// preview or when already paused.
+func (r *region) pauseClock() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.since.IsZero() || !r.pausedAt.IsZero() {
+		return
+	}
+	r.pausedAt = time.Now()
+	r.publishLocked(nil)
+}
+
+// resumeClock restarts a paused clock, shifting the start forward by the
+// paused span so the elapsed figure continues where it froze.
+func (r *region) resumeClock() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pausedAt.IsZero() {
+		return
+	}
+	if !r.since.IsZero() {
+		r.since = r.since.Add(time.Since(r.pausedAt))
+	}
+	r.pausedAt = time.Time{}
+	r.publishLocked(nil)
 }
 
 // setCallBody replaces the call widget's body rows wholesale (progressive
@@ -411,6 +446,7 @@ func (r *region) dropPreview() {
 	r.residue = nil
 	r.open = false
 	r.since = time.Time{}
+	r.pausedAt = time.Time{}
 	r.publishLocked(nil)
 }
 
@@ -444,5 +480,6 @@ func (r *region) flush() {
 		r.ptail = nil
 	}
 	r.since = time.Time{}
+	r.pausedAt = time.Time{}
 	r.publishLocked(over)
 }

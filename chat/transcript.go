@@ -10,10 +10,10 @@ import (
 )
 
 // The transcript is the session's single write surface for the chat area:
-// every block that lands in the scrollback — user input, thinking, markdown
-// content, tool calls with their results, notices, errors, resume echoes —
-// is declared here, and the transcript alone decides the spacing between
-// them. Two rules replace the ad-hoc "" commits of the past:
+// every block that lands in the scrollback — user input, activity summaries,
+// markdown content, notices, errors, resume echoes — is declared here, and
+// the transcript alone decides the spacing between them. Two rules replace
+// the ad-hoc "" commits of the past:
 //
 //   - every block opens with exactly one blank separator (above the first
 //     block sits the pre-Program banner or the previous turn), consecutive
@@ -22,10 +22,16 @@ import (
 //     no block can export trailing blanks for a neighbor to lean on (the
 //     fragility behind the resume-echo regression).
 //
-// It also owns the lifecycle-widget verbs (thinking, tool calls), so the
-// staging view and the settled scrollback are spaced identically by
-// construction. Safe for concurrent use (the async MCP reporter interleaves
-// with streaming turns).
+// It also owns the ACTIVITY GROUP: the run of thinking segments and tool
+// calls between two content blocks (or turn boundaries) shares one lifecycle
+// widget — completed events scroll through its body — and settles into a
+// single summary line ("◇ thought for 15s · ran 4 tools in 12s"). Degenerate
+// groups keep the classic forms (a lone tool call = header + result lines,
+// thinking only = the "◇ thought for Ns" marker), which is also exactly what
+// verbose mode (/debug on) produces by settling after every event. Failed
+// calls always break out as their own red rows — aggregation never swallows
+// an error. Safe for concurrent use (the async MCP reporter interleaves with
+// streaming turns).
 
 // blockKind classifies the chat area's logical blocks.
 type blockKind uint8
@@ -33,9 +39,9 @@ type blockKind uint8
 const (
 	blockNone blockKind = iota
 	blockUser
-	blockThinking
+	blockActivity
 	blockContent
-	blockToolCall
+	blockAsk
 	blockNotice
 	blockError
 	blockEcho
@@ -49,26 +55,59 @@ type transcriptSurface interface {
 	UserBlock(display string)
 	CallPreview(label string)
 	CallDetail(detail string)
+	CallLine(line string)
 	ClosePreview()
+	PauseClock()
+	ResumeClock()
 	Width() int
 }
 
+// activityGroup is the aggregation state for one activity group. The group
+// owns the lifecycle widget for its whole lifetime; a content boundary (or
+// resetTurn) settles it. A group that recorded no events yet (a composing
+// call whose text spills) survives content — collapsing it would erase a
+// call still in flight.
+type activityGroup struct {
+	up          bool          // widget raised (the group's separator is paid)
+	thinkingUp  bool          // a thinking segment owns the widget label
+	label       string        // current widget header (restored after a pause)
+	paused      bool          // clock frozen while the user is consulted
+	thinks      int           // settled thinking segments (a count — a segment can measure 0ns)
+	thinkDur    time.Duration // Σ settled thinking segments
+	thinkTokens int           // Σ reasoning tokens (meter estimate, live detail)
+	tools       int
+	fails       int
+	toolsDur    time.Duration // Σ tool execution time (human waits excluded)
+	firstHeader string        // the lone call's classic form, valid while tools == 1
+	firstResult string
+	firstErr    bool
+	failLines   []string // red breakout rows appended under the summary
+}
+
+// hasEvents reports whether anything settled into the group — the guard
+// between "a group worth summarizing" and "a raised widget still composing".
+func (g *activityGroup) hasEvents() bool { return g.tools > 0 || g.thinks > 0 }
+
 type transcript struct {
-	mu          sync.Mutex
-	u           transcriptSurface
-	tokens      *tokenCounter // estimator behind the thinking meter
+	mu     sync.Mutex
+	u      transcriptSurface
+	tokens *tokenCounter // estimator behind the thinking meter
+	// verbose (nil = never) disables aggregation: the group settles after
+	// every event, reproducing the classic per-call blocks for debugging.
+	verbose     func() bool
 	last        blockKind
 	pending     int    // deferred block-interior blank lines
-	callUp      bool   // lifecycle widget raised (its block separator already paid)
-	thinkingUp  bool   // the thinking widget owns the (single) widget slot
 	contentOpen bool   // a markdown content block is streaming (renderer may hold buffered lines)
 	pendingCall string // tool call announced while thinking/content streams; raised at close
 	orphanSep   bool   // a dropped widget's separator awaits reuse by the next block
+	grp         activityGroup
 }
 
 func newTranscript(u transcriptSurface, tokens *tokenCounter) *transcript {
 	return &transcript{u: u, tokens: tokens}
 }
+
+func (t *transcript) verboseOn() bool { return t.verbose != nil && t.verbose() }
 
 // beginLocked opens a new block: the previous block's deferred blanks die,
 // one separator is paid — unless a dropped widget left its separator behind
@@ -86,17 +125,23 @@ func (t *transcript) beginLocked(kind blockKind) {
 	t.u.PrintLines("")
 }
 
-// resetTurn clears widget bookkeeping at a turn boundary. A widget dropped
-// unsettled (interrupt, stream death — sink.Done discarded it) has already
-// paid a separator with nothing under it; mark it for reuse so the next
-// block doesn't stack a second blank on top.
+// resetTurn closes out widget bookkeeping at a turn boundary. A group that
+// recorded events still settles — the activity happened, and an interrupted
+// or errored turn deserves its partial summary (the widget itself is already
+// gone: sink.Done dropped it, so the summary commits as plain lines). A
+// widget dropped before any event settled (mid-compose interrupt) has paid a
+// separator with nothing under it; mark it for reuse so the next block
+// doesn't stack a second blank on top.
 func (t *transcript) resetTurn() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.callUp || t.thinkingUp {
+	if t.grp.hasEvents() {
+		t.settleGroupLocked()
+	} else if t.grp.up || t.grp.thinkingUp {
 		t.orphanSep = true
 	}
-	t.callUp, t.thinkingUp, t.contentOpen, t.pendingCall = false, false, false, ""
+	t.grp = activityGroup{}
+	t.contentOpen, t.pendingCall = false, ""
 }
 
 // pushLocked commits lines into the current block, deferring interior blank
@@ -196,10 +241,12 @@ func (t *transcript) echo(lines []string) {
 // beginRound clears the streaming-phase guards at the top of a stream round:
 // a round that died mid-stream (retry, provider error) may have leaked
 // thinkingUp/contentOpen, which would silently defer the next round's widget
-// forever.
+// forever. Group counters deliberately survive — rounds accumulate into one
+// group, and a turn-level retry re-running earlier rounds keeps counting the
+// calls that really executed.
 func (t *transcript) beginRound() {
 	t.mu.Lock()
-	t.thinkingUp, t.contentOpen = false, false
+	t.grp.thinkingUp, t.contentOpen = false, false
 	t.mu.Unlock()
 }
 
@@ -239,8 +286,9 @@ func (t *transcript) closeContent() {
 }
 
 // contentBlock returns the committer for one markdown content block. The
-// block opens lazily on the first line, and re-opens (new separator) if an
-// async block — an MCP failure notice — interleaved since.
+// block opens lazily on the first line — settling the activity group first: a
+// content boundary is what closes a group — and re-opens (new separator) if
+// an async block (an MCP failure notice) interleaved since.
 func (t *transcript) contentBlock() func(lines ...string) {
 	opened := false
 	return func(lines ...string) {
@@ -248,6 +296,7 @@ func (t *transcript) contentBlock() func(lines ...string) {
 		defer t.mu.Unlock()
 		if !opened || t.last != blockContent {
 			opened = true
+			t.settleGroupLocked()
 			t.beginLocked(blockContent)
 		}
 		t.pushLocked(lines)
@@ -262,15 +311,20 @@ func (t *transcript) contentBlock() func(lines ...string) {
 func (t *transcript) image(rows []string, caption string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.callUp {
+	switch {
+	case t.grp.hasEvents():
+		// Accumulated activity settles first; the image opens its own block.
+		t.settleGroupLocked()
+		t.beginLocked(blockImage)
+	case t.grp.up:
 		// An image-generation widget is up: the image IS its result — morph
 		// the widget into the image block in place (separator already paid
 		// at the raise; the region replaces the preview rows bottom-up).
-		t.callUp = false
+		t.grp = activityGroup{}
 		t.pending = 0
 		t.last = blockImage
 		t.u.ClosePreview()
-	} else {
+	default:
 		t.beginLocked(blockImage)
 	}
 	const indent = "  "
@@ -282,49 +336,248 @@ func (t *transcript) image(rows []string, caption string) {
 	t.pushLocked([]string{indent + DimStyle.Sprint(caption)})
 }
 
-// openCall raises the tool-call lifecycle widget ("⠋ [name …]" over the live
-// "⎿ elapsed" row), or expands its header in place when already up — the
-// separator is paid once per widget. While the thinking widget owns the slot
-// (providers can stream tool-call deltas before the reasoning pipe closes),
-// the call is only remembered; settleThinking raises it.
-func (t *transcript) openCall(label string) {
+// imageWidget ensures the image-generation widget ahead of progressive
+// frames. Accumulated activity settles first — partial frames replace the
+// widget body wholesale, so activity rows and refining thumbnails cannot
+// share it. While thinking or content owns the slot the raise defers like
+// any composing call.
+func (t *transcript) imageWidget() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.thinkingUp || t.contentOpen {
-		t.pendingCall = label
+	if t.grp.thinkingUp || t.contentOpen {
+		if t.pendingCall == "" {
+			t.pendingCall = "image"
+		}
 		return
 	}
-	if !t.callUp {
-		t.callUp = true
-		t.beginLocked(blockToolCall)
+	if t.grp.hasEvents() {
+		t.settleGroupLocked()
 	}
+	if !t.grp.up {
+		t.ensureWidgetLocked("image")
+	}
+}
+
+// ensureWidgetLocked raises the group's lifecycle widget (paying the group's
+// one separator) or relabels it in place — the clock keeps running.
+func (t *transcript) ensureWidgetLocked(label string) {
+	if !t.grp.up {
+		t.grp.up = true
+		t.beginLocked(blockActivity)
+	}
+	t.grp.label = label
 	t.u.CallPreview(label)
 }
 
-// settleCall morphs the widget into its final collapsed header; the result
-// lines that follow (toolLines) belong to the same block. If an async block
-// (an MCP failure) interleaved since the raise, the block re-opens so the
-// header doesn't glue to the stranger.
-func (t *transcript) settleCall(header string) {
+// openCall raises the tool-call lifecycle widget ("⠋ [name …]" over the live
+// "⎿ elapsed" row) into the current group, or relabels it in place. While the
+// thinking widget owns the slot (providers can stream tool-call deltas before
+// the reasoning pipe closes) or content is streaming, the call is only
+// remembered; settleThinking/closeContent raises it.
+func (t *transcript) openCall(label string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.callUp = false
-	if t.last != blockToolCall {
-		t.beginLocked(blockToolCall)
+	if t.grp.thinkingUp || t.contentOpen {
+		t.pendingCall = label
+		return
 	}
-	t.u.ClosePreview()
-	t.pushLocked([]string{header})
+	t.ensureWidgetLocked(label)
 }
 
-// toolLines commits tool-result lines within the current tool-call block,
-// re-opening it if an async block interleaved.
-func (t *transcript) toolLines(lines ...string) {
+// finishCall records a completed tool call into the group: counters, a body
+// row scrolling through the widget, the failure breakout, and — while it is
+// the group's only call — the material for the classic degenerate form. In
+// verbose mode the group settles immediately, reproducing the classic block.
+func (t *transcript) finishCall(header, result string, isError bool, dur time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.last != blockToolCall {
-		t.beginLocked(blockToolCall)
+	if !t.grp.up {
+		// Defensive: a finish without a raise (never in practice).
+		t.ensureWidgetLocked(header)
+	}
+	t.grp.tools++
+	t.grp.toolsDur += dur
+	if t.grp.tools == 1 {
+		t.grp.firstHeader, t.grp.firstResult, t.grp.firstErr = header, result, isError
+	}
+	if isError {
+		t.grp.fails++
+		t.grp.failLines = append(t.grp.failLines, failLine(header, result))
+	}
+	if t.verboseOn() {
+		t.settleGroupLocked()
+		return
+	}
+	t.u.CallLine(eventLine(header, result, isError))
+	t.ensureWidgetLocked(dim("Working…"))
+	t.callDetailLocked()
+}
+
+// settleGroupLocked folds the group into its settled scrollback form and
+// resets it. Groups without recorded events keep their widget (a composing
+// call whose text spilled must not be collapsed); a group whose widget was
+// already dropped (turn teardown) commits its summary as plain lines.
+func (t *transcript) settleGroupLocked() {
+	if !t.grp.hasEvents() {
+		return
+	}
+	lines := t.groupLinesLocked()
+	wasUp := t.grp.up
+	t.grp = activityGroup{}
+	if t.last != blockActivity {
+		// An async block interleaved since the raise: re-open so the summary
+		// doesn't glue to the stranger.
+		t.beginLocked(blockActivity)
+	}
+	if wasUp {
+		t.u.ClosePreview()
 	}
 	t.pushLocked(lines)
+}
+
+// groupLinesLocked renders the group's settled form:
+//
+//   - thinking only        → "◇ thought for 15s" (the classic marker)
+//   - a lone untought call → the classic header + result lines
+//   - anything else        → one summary line + red breakout rows per failure
+func (t *transcript) groupLinesLocked() []string {
+	g := &t.grp
+	if g.tools == 0 {
+		return []string{dim(fmt.Sprintf("%s thought for %s", reasoningSymbol, durElapsed(g.thinkDur)))}
+	}
+	if g.tools == 1 && g.thinks == 0 {
+		lines := []string{g.firstHeader}
+		lc := &lineCommitter{commit: func(ls ...string) { lines = append(lines, ls...) }}
+		printToolResult(lc, g.firstResult, g.firstErr)
+		lc.flush()
+		return lines
+	}
+	ran := fmt.Sprintf("ran %d %s in %s", g.tools, pluralTools(g.tools), durElapsed(g.toolsDur))
+	var line string
+	if g.thinks > 0 {
+		line = dim(fmt.Sprintf("%s thought for %s · %s", reasoningSymbol, durElapsed(g.thinkDur), ran))
+	} else {
+		line = dim(fmt.Sprintf("%s %s", reasoningSymbol, ran))
+	}
+	if g.fails > 0 {
+		line += ErrorStyle.Sprintf(" · %d failed", g.fails)
+	}
+	return append([]string{line}, g.failLines...)
+}
+
+// eventLine is a completed call's body row inside the widget: a glyph, the
+// header, and a snippet of the first result line.
+func eventLine(header, result string, isError bool) string {
+	glyph := DimStyle.Sprint("✓")
+	if isError {
+		glyph = ErrorStyle.Sprint("✗")
+	}
+	line := glyph + " " + header
+	if first := firstResultLine(result); first != "" {
+		line += dim(" · " + truncateRunes(first, 48))
+	}
+	return line
+}
+
+// failLine is a failed call's red breakout row under the group summary.
+func failLine(header, result string) string {
+	line := ErrorStyle.Sprint("✗") + " " + header
+	if first := firstResultLine(result); first != "" {
+		line += ErrorStyle.Sprint(" · " + truncateRunes(first, 64))
+	}
+	return line
+}
+
+// firstResultLine extracts the first non-blank line of a tool result.
+func firstResultLine(result string) string {
+	for _, ln := range strings.Split(result, "\n") {
+		if ln = strings.TrimSpace(ln); ln != "" {
+			return ln
+		}
+	}
+	return ""
+}
+
+func pluralTools(n int) string {
+	if n == 1 {
+		return "tool"
+	}
+	return "tools"
+}
+
+// durElapsed renders a duration the way the thinking marker always has:
+// whole seconds, "<1s" below one.
+func durElapsed(d time.Duration) string {
+	if d < time.Second {
+		return "<1s"
+	}
+	return fmt.Sprintf("%ds", int(d.Seconds()))
+}
+
+// callDetailLocked refreshes the widget's live status-row prefix from the
+// group's counters ("3 tools · 1.2k tokens").
+func (t *transcript) callDetailLocked() {
+	var parts []string
+	if t.grp.tools > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s", t.grp.tools, pluralTools(t.grp.tools)))
+	}
+	if t.grp.thinkTokens > 0 {
+		parts = append(parts, formatTokensShort(t.grp.thinkTokens)+" tokens")
+	}
+	t.u.CallDetail(strings.Join(parts, " · "))
+}
+
+// askRecord commits an interactive tool's outcome — the user's own answers —
+// as a "?" record block: the tool's surface has closed, and this is its
+// scrollback trace. Interactive calls never enter the activity group.
+func (t *transcript) askRecord(result string, isError bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.beginLocked(blockAsk)
+	style := DimStyle
+	if isError {
+		style = ErrorStyle
+	}
+	result = strings.TrimRight(result, "\n")
+	if strings.TrimSpace(result) == "" {
+		result = "(no answer)"
+	}
+	var lines []string
+	for i, ln := range strings.Split(result, "\n") {
+		prefix := "  "
+		if i == 0 {
+			prefix = "? "
+		}
+		lines = append(lines, style.Sprint(prefix+ln))
+	}
+	t.pushLocked(lines)
+}
+
+// pauseForInput marks the turn as waiting on the user (an approval prompt, an
+// interactive tool's surface): the widget relabels to the reason and the
+// elapsed clock freezes — human deliberation must not inflate the group's
+// timings. A no-op without a live widget (the surface itself is the display).
+func (t *transcript) pauseForInput(reason string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.grp.up || t.grp.paused {
+		return
+	}
+	t.grp.paused = true
+	t.u.CallPreview(dim("⏸ " + reason))
+	t.u.PauseClock()
+}
+
+// resumeFromInput restores the widget label and restarts the clock.
+func (t *transcript) resumeFromInput() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.grp.paused {
+		return
+	}
+	t.grp.paused = false
+	t.u.ResumeClock()
+	t.u.CallPreview(t.grp.label)
 }
 
 // noticeLines commits a pre-rendered multi-line result (e.g. /export output)
@@ -338,31 +591,37 @@ func (t *transcript) noticeLines(lines ...string) {
 	t.pushLocked(lines)
 }
 
-// openThinking raises the thinking widget ("⠋ Thinking" over "⎿ 1.2k tokens ·
-// 8s · ESC to cancel") and returns the meter that feeds its token count.
+// openThinking raises the thinking segment into the group's widget ("⠋
+// Thinking" over "⎿ 1.2k tokens · 8s · ESC to cancel") and returns the meter
+// that feeds its token count.
 func (t *transcript) openThinking() *thinkingMeter {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.callUp = false
-	t.thinkingUp = true
-	t.beginLocked(blockThinking)
-	t.u.CallPreview(DimStyle.Sprint("Thinking"))
-	return &thinkingMeter{t: t}
+	t.grp.thinkingUp = true
+	t.ensureWidgetLocked(dim("Thinking"))
+	return &thinkingMeter{t: t, base: t.grp.thinkTokens}
 }
 
-// settleThinking folds the widget into the dim "◇ thought for Ns" marker —
-// the only trace reasoning leaves in the scrollback — re-opening the block
-// first if an async block interleaved. A tool call announced during the
-// thinking stream is raised here, in lifecycle order.
+// settleThinking completes the thinking segment: the group accumulates its
+// duration and shows the "◇ thought Ns" body row; in verbose mode the group
+// settles immediately, reproducing the classic marker. A tool call announced
+// during the thinking stream is raised here, in lifecycle order.
 func (t *transcript) settleThinking(start time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.thinkingUp = false
-	if t.last != blockThinking {
-		t.beginLocked(blockThinking)
+	t.grp.thinkingUp = false
+	d := time.Since(start)
+	t.grp.thinks++
+	t.grp.thinkDur += d
+	if t.verboseOn() {
+		t.settleGroupLocked()
+	} else {
+		t.u.CallLine(dim(fmt.Sprintf("%s thought %s", reasoningSymbol, durElapsed(d))))
+		if t.pendingCall == "" {
+			t.ensureWidgetLocked(dim("Working…"))
+		}
+		t.callDetailLocked()
 	}
-	t.u.ClosePreview()
-	t.pushLocked([]string{dim(fmt.Sprintf("%s thought for %s", reasoningSymbol, reasoningElapsed(start)))})
 	t.raisePendingLocked()
 }
 
@@ -372,20 +631,21 @@ func (t *transcript) settleThinking(start time.Time) {
 // async close must not raise into a live thinking widget).
 func (t *transcript) raisePendingLocked() {
 	label := t.pendingCall
-	if label == "" || t.thinkingUp || t.contentOpen {
+	if label == "" || t.grp.thinkingUp || t.contentOpen {
 		return
 	}
 	t.pendingCall = ""
-	t.callUp = true
-	t.beginLocked(blockToolCall)
-	t.u.CallPreview(label)
+	t.ensureWidgetLocked(label)
 }
 
 // thinkingMeter counts streamed reasoning into the widget's status row:
 // tokens estimated per delta (tiktoken; byte-split runes cost ±1 token),
 // updates throttled so high-frequency deltas don't flood the program queue.
+// base carries the group's tokens from earlier segments, so the detail row
+// keeps counting up across thinking rounds.
 type thinkingMeter struct {
 	t    *transcript
+	base int
 	n    int
 	last time.Time
 }
@@ -404,7 +664,10 @@ func (m *thinkingMeter) add(s string) {
 		return
 	}
 	m.last = time.Now()
-	m.t.u.CallDetail(formatTokensShort(m.n) + " tokens")
+	m.t.mu.Lock()
+	m.t.grp.thinkTokens = m.base + m.n
+	m.t.callDetailLocked()
+	m.t.mu.Unlock()
 }
 
 // formatTokensShort renders a token count the way the status line renders the

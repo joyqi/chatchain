@@ -19,15 +19,30 @@ func (s *recSurface) PrintLines(lines ...string) {
 func (s *recSurface) UserBlock(display string) { s.events = append(s.events, "user:"+display) }
 func (s *recSurface) CallPreview(label string) { s.events = append(s.events, "call:"+label) }
 func (s *recSurface) CallDetail(detail string) { s.events = append(s.events, "detail:"+detail) }
+func (s *recSurface) CallLine(line string)     { s.events = append(s.events, "line:"+line) }
 func (s *recSurface) ClosePreview()            { s.events = append(s.events, "settle") }
+func (s *recSurface) PauseClock()              { s.events = append(s.events, "pause") }
+func (s *recSurface) ResumeClock()             { s.events = append(s.events, "resume") }
 func (s *recSurface) Width() int               { return 80 }
 
 func (s *recSurface) joined() string { return strings.Join(s.events, "\n") }
 
-// The spacing contract: every block opens with exactly one blank separator;
-// the widget pays it when first raised (header expansion is free, results
-// join the widget's block); a settled widget re-raised is a new block.
-func TestTranscriptSpacing(t *testing.T) {
+// classicResult renders a result through printToolResult the way the settle
+// path does, for test expectations.
+func classicResult(result string, isError bool) []string {
+	var lines []string
+	lc := &lineCommitter{commit: func(ls ...string) { lines = append(lines, ls...) }}
+	printToolResult(lc, result, isError)
+	lc.flush()
+	return lines
+}
+
+var working = dim("Working…")
+
+// The aggregation contract: thinking and consecutive tool calls share ONE
+// widget (one separator, relabels in place, event rows through the body) and
+// a content boundary settles them into a single summary line.
+func TestActivityGroupAggregates(t *testing.T) {
 	s := &recSurface{}
 	tr := newTranscript(s, newTokenCounter())
 
@@ -36,27 +51,32 @@ func TestTranscriptSpacing(t *testing.T) {
 	m := tr.openThinking()
 	m.add("some reasoning text")
 	tr.settleThinking(start)
-	content := tr.contentBlock()
-	content("The reply.")
 	tr.openCall("[a …]")
-	tr.openCall("[a full]") // same widget: no extra separator
-	tr.settleCall("[a full]")
-	tr.toolLines("  ⎿ ok")
-	tr.openCall("[b …]") // settled → new block, one separator
-	tr.settleCall("[b]")
-	content2 := tr.contentBlock()
-	content2("Done.")
+	tr.openCall("[a full]") // header expansion: same widget, no separator
+	tr.finishCall("[a full]", "ok", false, 2*time.Second)
+	tr.openCall("[b]")
+	tr.finishCall("[b]", "out", false, 3*time.Second)
+	content := tr.contentBlock()
+	content("Done.")
 
+	tokens := formatTokensShort(tokenCount("some reasoning text")) + " tokens"
 	want := []string{
 		"user:hello",
 		"print:", "call:" + DimStyle.Sprint("Thinking"),
-		"detail:" + formatTokensShort(tokenCount("some reasoning text")) + " tokens",
-		"settle", "print:" + dim("◇ thought for <1s"),
-		"print:", "print:The reply.",
-		"print:", "call:[a …]", "call:[a full]",
-		"settle", "print:[a full]", "print:  ⎿ ok",
-		"print:", "call:[b …]",
-		"settle", "print:[b]",
+		"detail:" + tokens,
+		"line:" + dim("◇ thought <1s"),
+		"call:" + working,
+		"detail:" + tokens,
+		"call:[a …]", "call:[a full]",
+		"line:" + eventLine("[a full]", "ok", false),
+		"call:" + working,
+		"detail:1 tool · " + tokens,
+		"call:[b]",
+		"line:" + eventLine("[b]", "out", false),
+		"call:" + working,
+		"detail:2 tools · " + tokens,
+		"settle",
+		"print:" + dim("◇ thought for <1s · ran 2 tools in 5s"),
 		"print:", "print:Done.",
 	}
 	if got := s.joined(); got != strings.Join(want, "\n") {
@@ -66,6 +86,128 @@ func TestTranscriptSpacing(t *testing.T) {
 
 // tokenCount mirrors the meter's estimator for test expectations.
 func tokenCount(s string) int { return newTokenCounter().count(s) }
+
+// A lone tool call with no thinking keeps the classic block: header over the
+// "⎿" result lines — aggregation must not degrade information density when
+// there is nothing to aggregate.
+func TestActivityGroupLoneToolClassic(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.user("x")
+	tr.openCall("[read_file path:a]")
+	tr.finishCall("[read_file path:a]", "line1\nline2", false, time.Second)
+	content := tr.contentBlock()
+	content("Answer.")
+
+	classic := append([]string{"[read_file path:a]"}, classicResult("line1\nline2", false)...)
+	want := []string{
+		"user:x",
+		"print:", "call:[read_file path:a]",
+		"line:" + eventLine("[read_file path:a]", "line1\nline2", false),
+		"call:" + working,
+		"detail:1 tool",
+		"settle",
+		"print:" + strings.Join(classic, "|"),
+		"print:", "print:Answer.",
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
+// Thinking with no tool calls settles into the classic "◇ thought for Ns"
+// marker at the content boundary.
+func TestActivityGroupThinkingOnly(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.openThinking()
+	tr.settleThinking(time.Now())
+	content := tr.contentBlock()
+	content("The reply.")
+
+	want := []string{
+		"call:" + DimStyle.Sprint("Thinking"), // first block: no separator
+		"line:" + dim("◇ thought <1s"),
+		"call:" + working,
+		"detail:",
+		"settle",
+		"print:" + dim("◇ thought for <1s"),
+		"print:", "print:The reply.",
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
+// Failed calls are never swallowed by aggregation: the summary carries a red
+// failure count and each failed call breaks out as its own red row.
+func TestActivityGroupFailBreakout(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.openCall("[a]")
+	tr.finishCall("[a]", "fine", false, time.Second)
+	tr.openCall("[bash cmd:x]")
+	tr.finishCall("[bash cmd:x]", "exit 1\ndetail", true, time.Second)
+	content := tr.contentBlock()
+	content("So.")
+
+	summary := dim("◇ ran 2 tools in 2s") + ErrorStyle.Sprintf(" · %d failed", 1)
+	want := []string{
+		"call:[a]",
+		"line:" + eventLine("[a]", "fine", false),
+		"call:" + working,
+		"detail:1 tool",
+		"call:[bash cmd:x]",
+		"line:" + eventLine("[bash cmd:x]", "exit 1\ndetail", true),
+		"call:" + working,
+		"detail:2 tools",
+		"settle",
+		"print:" + summary + "|" + failLine("[bash cmd:x]", "exit 1\ndetail"),
+		"print:", "print:So.",
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
+// Verbose mode (/debug on) settles the group after every event, reproducing
+// the classic per-item blocks — the degenerate forms ARE the legacy shapes.
+func TestVerboseSettlesPerEvent(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, newTokenCounter())
+	tr.verbose = func() bool { return true }
+
+	tr.user("hello")
+	tr.openThinking()
+	tr.settleThinking(time.Now())
+	content := tr.contentBlock()
+	content("The reply.")
+	tr.openCall("[a …]")
+	tr.openCall("[a full]")
+	tr.finishCall("[a full]", "ok", false, time.Second)
+	tr.openCall("[b]")
+	tr.finishCall("[b]", "", false, time.Second)
+	content2 := tr.contentBlock()
+	content2("Done.")
+
+	want := []string{
+		"user:hello",
+		"print:", "call:" + DimStyle.Sprint("Thinking"),
+		"settle", "print:" + dim("◇ thought for <1s"),
+		"print:", "print:The reply.",
+		"print:", "call:[a …]", "call:[a full]",
+		"settle", "print:" + strings.Join(append([]string{"[a full]"}, classicResult("ok", false)...), "|"),
+		"print:", "call:[b]",
+		"settle", "print:" + strings.Join(append([]string{"[b]"}, classicResult("", false)...), "|"),
+		"print:", "print:Done.",
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
 
 // Interior blanks pass through once more content follows; trailing blanks are
 // dropped — a block can never export them for a neighbor to lean on.
@@ -118,7 +260,7 @@ func TestTranscriptGrouping(t *testing.T) {
 // Providers can stream tool-call deltas while the reasoning pipe is still
 // open (thinking → tool_use with no text): the observer's openCall must not
 // hijack the thinking widget — the call is remembered and raised at settle,
-// in lifecycle order, with its own separator and a fresh clock.
+// in lifecycle order, into the same group.
 func TestThinkingComposingInterleave(t *testing.T) {
 	s := &recSurface{}
 	tr := newTranscript(s, nil)
@@ -129,16 +271,25 @@ func TestThinkingComposingInterleave(t *testing.T) {
 	tr.openCall("[bash …]")       // label change while queued: last wins
 	tr.settleThinking(time.Now())
 	tr.openCall("[bash cmd:ls]") // toolLoop expands the raised widget
-	tr.settleCall("[bash cmd:ls]")
-	tr.toolLines("  ⎿ ok")
+	tr.finishCall("[bash cmd:ls]", "ok", false, time.Second)
+	content := tr.contentBlock()
+	content("Done.")
 
+	classic := append([]string{"[bash cmd:ls]"}, classicResult("ok", false)...)
+	_ = classic
 	want := []string{
 		"user:do it",
 		"print:", "call:" + DimStyle.Sprint("Thinking"),
-		"settle", "print:" + dim("◇ thought for <1s"),
-		"print:", "call:[bash …]", // the pending call raised at settle
-		"call:[bash cmd:ls]", // expansion: no separator
-		"settle", "print:[bash cmd:ls]", "print:  ⎿ ok",
+		"line:" + dim("◇ thought <1s"),
+		"detail:",
+		"call:[bash …]", // the pending call raised at settle, same widget
+		"call:[bash cmd:ls]",
+		"line:" + eventLine("[bash cmd:ls]", "ok", false),
+		"call:" + working,
+		"detail:1 tool",
+		"settle",
+		"print:" + dim("◇ thought for <1s · ran 1 tool in 1s"),
+		"print:", "print:Done.",
 	}
 	if got := s.joined(); got != strings.Join(want, "\n") {
 		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
@@ -149,8 +300,8 @@ func TestThinkingComposingInterleave(t *testing.T) {
 // when its stream ends), so the observer's openCall can arrive BEFORE the
 // content's final lines commit. The call must defer until closeContent —
 // otherwise the widget's separator lands first and the buffered content
-// re-opens after it: a double blank above the content and the widget glued
-// below it (the live-reported shape).
+// re-opens after it. The group settles at the content's first commit; the
+// deferred call then opens the NEXT group.
 func TestContentComposingInterleave(t *testing.T) {
 	s := &recSurface{}
 	tr := newTranscript(s, nil)
@@ -164,17 +315,18 @@ func TestContentComposingInterleave(t *testing.T) {
 	content("| a | b |", "| 1 |") // renderer flush: same block, no re-open
 	tr.openCall("[bash cmd:pwd]") // label refresh while deferred: last wins
 	tr.closeContent()             // content over → the widget raises NOW
-	tr.settleCall("[bash cmd:pwd]")
-	tr.toolLines("  ⎿ /root")
 
 	want := []string{
 		"user:table then tool",
 		"print:", "call:" + DimStyle.Sprint("Thinking"),
-		"settle", "print:" + dim("◇ thought for <1s"),
+		"line:" + dim("◇ thought <1s"),
+		"call:" + working, // no pending call yet at settle time
+		"detail:",
+		"settle",
+		"print:" + dim("◇ thought for <1s"), // the group settles at content
 		"print:", "print:intro line",
 		"print:| a | b ||| 1 |",         // committed into the SAME content block
-		"print:", "call:[bash cmd:pwd]", // raised at closeContent, one separator
-		"settle", "print:[bash cmd:pwd]", "print:  ⎿ /root",
+		"print:", "call:[bash cmd:pwd]", // raised at closeContent: a new group
 	}
 	if got := s.joined(); got != strings.Join(want, "\n") {
 		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
@@ -241,9 +393,9 @@ func TestCloseContentWithoutPendingCall(t *testing.T) {
 	}
 }
 
-// A widget dropped unsettled (interrupted turn) leaves its separator with
-// nothing under it; the next block reuses that orphan instead of stacking a
-// second blank.
+// A widget dropped before any event settled (mid-compose interrupt) leaves
+// its separator with nothing under it; the next block reuses that orphan
+// instead of stacking a second blank.
 func TestOrphanedWidgetSeparatorReuse(t *testing.T) {
 	s := &recSurface{}
 	tr := newTranscript(s, nil)
@@ -265,22 +417,106 @@ func TestOrphanedWidgetSeparatorReuse(t *testing.T) {
 	}
 }
 
-// An async error interleaving between a widget's raise and its settle forces
-// the settle (and result lines) to re-open the block — the header never glues
-// to the stranger.
+// A group with recorded events still settles when the turn dies: the
+// activity happened, and the partial summary is its trace (the widget itself
+// was already dropped by the sink; the summary commits as plain lines).
+func TestResetTurnSettlesPartialGroup(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.user("x")
+	tr.openCall("[a]")
+	tr.finishCall("[a]", "ok", false, time.Second)
+	tr.openCall("[b]")
+	tr.finishCall("[b]", "ok", false, time.Second)
+	tr.resetTurn() // interrupted before any content boundary
+	tr.notice("Interrupted.")
+
+	want := []string{
+		"user:x",
+		"print:", "call:[a]",
+		"line:" + eventLine("[a]", "ok", false),
+		"call:" + working,
+		"detail:1 tool",
+		"call:[b]",
+		"line:" + eventLine("[b]", "ok", false),
+		"call:" + working,
+		"detail:2 tools",
+		"settle",
+		"print:" + dim("◇ ran 2 tools in 2s"),
+		"print:", "print:" + DimStyle.Sprint("Interrupted."),
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
+// An async error interleaving between the raise and the settle forces the
+// summary to re-open the block — it never glues to the stranger.
 func TestSettleReopensAfterInterleave(t *testing.T) {
 	s := &recSurface{}
 	tr := newTranscript(s, nil)
 
 	tr.openCall("[bash …]")
 	tr.error("⚠ MCP srv failed: boom") // async reporter mid-execution
-	tr.settleCall("[bash cmd:ls]")
-	tr.toolLines("  ⎿ ok")
+	tr.finishCall("[bash cmd:ls]", "ok", false, time.Second)
+	content := tr.contentBlock()
+	content("Done.")
 
+	classic := append([]string{"[bash cmd:ls]"}, classicResult("ok", false)...)
 	want := []string{
 		"call:[bash …]",
 		"print:", "print:" + ErrorStyle.Sprint("⚠ MCP srv failed: boom"),
-		"print:", "settle", "print:[bash cmd:ls]", "print:  ⎿ ok",
+		"line:" + eventLine("[bash cmd:ls]", "ok", false),
+		"call:" + working,
+		"detail:1 tool",
+		"print:", "settle",
+		"print:" + strings.Join(classic, "|"),
+		"print:", "print:Done.",
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
+// An interactive tool's outcome lands as the "?" record block — the user's
+// own answers, outside any activity group.
+func TestAskRecord(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.user("pick")
+	tr.askRecord("Auth: JWT\nLib: chi", false)
+	tr.askRecord("", false)
+
+	want := []string{
+		"user:pick",
+		"print:", "print:" + DimStyle.Sprint("? Auth: JWT") + "|" + DimStyle.Sprint("  Lib: chi"),
+		"print:", "print:" + DimStyle.Sprint("? (no answer)"),
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
+// pauseForInput relabels the live widget and freezes its clock; resume
+// restores the group's label and continues. Without a widget both are
+// no-ops — an interactive tool's surface is its own display.
+func TestPauseForInput(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.pauseForInput("waiting for your input") // no widget: nothing
+	tr.resumeFromInput()
+
+	tr.openCall("[edit_file path:x]")
+	tr.pauseForInput("waiting for approval")
+	tr.resumeFromInput()
+
+	want := []string{
+		"call:[edit_file path:x]",
+		"call:" + dim("⏸ waiting for approval"), "pause",
+		"resume", "call:[edit_file path:x]",
 	}
 	if got := s.joined(); got != strings.Join(want, "\n") {
 		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
@@ -350,33 +586,40 @@ func (f *fakeObserverTP) StreamChatWithTools(context.Context, []provider.Message
 	return "", "", nil, nil
 }
 
-// While arguments stream, only the lifecycle widget is raised — separator on
-// the first raise, once per label change, no argument text staged; atomic
-// (empty-delta) notifications are ignored; cleanup detaches the observer
-// without settling the widget (toolLoop owns that).
+// While arguments stream, only the lifecycle widget is raised — once per
+// label change, and only for NAMED, non-interactive calls: an anonymous
+// delta cannot be classified yet, and an interactive tool's widget would sit
+// zombie behind its own surface. Atomic (empty-delta) notifications are
+// ignored; cleanup detaches the observer without settling the widget.
 func TestWatchToolComposing(t *testing.T) {
 	s := &recSurface{}
 	tr := newTranscript(s, nil)
 	tp := &fakeObserverTP{}
-	cleanup := watchToolComposing(newTurnPhases(nil), tr, tp, nil)
+	first := 0
+	cleanup := watchToolComposing(newTurnPhases(nil), tr, tp,
+		func(name string) bool { return name == "choose" },
+		func() { first++ })
 	if tp.fn == nil {
 		t.Fatal("observer not installed")
 	}
 
-	tp.fn("", `{"pa`)          // name unknown yet
-	tp.fn("write_file", `th"`) // name arrived → relabel via CallPreview
+	tp.fn("", `{"pa`)          // name unknown yet: no raise, but onFirst fires
+	tp.fn("write_file", `th"`) // name arrived → raise via CallPreview
 	tp.fn("write_file", `:"a`) // same label → no event
+	tp.fn("choose", `{"q`)     // interactive → suppressed
 	tp.fn("bash", `{"co`)      // still the same open widget: relabel only
 	tp.fn("", "")              // atomic backends: ignored
 	cleanup()
 
 	want := []string{
-		"call:" + composingLabel(""), // first block: the environment owns the boundary blank
-		"call:" + composingLabel("write_file"),
+		"call:" + composingLabel("write_file"), // first block: the environment owns the boundary blank
 		"call:" + composingLabel("bash"),
 	}
 	if got := s.joined(); got != strings.Join(want, "\n") {
 		t.Fatalf("events:\n%s\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+	if first != 1 {
+		t.Fatalf("onFirst fired %d times, want once", first)
 	}
 	if tp.fn != nil {
 		t.Fatal("cleanup should detach the observer")
@@ -419,6 +662,36 @@ func TestImageMorphsGenerationWidget(t *testing.T) {
 		"user:draw",
 		"print:", "call:[image_generation …]",
 		"settle", "print:  ROW",
+		"print:  " + DimStyle.Sprint("🖼 saved: /p.png"),
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
+// Progressive frames arriving over a group with recorded activity settle the
+// group FIRST — refining thumbnails replace the widget body wholesale, and
+// the image then morphs a fresh, dedicated widget.
+func TestImageWidgetSettlesActivityFirst(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.user("draw with tools")
+	tr.openCall("[a]")
+	tr.finishCall("[a]", "ok", false, time.Second)
+	tr.imageWidget() // first partial frame arrives
+	tr.image([]string{"ROW"}, "🖼 saved: /p.png")
+
+	classic := append([]string{"[a]"}, classicResult("ok", false)...)
+	want := []string{
+		"user:draw with tools",
+		"print:", "call:[a]",
+		"line:" + eventLine("[a]", "ok", false),
+		"call:" + working,
+		"detail:1 tool",
+		"settle", "print:" + strings.Join(classic, "|"), // the lone call settles classic
+		"print:", "call:image", // a fresh widget hosts the frames
+		"settle", "print:  ROW", // …and the image morphs it
 		"print:  " + DimStyle.Sprint("🖼 saved: /p.png"),
 	}
 	if got := s.joined(); got != strings.Join(want, "\n") {

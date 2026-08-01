@@ -927,12 +927,17 @@ func (m *model) View() tea.View {
 			// The call preview's live status row: where the result's "⎿" line
 			// will land, showing the caller's detail ("1.2k tokens") and the
 			// elapsed time (spinner ticks re-render it), plus the cancel hint
-			// until the tool's output replaces it.
+			// until the tool's output replaces it. A paused clock (the user is
+			// being consulted) freezes the figure where it stopped.
 			status := "⎿ "
 			if m.region.detail != "" {
 				status += m.region.detail + " · "
 			}
-			status += fmt.Sprintf("%ds", int(time.Since(m.region.since).Seconds()))
+			elapsed := time.Since(m.region.since)
+			if !m.region.pausedAt.IsZero() {
+				elapsed = m.region.pausedAt.Sub(m.region.since)
+			}
+			status += fmt.Sprintf("%ds", int(elapsed.Seconds()))
 			if len(m.cancels) > 0 {
 				status += " · ESC to cancel"
 			}

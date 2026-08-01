@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // A committed entry with embedded newlines must expand to one tail entry per
@@ -137,5 +138,49 @@ func TestRegionTwoRoundToolTurn(t *testing.T) {
 	}, "\n")
 	if got != want {
 		t.Fatalf("scrollback stream:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+// The call clock pauses while the user is consulted (approval prompts,
+// interactive tools): pausedAt freezes the elapsed figure, resume shifts
+// `since` forward by the paused span so the figure continues where it froze,
+// and every widget teardown clears the pause state.
+func TestRegionClockPause(t *testing.T) {
+	var snaps []regionMsg
+	r := &region{emit: func(_ []string, snap regionMsg) { snaps = append(snaps, snap) }}
+
+	r.pauseClock() // no call preview: a no-op, publishes nothing
+	if len(snaps) != 0 {
+		t.Fatalf("pause without a preview must be silent, got %d snapshots", len(snaps))
+	}
+
+	r.openCallPreview("[edit_file …]")
+	before := r.since
+	r.pauseClock()
+	if r.pausedAt.IsZero() {
+		t.Fatal("pausedAt not set")
+	}
+	frozen := snaps[len(snaps)-1]
+	if frozen.pausedAt.IsZero() {
+		t.Fatal("snapshot must carry pausedAt for the model to freeze the figure")
+	}
+	r.pauseClock() // idempotent: already paused
+	_ = r.pausedAt
+
+	time.Sleep(5 * time.Millisecond)
+	r.resumeClock()
+	if !r.pausedAt.IsZero() {
+		t.Fatal("resume must clear pausedAt")
+	}
+	if !r.since.After(before) {
+		t.Fatalf("since must shift forward by the paused span (was %v, now %v)", before, r.since)
+	}
+
+	r.resumeClock() // idempotent: not paused
+
+	r.pauseClock()
+	r.dropPreview() // teardown clears the pause with the widget
+	if !r.pausedAt.IsZero() {
+		t.Fatal("dropPreview must clear pausedAt")
 	}
 }
