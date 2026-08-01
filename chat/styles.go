@@ -14,4 +14,7 @@ var (
 	CodeBlockStyle = color.New(color.FgGreen)
 	YellowStyle    = color.New(color.FgYellow)
 	UnderlineStyle = color.New(color.Underline)
+	// DiffAddStyle / DiffDelStyle color the showcase diff's ±rows.
+	DiffAddStyle = color.New(color.FgGreen)
+	DiffDelStyle = color.New(color.FgRed)
 )

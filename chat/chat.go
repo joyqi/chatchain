@@ -290,12 +290,21 @@ func needsApproval(dispatch tool.Dispatcher, name string) bool {
 	return ok && ar.RequiresApproval(name)
 }
 
-// isInteractive reports whether the named tool runs its own user surface
-// (the tool.InteractionReporter capability): its calls route to the
-// attention channels instead of the activity panel.
+// presentationOf reports the named tool's display class (the optional
+// tool.PresentationReporter capability; dispatchers without it present
+// everything grouped).
+func presentationOf(dispatch tool.Dispatcher, name string) tool.Presentation {
+	pr, ok := dispatch.(tool.PresentationReporter)
+	if !ok {
+		return tool.PresentGroup
+	}
+	return pr.Presentation(name)
+}
+
+// isInteractive reports whether the named tool runs its own user surface:
+// its calls route to the attention channels instead of the activity panel.
 func isInteractive(dispatch tool.Dispatcher, name string) bool {
-	ir, ok := dispatch.(tool.InteractionReporter)
-	return ok && ir.Interactive(name)
+	return presentationOf(dispatch, name) == tool.PresentSurface
 }
 
 // nopWriteCloser adapts a plain writer to the reasoning stream's WriteCloser.

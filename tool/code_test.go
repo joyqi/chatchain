@@ -313,3 +313,62 @@ func TestCodeApproval(t *testing.T) {
 		t.Error("merged approval routing wrong")
 	}
 }
+
+// edit_file and write_file post their unified diff through the artifact side
+// channel — display-only, never part of the model-facing result text.
+func TestMutationsPostDiffArtifact(t *testing.T) {
+	root, tools := newCodeProject(t, "")
+	writeProjectFile(t, root, "a.txt", "one\ntwo\nthree\n")
+
+	call(t, tools["read_file"], map[string]any{"path": "a.txt"}) // edit needs a fresh read
+	ctx, collect := WithArtifact(context.Background())
+	out, isErr, err := tools["edit_file"].Call(ctx, map[string]any{
+		"path": "a.txt", "old_string": "two", "new_string": "2",
+	})
+	if err != nil || isErr {
+		t.Fatalf("edit failed: %q %v", out, err)
+	}
+	art := collect()
+	if art == nil || art.Kind != "diff" || art.Title != "a.txt" {
+		t.Fatalf("edit_file must post a diff artifact, got %+v", art)
+	}
+	joined := strings.Join(art.Lines, "\n")
+	if !strings.Contains(joined, "-two") || !strings.Contains(joined, "+2") {
+		t.Fatalf("diff content wrong:\n%s", joined)
+	}
+	if strings.Contains(joined, "--- ") || strings.Contains(joined, "+++ ") {
+		t.Fatalf("file header rows must be stripped:\n%s", joined)
+	}
+	if strings.Contains(out, "@@") {
+		t.Fatalf("the diff must not leak into the model-facing result:\n%s", out)
+	}
+
+	// Creating a new file diffs against empty content: all additions.
+	ctx, collect = WithArtifact(context.Background())
+	out, isErr, err = tools["write_file"].Call(ctx, map[string]any{
+		"path": "new.txt", "content": "alpha\nbeta\n",
+	})
+	if err != nil || isErr {
+		t.Fatalf("write failed: %q %v", out, err)
+	}
+	if art = collect(); art == nil {
+		t.Fatal("write_file must post a diff artifact for a new file")
+	}
+	joined = strings.Join(art.Lines, "\n")
+	if !strings.Contains(joined, "+alpha") || !strings.Contains(joined, "+beta") {
+		t.Fatalf("creation diff must be all additions:\n%s", joined)
+	}
+
+	// Overwriting: the diff runs old → new.
+	call(t, tools["read_file"], map[string]any{"path": "new.txt"})
+	ctx, collect = WithArtifact(context.Background())
+	if out, isErr, err = tools["write_file"].Call(ctx, map[string]any{
+		"path": "new.txt", "content": "alpha\ngamma\n",
+	}); err != nil || isErr {
+		t.Fatalf("overwrite failed: %q %v", out, err)
+	}
+	joined = strings.Join(collect().Lines, "\n")
+	if !strings.Contains(joined, "-beta") || !strings.Contains(joined, "+gamma") {
+		t.Fatalf("overwrite diff wrong:\n%s", joined)
+	}
+}

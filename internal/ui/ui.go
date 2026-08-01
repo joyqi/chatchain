@@ -114,6 +114,9 @@ func (u *UI) CallLine(line string) { u.region.previewLine(line) }
 func (u *UI) PauseClock()  { u.region.pauseClock() }
 func (u *UI) ResumeClock() { u.region.resumeClock() }
 
+// Height reports the terminal height in rows (0 before the first resize).
+func (u *UI) Height() int { return int(u.height.Load()) }
+
 // ClosePreview deferred-closes whatever preview is open: the next committed
 // lines morph it away in place.
 func (u *UI) ClosePreview() { u.region.closePreview() }

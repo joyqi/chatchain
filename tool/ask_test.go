@@ -37,10 +37,10 @@ func TestAskSetAbsentWithoutInteractor(t *testing.T) {
 	}
 }
 
-// The ask tools report the interactive capability, and it routes through both
-// dispatcher layers (Registry and Merge) by name — a non-interactive tool and
-// an unknown name stay false.
-func TestInteractiveCapability(t *testing.T) {
+// The presentation capability routes through both dispatcher layers
+// (Registry and Merge) by name: ask tools present on their own surface, file
+// mutations expand, everything else — and unknown names — groups.
+func TestPresentationCapability(t *testing.T) {
 	it := &fakeInteractor{}
 	reg := &Registry{index: make(map[string]Tool)}
 	tools, _ := newAskSet(Env{Interact: it}, yaml.Node{})
@@ -50,26 +50,50 @@ func TestInteractiveCapability(t *testing.T) {
 		t.Fatal(err)
 	}
 	reg.add(shell)
+	code, err := newCodeSet(Env{ProjectRoot: t.TempDir()}, yaml.Node{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.add(code)
 
-	for _, name := range []string{"choose", "confirm"} {
-		if !reg.Interactive(name) {
-			t.Errorf("Registry.Interactive(%s) = false, want true", name)
+	for name, want := range map[string]Presentation{
+		"choose":     PresentSurface,
+		"confirm":    PresentSurface,
+		"edit_file":  PresentExpanded,
+		"write_file": PresentExpanded,
+		"bash":       PresentGroup,
+		"read_file":  PresentGroup,
+		"nope":       PresentGroup,
+	} {
+		if got := reg.Presentation(name); got != want {
+			t.Errorf("Registry.Presentation(%s) = %d, want %d", name, got, want)
 		}
-	}
-	if reg.Interactive("bash") {
-		t.Error("bash must not be interactive")
-	}
-	if reg.Interactive("nope") {
-		t.Error("unknown tool must not be interactive")
 	}
 
 	merged := Merge(reg)
-	ir, ok := merged.(InteractionReporter)
+	pr, ok := merged.(PresentationReporter)
 	if !ok {
-		t.Fatal("merged dispatcher must expose InteractionReporter")
+		t.Fatal("merged dispatcher must expose PresentationReporter")
 	}
-	if !ir.Interactive("choose") || ir.Interactive("bash") {
-		t.Error("merged routing wrong: want choose=true, bash=false")
+	if pr.Presentation("choose") != PresentSurface || pr.Presentation("bash") != PresentGroup {
+		t.Error("merged routing wrong")
+	}
+}
+
+// The artifact side channel: a call posts its display payload into the
+// injected slot (last wins); without an injection PostArtifact is a no-op.
+func TestArtifactSideChannel(t *testing.T) {
+	ctx, collect := WithArtifact(context.Background())
+	PostArtifact(ctx, Artifact{Kind: "diff", Title: "a.go", Lines: []string{"+x"}})
+	PostArtifact(ctx, Artifact{Kind: "diff", Title: "b.go", Lines: []string{"+y"}})
+	art := collect()
+	if art == nil || art.Title != "b.go" || len(art.Lines) != 1 {
+		t.Fatalf("collected %+v, want the last posted artifact", art)
+	}
+
+	PostArtifact(context.Background(), Artifact{Kind: "diff"}) // no slot: must not panic
+	if _, collect := WithArtifact(context.Background()); collect() != nil {
+		t.Fatal("empty slot must collect nil")
 	}
 }
 

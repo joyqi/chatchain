@@ -2,12 +2,14 @@ package chat
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
 	"time"
 
 	"chatchain/provider"
+	"chatchain/tool"
 )
 
 // recSurface records the transcript's surface calls in order.
@@ -24,6 +26,7 @@ func (s *recSurface) ClosePreview()            { s.events = append(s.events, "se
 func (s *recSurface) PauseClock()              { s.events = append(s.events, "pause") }
 func (s *recSurface) ResumeClock()             { s.events = append(s.events, "resume") }
 func (s *recSurface) Width() int               { return 80 }
+func (s *recSurface) Height() int              { return 30 }
 
 func (s *recSurface) joined() string { return strings.Join(s.events, "\n") }
 
@@ -696,5 +699,92 @@ func TestImageWidgetSettlesActivityFirst(t *testing.T) {
 	}
 	if got := s.joined(); got != strings.Join(want, "\n") {
 		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
+// An expanded call (PresentExpanded) is a group boundary: the running group
+// settles first, the showcase takes its own widget, and the result expands
+// into the colored diff block under a ±count header. Whatever follows opens
+// a fresh group.
+func TestShowcaseSettlesGroupAndExpandsDiff(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+
+	tr.user("edit it")
+	tr.openCall("[read_file path:a]")
+	tr.finishCall("[read_file path:a]", "ok", false, time.Second)
+	art := &tool.Artifact{Kind: "diff", Title: "a",
+		Lines: []string{"@@ -1,3 +1,3 @@", " one", "-two", "+2", " three"}}
+	tr.openShowcase("[edit_file path:a]")
+	tr.settleShowcase("[edit_file path:a]", art, "1 replacement(s) in a", false)
+	tr.openCall("[read_file path:b]")
+
+	classic := append([]string{"[read_file path:a]"}, classicResult("ok", false)...)
+	diffBlock := append([]string{"[edit_file path:a]" + dim("  +1 -1")},
+		renderDiff(art.Lines, 30, 80)...)
+	want := []string{
+		"user:edit it",
+		"print:", "call:[read_file path:a]",
+		"line:" + eventLine("[read_file path:a]", "ok", false),
+		"call:" + working,
+		"detail:1 tool",
+		"settle", "print:" + strings.Join(classic, "|"), // the group settles first
+		"print:", "call:[edit_file path:a]", // showcase widget: own block
+		"settle", "print:" + strings.Join(diffBlock, "|"),
+		"print:", "call:[read_file path:b]", // a fresh group follows
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
+// The diff budget follows the live screen height (floored at diffMinRows):
+// rows beyond it collapse into the "… +N more lines" tail.
+func TestShowcaseDiffBudget(t *testing.T) {
+	lines := make([]string, 40)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("+row-%d", i)
+	}
+	s := &recSurface{} // Height() = 30 → budget 30: 29 rows + tail
+	tr := newTranscript(s, nil)
+	tr.openShowcase("[write_file path:big]")
+	tr.settleShowcase("[write_file path:big]", &tool.Artifact{Kind: "diff", Lines: lines}, "ok", false)
+
+	out := s.joined()
+	if !strings.Contains(out, "… +11 more lines") {
+		t.Fatalf("missing truncation tail:\n%s", out)
+	}
+	if !strings.Contains(out, "+row-28") || strings.Contains(out, "+row-29") {
+		t.Fatalf("budget must cut after row 28:\n%s", out)
+	}
+}
+
+// A showcase without an artifact (declines, errors, tools with nothing to
+// show) falls back to the classic header + result form.
+func TestShowcaseFallsBackClassic(t *testing.T) {
+	s := &recSurface{}
+	tr := newTranscript(s, nil)
+	tr.openShowcase("[edit_file path:x]")
+	tr.settleShowcase("[edit_file path:x]", nil, "The user declined this call.", true)
+
+	classic := append([]string{"[edit_file path:x]"}, classicResult("The user declined this call.", true)...)
+	want := []string{
+		"call:[edit_file path:x]",
+		"settle", "print:" + strings.Join(classic, "|"),
+	}
+	if got := s.joined(); got != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
+// Overwide diff rows TRUNCATE to the screen width — wrapping would wreck the
+// column alignment diffs live by.
+func TestRenderDiffTruncatesWideRows(t *testing.T) {
+	rows := renderDiff([]string{"+" + strings.Repeat("x", 200)}, 24, 40)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if w := displayWidth(stripANSI(rows[0])); w > 39 {
+		t.Fatalf("row width = %d, must stay under the screen width", w)
 	}
 }

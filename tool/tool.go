@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 
 	"chatchain/provider"
 
@@ -53,20 +54,75 @@ type ApprovalReporter interface {
 	RequiresApproval(name string) bool
 }
 
-// interactiveTool is an optional Tool interface: a tool whose call puts its
-// own surface in front of the user (the ask set). Such calls have no
-// execution to narrate — the chat layer keeps them out of the activity panel
-// and routes the waiting state to the attention channels instead.
-type interactiveTool interface {
-	Interactive() bool
+// Presentation classifies how a tool call's lifecycle is displayed.
+type Presentation uint8
+
+const (
+	// PresentGroup folds the call into the activity panel — the default for
+	// plumbing calls (reads, searches, shell commands, MCP tools).
+	PresentGroup Presentation = iota
+	// PresentSurface marks a call that puts its own surface in front of the
+	// user (the ask set): nothing to narrate — the chat layer routes the
+	// waiting state to the attention channels instead.
+	PresentSurface
+	// PresentExpanded marks a call whose outcome deserves a standalone,
+	// expanded block — file mutations showing their diff. Such calls close
+	// the current activity group like a content boundary does.
+	PresentExpanded
+)
+
+// presenter is an optional Tool interface declaring a non-default
+// presentation for the tool's calls.
+type presenter interface {
+	Presentation() Presentation
 }
 
-// InteractionReporter is an optional Dispatcher capability mirroring
-// ApprovalReporter: it reports whether a named tool's calls are interactive
-// (they open their own user-facing surface). Parts without the capability —
-// e.g. the MCP manager — are never interactive.
-type InteractionReporter interface {
-	Interactive(name string) bool
+// PresentationReporter is an optional Dispatcher capability mirroring
+// ApprovalReporter: it reports the named tool's presentation class. Parts
+// without the capability — e.g. the MCP manager — present as PresentGroup.
+type PresentationReporter interface {
+	Presentation(name string) Presentation
+}
+
+// Artifact is a call's display payload, posted through the context side
+// channel: content meant for the USER's eyes only (a unified diff), kept out
+// of the model-facing result text so it never costs tokens. Lines are
+// unstyled; the chat layer renders them by Kind.
+type Artifact struct {
+	Kind  string   // "diff"
+	Title string   // e.g. the file's display path
+	Lines []string // hunk lines for "diff" (@@ headers, +/-/context rows)
+}
+
+// artifactKey carries the per-call artifact slot in the context.
+type artifactKey struct{}
+
+type artifactSlot struct {
+	mu  sync.Mutex
+	art *Artifact
+}
+
+// WithArtifact injects an artifact slot into ctx ahead of a CallTool and
+// returns the collector; the last artifact the call posts wins.
+func WithArtifact(ctx context.Context) (context.Context, func() *Artifact) {
+	slot := &artifactSlot{}
+	return context.WithValue(ctx, artifactKey{}, slot), func() *Artifact {
+		slot.mu.Lock()
+		defer slot.mu.Unlock()
+		return slot.art
+	}
+}
+
+// PostArtifact records the call's display payload; a no-op when the host did
+// not inject a slot (non-interactive runs, tests).
+func PostArtifact(ctx context.Context, art Artifact) {
+	slot, ok := ctx.Value(artifactKey{}).(*artifactSlot)
+	if !ok {
+		return
+	}
+	slot.mu.Lock()
+	slot.art = &art
+	slot.mu.Unlock()
 }
 
 // Env carries host context the toolsets need at construction time.
@@ -265,18 +321,20 @@ func (r *Registry) RequiresApproval(name string) bool {
 	return ok && a.RequiresApproval()
 }
 
-// Interactive reports whether the named built-in tool runs its own user
-// interaction (via the optional interactiveTool interface).
-func (r *Registry) Interactive(name string) bool {
+// Presentation reports the named built-in tool's presentation class (via the
+// optional presenter interface; default PresentGroup).
+func (r *Registry) Presentation(name string) Presentation {
 	if r == nil {
-		return false
+		return PresentGroup
 	}
 	t, ok := r.index[name]
 	if !ok {
-		return false
+		return PresentGroup
 	}
-	i, ok := t.(interactiveTool)
-	return ok && i.Interactive()
+	if p, ok := t.(presenter); ok {
+		return p.Presentation()
+	}
+	return PresentGroup
 }
 
 // CallTool dispatches a call to the matching built-in tool.
@@ -356,16 +414,18 @@ func (m *multiDispatcher) RequiresApproval(name string) bool {
 	return false
 }
 
-// Interactive routes the question to the part owning the tool name; parts
-// without the InteractionReporter capability are never interactive.
-func (m *multiDispatcher) Interactive(name string) bool {
+// Presentation routes the question to the part owning the tool name; parts
+// without the PresentationReporter capability present as PresentGroup.
+func (m *multiDispatcher) Presentation(name string) Presentation {
 	for _, p := range m.parts {
 		for _, def := range p.Tools() {
 			if def.Name == name {
-				ir, ok := p.(InteractionReporter)
-				return ok && ir.Interactive(name)
+				if pr, ok := p.(PresentationReporter); ok {
+					return pr.Presentation(name)
+				}
+				return PresentGroup
 			}
 		}
 	}
-	return false
+	return PresentGroup
 }

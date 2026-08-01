@@ -192,12 +192,23 @@ while the user is consulted — approval prompts, ask surfaces. Counters are
 event counts, never durations (a real segment can measure 0ns on Apple
 Silicon's ~41ns clock tick).
 
-**Interactive tools** (the ask set, via tool.InteractionReporter) never
-enter the panel: their tabbed surface IS the display. The host presenter
-carries StateNeedsInput (plus an unfocused notification), composing deltas
-for them never raise the widget (the raise now waits for a NAMED,
-non-interactive delta), and the outcome lands as its own "?" record block —
-the user's answers, replayed the same way on resume.
+**Presentation classes** (tool.PresentationReporter, mirroring
+ApprovalReporter) route each call's display. PresentSurface (the ask set)
+never enters the panel: the tabbed surface IS the display, the host
+presenter carries StateNeedsInput (plus an unfocused notification),
+composing deltas never raise the widget (the raise waits for a NAMED,
+groupable delta), and the outcome lands as its own "?" record block — the
+user's answers, replayed the same way on resume. PresentExpanded (file
+mutations: edit_file/write_file) is a group boundary like content: the
+running group settles, the call takes a standalone widget, and the result
+expands into a colored unified diff (± rows, cyan @@ hunks) under a
+"header · +A -R" line. The diff arrives through the tool.Artifact context
+side channel — display-only, never in the model-facing result text (a full
+diff there costs tokens) — generated with go-udiff; the row budget follows
+the live screen height floored at 24, overwide rows truncate (wrapping
+would wreck diff alignment), and artifact-less settles (declines, errors)
+fall back to the classic form. Diffs are live-only: messages.jsonl carries
+only the result text, so resume echoes fold expanded calls into the count.
 
 The status line keeps only the pre-output phases (Sending request with
 upload progress, Waiting for the model). `ui.UI` exposes the widget verbs

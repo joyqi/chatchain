@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
+
+	"chatchain/tool"
 )
 
 // The transcript is the session's single write surface for the chat area:
@@ -60,6 +62,7 @@ type transcriptSurface interface {
 	PauseClock()
 	ResumeClock()
 	Width() int
+	Height() int
 }
 
 // activityGroup is the aggregation state for one activity group. The group
@@ -411,6 +414,100 @@ func (t *transcript) finishCall(header, result string, isError bool, dur time.Du
 	t.u.CallLine(eventLine(header, result, isError))
 	t.ensureWidgetLocked(dim("Working…"))
 	t.callDetailLocked()
+}
+
+// openShowcase raises an expanded call's standalone widget (PresentExpanded:
+// file mutations showing their diff). An expanded call is a group boundary
+// like content — the running group settles first, and whatever follows opens
+// a fresh group.
+func (t *transcript) openShowcase(header string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pendingCall = ""
+	t.settleGroupLocked()
+	t.ensureWidgetLocked(header)
+}
+
+// settleShowcase morphs the showcase widget into its expanded block: the
+// header (with ±row counts) over the rendered diff — or the classic result
+// form when the call posted no artifact (errors, declines, tools that had
+// nothing to show).
+func (t *transcript) settleShowcase(header string, art *tool.Artifact, result string, isError bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var lines []string
+	if art != nil && art.Kind == "diff" && len(art.Lines) > 0 && !isError {
+		adds, dels := 0, 0
+		for _, ln := range art.Lines {
+			switch {
+			case strings.HasPrefix(ln, "+"):
+				adds++
+			case strings.HasPrefix(ln, "-"):
+				dels++
+			}
+		}
+		lines = append([]string{header + dim(fmt.Sprintf("  +%d -%d", adds, dels))},
+			renderDiff(art.Lines, t.diffBudgetLocked(), t.u.Width())...)
+	} else {
+		lines = []string{header}
+		lc := &lineCommitter{commit: func(ls ...string) { lines = append(lines, ls...) }}
+		printToolResult(lc, result, isError)
+		lc.flush()
+	}
+	t.grp = activityGroup{}
+	if t.last != blockActivity {
+		t.beginLocked(blockActivity)
+	}
+	t.u.ClosePreview()
+	t.pushLocked(lines)
+}
+
+// diffBudgetLocked is the dynamic diff row budget: the live screen height,
+// floored at diffMinRows — a taller terminal earns a fuller diff.
+func (t *transcript) diffBudgetLocked() int {
+	if h := t.u.Height(); h > diffMinRows {
+		return h
+	}
+	return diffMinRows
+}
+
+// diffMinRows floors the showcase diff budget on small terminals.
+const diffMinRows = 24
+
+// renderDiff styles unified-diff hunk lines for the scrollback: additions
+// green, deletions red, hunk headers cyan, context dim; rows beyond the
+// budget collapse into a "… +N more lines" tail, and overwide rows TRUNCATE
+// (wrapping would wreck the column alignment diffs live by). Width ≤ 3
+// (startup, tests) skips truncation.
+func renderDiff(lines []string, budget, width int) []string {
+	shown, extra := lines, 0
+	if len(lines) > budget {
+		shown = lines[:budget-1]
+		extra = len(lines) - len(shown)
+	}
+	out := make([]string, 0, len(shown)+1)
+	for _, ln := range shown {
+		var styled string
+		switch {
+		case strings.HasPrefix(ln, "@@"):
+			styled = CodeStyle.Sprint(ln)
+		case strings.HasPrefix(ln, "+"):
+			styled = DiffAddStyle.Sprint(ln)
+		case strings.HasPrefix(ln, "-"):
+			styled = DiffDelStyle.Sprint(ln)
+		default:
+			styled = DimStyle.Sprint(ln) // context rows, "\ No newline…"
+		}
+		row := "  " + styled
+		if width > 3 && ansi.StringWidth(row) > width-1 {
+			row = ansi.Truncate(row, width-2, "…")
+		}
+		out = append(out, row)
+	}
+	if extra > 0 {
+		out = append(out, dim(fmt.Sprintf("  … +%d more lines", extra)))
+	}
+	return out
 }
 
 // settleGroupLocked folds the group into its settled scrollback form and

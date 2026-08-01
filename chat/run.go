@@ -1305,11 +1305,12 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 
 		for _, tc := range toolCalls {
 			header := CodeStyle.Sprint(toolCallHeader(tc))
+			mode := presentationOf(dispatch, tc.Name)
 
 			// Interactive tools (the ask set) bring their own surface — the
 			// activity panel stays out of the way, the attention channels
 			// carry the waiting state, and the Q&A lands as its own record.
-			if isInteractive(dispatch, tc.Name) {
+			if mode == tool.PresentSurface {
 				pres.SetState(host.StateNeedsInput)
 				pres.Notify(host.Event{Kind: host.KindNeedsInput,
 					Text: fmt.Sprintf("%s needs your input", displayToolName(tc.Name))})
@@ -1345,8 +1346,15 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 			// ESC" row, shared by the whole activity group. Composing already
 			// raised it (the header expands in place, the clock keeps
 			// running); atomic backends raise it here. It spins through
-			// approval and execution; finishCall records the event.
-			tr.openCall(header)
+			// approval and execution; finishCall records the event. Expanded
+			// calls (file mutations) instead take a STANDALONE widget — a
+			// group boundary — and settle into their diff block.
+			expanded := mode == tool.PresentExpanded
+			if expanded {
+				tr.openShowcase(header)
+			} else {
+				tr.openCall(header)
+			}
 
 			// Approval gate: state-changing tools (tool.ApprovalReporter) run
 			// only with the user's consent — once, or for the whole session.
@@ -1370,7 +1378,11 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 				}
 				if choice.Cancelled || choice.Index == 2 {
 					const declined = "The user declined this call."
-					tr.finishCall(header, declined, true, 0)
+					if expanded {
+						tr.settleShowcase(header, nil, declined, true)
+					} else {
+						tr.finishCall(header, declined, true, 0)
+					}
 					*history = append(*history, provider.Message{
 						Role:         "tool",
 						Content:      declined,
@@ -1386,6 +1398,13 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 			}
 
 			toolCtx, cancel := context.WithCancel(ctx)
+			// Expanded calls report their display payload (the diff) through
+			// the artifact side channel — user-facing only, never billed to
+			// the model.
+			artifact := func() *tool.Artifact { return nil }
+			if expanded {
+				toolCtx, artifact = tool.WithArtifact(toolCtx)
+			}
 			pop := u.PushCancelScope(cancel)
 			started := time.Now()
 			resultText, isError, callErr := dispatch.CallTool(toolCtx, tc.Name, tc.Arguments)
@@ -1399,8 +1418,13 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 
 			// The group records the completed call (body row, counters); its
 			// summary — or the classic block, for a lone call — lands when a
-			// content boundary settles the group.
-			tr.finishCall(header, resultText, isError, dur)
+			// content boundary settles the group. A showcase settles NOW,
+			// expanding into its diff.
+			if expanded {
+				tr.settleShowcase(header, artifact(), resultText, isError)
+			} else {
+				tr.finishCall(header, resultText, isError, dur)
+			}
 
 			result := provider.Message{
 				Role:         "tool",

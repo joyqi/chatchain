@@ -15,6 +15,7 @@ import (
 
 	"chatchain/provider"
 
+	"github.com/aymanbagabas/go-udiff"
 	"github.com/bmatcuk/doublestar/v4"
 	ignore "github.com/sabhiram/go-gitignore"
 	"gopkg.in/yaml.v3"
@@ -611,6 +612,26 @@ type codeEditFile struct{ cs *codeSet }
 
 func (t *codeEditFile) RequiresApproval() bool { return !t.cs.autoWrite }
 
+// Presentation: a mutation's outcome deserves the expanded standalone block —
+// the posted diff is what the user reviews.
+func (t *codeEditFile) Presentation() Presentation { return PresentExpanded }
+
+// postDiff computes the unified diff between old and new content and posts
+// it as the call's display artifact. Hunks only: the ---/+++ file header
+// would duplicate the title, and the display is for the user's eyes — the
+// model-facing result text stays untouched (a full diff there costs tokens).
+func postDiff(ctx context.Context, display, old, new string) {
+	unified := udiff.Unified(display, display, old, new)
+	lines := splitLines(unified)
+	for len(lines) > 0 && (strings.HasPrefix(lines[0], "--- ") || strings.HasPrefix(lines[0], "+++ ")) {
+		lines = lines[1:]
+	}
+	if len(lines) == 0 {
+		return
+	}
+	PostArtifact(ctx, Artifact{Kind: "diff", Title: display, Lines: lines})
+}
+
 func (t *codeEditFile) Def() provider.ToolDef {
 	return provider.ToolDef{
 		Name: "edit_file",
@@ -643,7 +664,7 @@ func (t *codeEditFile) Def() provider.ToolDef {
 	}
 }
 
-func (t *codeEditFile) Call(_ context.Context, args map[string]any) (string, bool, error) {
+func (t *codeEditFile) Call(ctx context.Context, args map[string]any) (string, bool, error) {
 	arg, _ := args["path"].(string)
 	abs, errText := t.cs.resolve(arg, "path")
 	if errText != "" {
@@ -693,6 +714,7 @@ func (t *codeEditFile) Call(_ context.Context, args map[string]any) (string, boo
 		return fmt.Sprintf("cannot write %s: %v", display, err), true, nil
 	}
 	t.cs.noteRead(abs)
+	postDiff(ctx, display, content, updated)
 
 	done := count
 	if !replaceAll {
@@ -728,6 +750,9 @@ type codeWriteFile struct{ cs *codeSet }
 
 func (t *codeWriteFile) RequiresApproval() bool { return !t.cs.autoWrite }
 
+// Presentation: see codeEditFile.Presentation.
+func (t *codeWriteFile) Presentation() Presentation { return PresentExpanded }
+
 func (t *codeWriteFile) Def() provider.ToolDef {
 	return provider.ToolDef{
 		Name: "write_file",
@@ -751,7 +776,7 @@ func (t *codeWriteFile) Def() provider.ToolDef {
 	}
 }
 
-func (t *codeWriteFile) Call(_ context.Context, args map[string]any) (string, bool, error) {
+func (t *codeWriteFile) Call(ctx context.Context, args map[string]any) (string, bool, error) {
 	arg, _ := args["path"].(string)
 	abs, errText := t.cs.resolve(arg, "path")
 	if errText != "" {
@@ -765,6 +790,8 @@ func (t *codeWriteFile) Call(_ context.Context, args map[string]any) (string, bo
 
 	perm := os.FileMode(0o644)
 	created := true
+	old := ""
+	oldOK := true // false: the previous content is unknowable, skip the diff
 	if fi, err := os.Stat(abs); err == nil {
 		if fi.IsDir() {
 			return fmt.Sprintf("%s is a directory", display), true, nil
@@ -777,6 +804,17 @@ func (t *codeWriteFile) Call(_ context.Context, args map[string]any) (string, bo
 		}
 		perm = fi.Mode().Perm()
 		created = false
+		// The previous content only feeds the display diff; a file too large
+		// to read whole would produce a lying diff, so it produces none.
+		if fi.Size() <= codeMaxFileBytes {
+			if data, _, errText := readFileLimited(abs, codeMaxFileBytes); errText == "" {
+				old = string(data)
+			} else {
+				oldOK = false
+			}
+		} else {
+			oldOK = false
+		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
@@ -786,6 +824,9 @@ func (t *codeWriteFile) Call(_ context.Context, args map[string]any) (string, bo
 		return fmt.Sprintf("cannot write %s: %v", display, err), true, nil
 	}
 	t.cs.noteRead(abs)
+	if oldOK {
+		postDiff(ctx, display, old, content)
+	}
 
 	verb := "created"
 	if !created {
