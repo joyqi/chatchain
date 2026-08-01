@@ -1385,3 +1385,37 @@ func TestLinkHyperlinked(t *testing.T) {
 		t.Fatalf("visible text changed: %q", xansi.Strip(got))
 	}
 }
+
+// TestTableNeverExactTerminalWidth: a table squeezed by the terminal must
+// render at most width-1 columns wide. An exact-width row sits on the
+// terminal's deferred-wrap boundary — downstream, the ui's overflow
+// sanitizer trims one column off exact-multiple rows, which used to eat the
+// table's right border.
+func TestTableNeverExactTerminalWidth(t *testing.T) {
+	color.NoColor = false
+	long := strings.Repeat("wide content ", 20)
+	for _, tw := range []int{40, 41, 80} {
+		var out strings.Builder
+		m := NewWriterTo(&out, tw)
+		m.Write([]byte("| Col |\n|-----|\n| " + long + " |\n"))
+		m.Flush()
+		maxW, right := 0, false
+		for _, ln := range strings.Split(strings.TrimRight(visible(out.String()), "\n"), "\n") {
+			if w := displayWidth(ln); w > maxW {
+				maxW = w
+			}
+			if strings.HasSuffix(strings.TrimRight(ln, " "), "│") ||
+				strings.HasSuffix(strings.TrimRight(ln, " "), "┐") ||
+				strings.HasSuffix(strings.TrimRight(ln, " "), "┘") ||
+				strings.HasSuffix(strings.TrimRight(ln, " "), "┤") {
+				right = true
+			}
+		}
+		if maxW >= tw {
+			t.Errorf("tw=%d: table row reaches %d columns — the exact-width boundary", tw, maxW)
+		}
+		if !right {
+			t.Errorf("tw=%d: no right border found", tw)
+		}
+	}
+}

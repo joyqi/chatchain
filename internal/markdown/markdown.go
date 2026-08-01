@@ -1551,7 +1551,11 @@ func (m *Writer) flushTable() error {
 	}
 	tw := m.termWidth()
 	overhead := 1 + maxCols*3 // leading border + " cell " + border per column
-	available := tw - overhead
+	// Target width-1, never the exact terminal width: an exact-width row
+	// sits on the terminal's deferred-wrap boundary, and the ui's overflow
+	// sanitizer trims one column off exact-multiple rows — which ate the
+	// table's right border. Same width-1 convention as the ui's own wrapping.
+	available := tw - 1 - overhead
 	if available < maxCols*3 {
 		available = maxCols * 3
 	}
