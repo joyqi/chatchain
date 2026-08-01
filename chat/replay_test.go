@@ -274,3 +274,25 @@ func TestEchoRoundsAskRecord(t *testing.T) {
 		t.Errorf("the ask result must not count as a tool:\n%s", out)
 	}
 }
+
+// The replayed "?" record uses the live block's exact renderer: an errored
+// interactive result keeps its error emphasis and an empty one falls back to
+// "(no answer)" instead of a blank line.
+func TestEchoRoundsAskRecordParity(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: "user", Content: "pick"},
+		{Role: "assistant", ToolCalls: []provider.ToolCall{{Name: "choose"}, {Name: "confirm"}}},
+		{Role: "tool", ToolCallName: "choose", Content: "boom", IsError: true},
+		{Role: "tool", ToolCallName: "confirm", Content: "  \n"},
+	}
+	var buf bytes.Buffer
+	echoRounds(&buf, msgs, "", func(string) bool { return true })
+	out := buf.String()
+
+	if want := askRecordLines("boom", true)[0]; !strings.Contains(out, want) {
+		t.Errorf("errored ask must replay with error styling (%q), got:\n%s", want, out)
+	}
+	if !strings.Contains(out, "? (no answer)") {
+		t.Errorf("empty ask must replay as \"(no answer)\", got:\n%s", out)
+	}
+}

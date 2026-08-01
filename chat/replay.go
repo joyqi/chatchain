@@ -145,14 +145,11 @@ func echoRounds(w io.Writer, msgs []provider.Message, imgDir string, interactive
 			fmt.Fprintln(w)
 		case "tool":
 			if interactive != nil && interactive(msg.ToolCallName) {
-				// The user's own answers replay as the "?" record block.
+				// The user's own answers replay as the "?" record block, in
+				// the live block's exact styling (shared renderer).
 				flushTools()
-				for i, ln := range strings.Split(strings.TrimRight(msg.Content, "\n"), "\n") {
-					prefix := "  "
-					if i == 0 {
-						prefix = "? "
-					}
-					DimStyle.Fprintf(w, "%s%s\n", prefix, ln)
+				for _, ln := range askRecordLines(msg.Content, msg.IsError) {
+					fmt.Fprintln(w, ln)
 				}
 				fmt.Fprintln(w)
 				continue

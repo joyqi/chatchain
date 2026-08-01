@@ -595,6 +595,13 @@ func (t *transcript) askRecord(result string, isError bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.beginLocked(blockAsk)
+	t.pushLocked(askRecordLines(result, isError))
+}
+
+// askRecordLines renders an interactive tool's outcome as the "?" record
+// block's styled lines — shared between the live askRecord and the resume
+// replay so the two never drift (error emphasis, the "(no answer)" stand-in).
+func askRecordLines(result string, isError bool) []string {
 	style := DimStyle
 	if isError {
 		style = ErrorStyle
@@ -611,7 +618,7 @@ func (t *transcript) askRecord(result string, isError bool) {
 		}
 		lines = append(lines, style.Sprint(prefix+ln))
 	}
-	t.pushLocked(lines)
+	return lines
 }
 
 // pauseForInput marks the turn as waiting on the user (an approval prompt, an
