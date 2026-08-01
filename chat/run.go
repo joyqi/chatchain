@@ -112,7 +112,7 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 	if len(importedHistory) > 0 {
 		if msgs := lastRounds(history, resumeEchoRounds); len(msgs) > 0 {
 			fmt.Println()
-			echoRounds(os.Stdout, msgs, sw.imagesPath())
+			echoRounds(os.Stdout, msgs, sw.imagesPath(), func(name string) bool { return isInteractive(dispatch, name) })
 			echoed = true
 		}
 	}
@@ -736,7 +736,7 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 			printDim("Resumed session %s (%d messages)", id, len(history))
 			if msgs := lastRounds(history, resumeEchoRounds); len(msgs) > 0 {
 				var buf strings.Builder
-				echoRounds(&buf, msgs, sw.imagesPath())
+				echoRounds(&buf, msgs, sw.imagesPath(), func(name string) bool { return isInteractive(dispatch, name) })
 				tr.echo(strings.Split(strings.TrimRight(buf.String(), "\n"), "\n"))
 			}
 			pushStatus()

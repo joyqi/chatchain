@@ -78,14 +78,14 @@ func TestEchoRounds(t *testing.T) {
 		{Role: "assistant", Content: "partial reply", Interrupted: true},
 	}
 	var buf bytes.Buffer
-	echoRounds(&buf, msgs, "")
+	echoRounds(&buf, msgs, "", nil)
 	out := buf.String()
 
 	for _, want := range []string{
 		"first question",
 		"📎 a.png",
 		"📎 b.pdf",
-		"⚙ 2 tool call(s)",
+		"◇ ran 2 tools",
 		"final answer",
 		"second question",
 		"partial reply",
@@ -102,7 +102,7 @@ func TestEchoRounds(t *testing.T) {
 		}
 	}
 	// The tool line must precede the round's final reply.
-	if strings.Index(out, "⚙ 2 tool call(s)") > strings.Index(out, "final answer") {
+	if strings.Index(out, "◇ ran 2 tools") > strings.Index(out, "final answer") {
 		t.Errorf("tool call line should precede the round's reply\noutput:\n%s", out)
 	}
 }
@@ -116,8 +116,8 @@ func TestEchoRoundsTrailingToolResults(t *testing.T) {
 		{Role: "tool", Content: "out"},
 	}
 	var buf bytes.Buffer
-	echoRounds(&buf, msgs, "")
-	if !strings.Contains(buf.String(), "⚙ 1 tool call(s)") {
+	echoRounds(&buf, msgs, "", nil)
+	if !strings.Contains(buf.String(), "◇ ran 1 tool") {
 		t.Errorf("expected trailing tool call line, got:\n%s", buf.String())
 	}
 }
@@ -140,7 +140,7 @@ func TestEchoRoundsRendersImages(t *testing.T) {
 		{Role: "user", Content: "draw"},
 		{Role: "assistant", Attachments: []provider.Attachment{
 			{Filename: "image-1.png", MimeType: "image/png", Data: pngBuf.Bytes()}}},
-	}, "")
+	}, "", nil)
 	s := out.String()
 	if !strings.Contains(s, "▀") {
 		t.Fatalf("no half-block rows in echo:\n%q", s)
@@ -153,7 +153,7 @@ func TestEchoRoundsRendersImages(t *testing.T) {
 	echoRounds(&out, []provider.Message{
 		{Role: "assistant", Attachments: []provider.Attachment{
 			{Filename: "broken.png", MimeType: "image/png", Data: []byte{1, 2}}}},
-	}, "")
+	}, "", nil)
 	if s := out.String(); strings.Contains(s, "▀") || !strings.Contains(s, "🖼 broken.png") {
 		t.Fatalf("broken image must fall back to the caption line:\n%q", s)
 	}
@@ -199,7 +199,7 @@ func TestEchoRoundsCanvasDedup(t *testing.T) {
 		{Role: "user", Content: "add a hat", Attachments: []provider.Attachment{img}}, // /edit turn
 		{Role: "assistant", Attachments: []provider.Attachment{
 			{Filename: "gen-2.png", MimeType: "image/png", Data: []byte{2}}}},
-	}, "")
+	}, "", nil)
 	if s := buf.String(); strings.Contains(s, "📎") {
 		t.Fatalf("canvas copy must be suppressed:\n%q", s)
 	}
@@ -210,7 +210,7 @@ func TestEchoRoundsCanvasDedup(t *testing.T) {
 		{Role: "user", Content: "add a hat", Attachments: []provider.Attachment{img}},
 		{Role: "assistant", Attachments: []provider.Attachment{
 			{Filename: "gen-2.png", MimeType: "image/png", Data: []byte{2}}}},
-	}, "")
+	}, "", nil)
 	if s := buf.String(); !strings.Contains(s, "📎 gen-1.png") {
 		t.Fatalf("cut-off canvas must keep its marker:\n%q", s)
 	}
@@ -248,5 +248,29 @@ func TestPrintUserBlockMultiline(t *testing.T) {
 		} else if w != width {
 			t.Fatalf("row %d width = %d, want %d (padding must reach the full block width)", i, w, width)
 		}
+	}
+}
+
+// Interactive tool results (the ask set) replay as their "?" record block —
+// the user's own answers — instead of folding into the tool count.
+func TestEchoRoundsAskRecord(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: "user", Content: "pick for me"},
+		{Role: "assistant", ToolCalls: []provider.ToolCall{{Name: "choose"}, {Name: "bash"}}},
+		{Role: "tool", ToolCallName: "choose", Content: "Auth: JWT\nLib: chi"},
+		{Role: "tool", ToolCallName: "bash", Content: "out"},
+		{Role: "assistant", Content: "done"},
+	}
+	var buf bytes.Buffer
+	echoRounds(&buf, msgs, "", func(name string) bool { return name == "choose" })
+	out := buf.String()
+
+	for _, want := range []string{"? Auth: JWT", "  Lib: chi", "◇ ran 1 tool"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "2 tools") {
+		t.Errorf("the ask result must not count as a tool:\n%s", out)
 	}
 }

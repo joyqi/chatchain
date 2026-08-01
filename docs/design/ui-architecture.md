@@ -157,12 +157,11 @@ layer's lifecycle widget instead — see "The transcript layer" below.
 change, tests green — it is valuable standalone and is the executable proof
 of the seam.
 
-## The transcript layer (2026-07-17)
+## The transcript layer (2026-07-17; activity groups 2026-08-01)
 
 `chat/transcript.go` is the single writer to the chat area — every block
-(user input, thinking, markdown content, tool calls with results, notices,
-errors, resume echoes) declares itself there, and the transcript alone
-spaces them:
+(user input, activity, markdown content, notices, errors, resume echoes)
+declares itself there, and the transcript alone spaces them:
 
 - **one blank separator opens every block**, paid at block OPEN, so the
   staging view of a lifecycle widget is spaced exactly like the settled
@@ -170,18 +169,42 @@ spaces them:
 - **interior blanks defer through a pending latch** and a block's trailing
   blanks are dropped — no block can export trailing blanks for a neighbor to
   lean on (the fragility class behind the resume-echo regression);
-- it owns the lifecycle-widget verbs: tool calls ("⠋ [name …]" over
-  "⎿ elapsed · ESC to cancel", header expanding in place, settled by the
-  header commit) and thinking ("⠋ Thinking" over "⎿ 1.2k tokens · Ns · ESC",
-  tiktoken-metered per delta, folding to "◇ thought for Ns"). Reasoning text
+- it owns the **activity group**: the run of thinking segments and tool
+  calls between two content blocks (or turn boundaries) shares ONE lifecycle
+  widget. The header shows the current activity ("⠋ Thinking", "⠋ [name …]"
+  expanding in place, dim "Working…" between events); completed events
+  scroll through the widget body as compact rows ("◇ thought 4s",
+  "✓ [read_file …] · first result line"); the "⎿" status row carries group
+  counters (3 tools · 1.2k tokens · 24s · ESC to cancel). Reasoning text
   itself never renders.
+
+**Settling.** A content boundary (the content block's first committed line)
+folds the group into one summary line — "◇ thought for 15s · ran 4 tools in
+12s" — and the next activity opens a new group. Degenerate groups keep the
+classic forms: thinking alone = "◇ thought for Ns", a lone untought call =
+the header + "⎿" result block; `/debug on` (verbose) settles after every
+event, which reproduces exactly those classic per-item blocks. Aggregation
+never swallows failures (red "· N failed" on the summary plus one red
+breakout row per failed call) and an interrupted/errored turn still settles
+its partial summary via resetTurn. Timing: the tool figure sums execution
+time only; the live clock pauses (region pausedAt + since compensation)
+while the user is consulted — approval prompts, ask surfaces. Counters are
+event counts, never durations (a real segment can measure 0ns on Apple
+Silicon's ~41ns clock tick).
+
+**Interactive tools** (the ask set, via tool.InteractionReporter) never
+enter the panel: their tabbed surface IS the display. The host presenter
+carries StateNeedsInput (plus an unfocused notification), composing deltas
+for them never raise the widget (the raise now waits for a NAMED,
+non-interactive delta), and the outcome lands as its own "?" record block —
+the user's answers, replayed the same way on resume.
 
 The status line keeps only the pre-output phases (Sending request with
 upload progress, Waiting for the model). `ui.UI` exposes the widget verbs
-(CallPreview/CallDetail/ClosePreview); `StreamSink` shrank to the turn-scope
-handle plus the markdown preview seam (BlockPreview/Done). Direct
-`u.PrintLines` writes from chat code are an architecture violation —
-everything goes through the transcript.
+(CallPreview/CallDetail/CallLine/ClosePreview, PauseClock/ResumeClock);
+`StreamSink` shrank to the turn-scope handle plus the markdown preview seam
+(BlockPreview/Done). Direct `u.PrintLines` writes from chat code are an
+architecture violation — everything goes through the transcript.
 
 Two supporting contracts:
 

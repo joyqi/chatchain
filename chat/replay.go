@@ -49,11 +49,14 @@ func lastRounds(history []provider.Message, n int) []provider.Message {
 // echoRounds replays msgs (as returned by lastRounds) to w, mirroring the live
 // chat's layout: user messages as full-width blocks, assistant replies through
 // the markdown renderer, and a blank line between messages. Tool activity is
-// not replayed verbatim — each round's tool-result messages collapse into one
-// dim "⚙ N tool call(s)" line. Reasoning is never replayed. imgDir is the
-// session's images directory ("" = none): a replayed image whose file still
-// exists there gets the live turn's clickable-path caption.
-func echoRounds(w io.Writer, msgs []provider.Message, imgDir string) {
+// not replayed verbatim — each run of tool-result messages collapses into the
+// live summary's timeless form, a dim "◇ ran N tool(s)" line — except
+// interactive tools (interactive, nil = none), whose results replay as their
+// "?" record blocks: those are the user's own answers. Reasoning is never
+// replayed. imgDir is the session's images directory ("" = none): a replayed
+// image whose file still exists there gets the live turn's clickable-path
+// caption.
+func echoRounds(w io.Writer, msgs []provider.Message, imgDir string, interactive func(name string) bool) {
 	tw := 100
 	if width, _, werr := term.GetSize(int(os.Stdout.Fd())); werr == nil && width > 0 {
 		tw = width
@@ -81,7 +84,7 @@ func echoRounds(w io.Writer, msgs []provider.Message, imgDir string) {
 		if toolResults == 0 {
 			return
 		}
-		DimStyle.Fprintf(w, "⚙ %d tool call(s)\n", toolResults)
+		DimStyle.Fprintf(w, "%s ran %d %s\n", reasoningSymbol, toolResults, pluralTools(toolResults))
 		fmt.Fprintln(w)
 		toolResults = 0
 	}
@@ -141,6 +144,19 @@ func echoRounds(w io.Writer, msgs []provider.Message, imgDir string) {
 			}
 			fmt.Fprintln(w)
 		case "tool":
+			if interactive != nil && interactive(msg.ToolCallName) {
+				// The user's own answers replay as the "?" record block.
+				flushTools()
+				for i, ln := range strings.Split(strings.TrimRight(msg.Content, "\n"), "\n") {
+					prefix := "  "
+					if i == 0 {
+						prefix = "? "
+					}
+					DimStyle.Fprintf(w, "%s%s\n", prefix, ln)
+				}
+				fmt.Fprintln(w)
+				continue
+			}
 			toolResults++
 		}
 	}
