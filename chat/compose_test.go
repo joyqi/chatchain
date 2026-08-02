@@ -898,3 +898,22 @@ func TestUserSettlesOpenGroup(t *testing.T) {
 		t.Fatalf("events:\n%s\n\nwant:\n%s", got, strings.Join(want, "\n"))
 	}
 }
+
+// A diff row whose content the lexer cannot parse (CJK prose in a template
+// literal) must carry ONLY the block's own background — chroma Error tokens
+// are neutralized upstream, never splashing alarm red through the block.
+func TestRenderDiffNoAlienBackgrounds(t *testing.T) {
+	old := color.NoColor
+	color.NoColor = false
+	defer func() { color.NoColor = old }()
+
+	rows := renderDiff("prompt.js", []string{
+		"@@ -1,1 +1,1 @@",
+		"+  重要: 这是发给**开发者**的推荐语（clarity、naturalness）",
+	}, 24, 200)
+	bgAdd, _ := diffBG()
+	stripped := strings.ReplaceAll(rows[0], bgAdd, "")
+	if strings.Contains(stripped, "\x1b[48;") {
+		t.Fatalf("alien background survived in diff row:\n%q", rows[0])
+	}
+}

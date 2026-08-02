@@ -7,9 +7,10 @@ import (
 	"strings"
 
 	"github.com/alecthomas/chroma/v2/lexers"
-	"github.com/alecthomas/chroma/v2/quick"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/fatih/color"
+
+	"chatchain/internal/markdown"
 )
 
 // The showcase diff renderer: unified hunks become an annotated listing —
@@ -113,12 +114,14 @@ func diffLexer(title string) string {
 
 // highlightDiffLine syntax-highlights one code line and re-arms the given
 // background after every chroma reset, so the block color survives token
-// styling. Chroma works line-at-a-time here; constructs spanning lines may
-// shade differently than a whole-file pass — acceptable for a diff.
+// styling. markdown.Highlight neutralizes Error tokens — a lexer choking on
+// out-of-context line fragments must not splash alarm backgrounds through
+// the block. Chroma works line-at-a-time here; constructs spanning lines
+// may shade differently than a whole-file pass — acceptable for a diff.
 func highlightDiffLine(text, lang, bg string) string {
 	if lang != "" {
 		var sb strings.Builder
-		if err := quick.Highlight(&sb, text, lang, "terminal256", diffCodeTheme); err == nil {
+		if err := markdown.Highlight(&sb, text, lang, diffCodeTheme); err == nil {
 			h := strings.TrimRight(sb.String(), "\n")
 			return strings.ReplaceAll(h, "\x1b[0m", "\x1b[0m"+bg)
 		}

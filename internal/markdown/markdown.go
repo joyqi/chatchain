@@ -10,12 +10,16 @@ import (
 	"chatchain/internal/mathtext"
 	"chatchain/internal/textwidth"
 
-	"github.com/alecthomas/chroma/v2/quick"
+	"github.com/alecthomas/chroma/v2"
+	"github.com/alecthomas/chroma/v2/formatters"
+	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/list"
 	"github.com/charmbracelet/lipgloss/table"
 	"github.com/fatih/color"
 	"github.com/muesli/termenv"
+
+	chromastyles "github.com/alecthomas/chroma/v2/styles"
 )
 
 // mdRenderer is the single lipgloss renderer used by the markdown path.
@@ -1444,10 +1448,46 @@ func highlightCode(code, lang string) string {
 		return indentCode(code)
 	}
 	var sb strings.Builder
-	if err := quick.Highlight(&sb, code, lang, "terminal256", codeStyleName()); err != nil {
+	if err := Highlight(&sb, code, lang, codeStyleName()); err != nil {
 		return indentCode(codeFallbackStyle.Sprint(code))
 	}
 	return indentCode(sb.String())
+}
+
+// Highlight syntax-highlights code to ANSI via chroma (terminal256), with
+// one crucial deviation from stock chroma: ERROR tokens render as plain
+// text. Lexers mark anything they cannot parse as Error — CJK punctuation,
+// prose inside template literals, dialect syntax — and most styles paint
+// Error with an alarm BACKGROUND (github: white on deep red, monokai: dark
+// red), which showed up as garish blocks scattered through otherwise normal
+// code. A parse failure deserves no styling at all. This is also what keeps
+// the "chroma emits only foreground colors" invariant true — the diff
+// renderer's background blocks rely on it. Exported for the chat layer's
+// diff highlighting, so both paths share the exact pipeline.
+func Highlight(w io.Writer, code, lang, style string) error {
+	l := lexers.Get(lang)
+	if l == nil {
+		l = lexers.Fallback
+	}
+	it, err := chroma.Coalesce(l).Tokenise(nil, code)
+	if err != nil {
+		return err
+	}
+	tokens := it.Tokens()
+	for i := range tokens {
+		if tokens[i].Type == chroma.Error || tokens[i].Type.Category() == chroma.Error {
+			tokens[i].Type = chroma.Text
+		}
+	}
+	f := formatters.Get("terminal256")
+	if f == nil {
+		f = formatters.Fallback
+	}
+	s := chromastyles.Get(style)
+	if s == nil {
+		s = chromastyles.Fallback
+	}
+	return f.Format(w, s, chroma.Literator(tokens...))
 }
 
 // indentCode prefixes every line of s with codeIndent. ANSI styles in chroma
@@ -1476,8 +1516,9 @@ var codeFallbackStyle = color.New(color.FgGreen)
 
 // codeStyleName returns the chroma style for the current terminal background. A
 // light background gets a light theme so dark-on-light text stays readable;
-// otherwise a dark theme. chroma's terminal256 formatter emits only foreground
-// colors, so no background block is painted either way.
+// otherwise a dark theme. Highlight guarantees the output carries only
+// foreground colors (Error tokens neutralized), so no background block is
+// painted either way.
 //
 // Already-printed code keeps its baked-in colors — only new blocks pick up a
 // background change.

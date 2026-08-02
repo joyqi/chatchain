@@ -1419,3 +1419,25 @@ func TestTableNeverExactTerminalWidth(t *testing.T) {
 		}
 	}
 }
+
+// TestHighlightNeutralizesErrorTokens: lexers mark unparseable runs (CJK
+// punctuation, prose in template literals) as Error, and most chroma styles
+// paint Error with an alarm BACKGROUND (github: white on deep red) — seen
+// live as garish blocks through normal code. Highlight renders Error tokens
+// as plain text: no background sequence may survive, under either theme.
+func TestHighlightNeutralizesErrorTokens(t *testing.T) {
+	line := "重要: 这是一条发给**特定领域开发者**的推荐语（clarity、naturalness）"
+	for _, style := range []string{"github", "monokai"} {
+		var sb strings.Builder
+		if err := Highlight(&sb, line, "JavaScript", style); err != nil {
+			t.Fatalf("%s: %v", style, err)
+		}
+		out := sb.String()
+		if strings.Contains(out, "\x1b[48;") {
+			t.Errorf("%s: background sequence leaked:\n%q", style, out)
+		}
+		if visible(out) != line {
+			t.Errorf("%s: content mangled:\n%q", style, visible(out))
+		}
+	}
+}
