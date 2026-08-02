@@ -90,13 +90,17 @@ func parseHunkHeader(ln string) (oldStart, newStart int, ok bool) {
 	return o, n, true
 }
 
-// diffBG returns the 256-color background sequences for added and deleted
-// rows, matching the detected terminal background.
-func diffBG() (add, del string) {
+// diffShades returns the 256-color sequences for ± rows, matching the
+// detected terminal background: the row's block background, and the accent
+// foreground for its line number and marker (GitHub-style: the gutter wears
+// the row's semantic color, not a neutral dim).
+func diffShades() (bgAdd, bgDel, fgAdd, fgDel string) {
 	if themeDark {
-		return "\x1b[48;5;22m", "\x1b[48;5;52m" // deep green / deep red
+		return "\x1b[48;5;22m", "\x1b[48;5;52m", // deep green / deep red blocks
+			"\x1b[38;5;114m", "\x1b[38;5;210m" // bright accents readable on them
 	}
-	return "\x1b[48;5;194m", "\x1b[48;5;224m" // pale green / pale red
+	return "\x1b[48;5;194m", "\x1b[48;5;224m", // pale green / pale red blocks
+		"\x1b[38;5;22m", "\x1b[38;5;88m" // deep green / deep red accents
 }
 
 // diffLexer names the chroma lexer for the artifact's file path ("" = no
@@ -151,7 +155,7 @@ func renderDiff(title string, lines []string, budget, width int) []string {
 	// "  " indent + gutter + space + "+ " marker; the code gets the rest.
 	codeW := width - 2 - gw - 3
 	lang := diffLexer(title)
-	bgAdd, bgDel := diffBG()
+	bgAdd, bgDel, fgAdd, fgDel := diffShades()
 
 	out := make([]string, 0, len(shown)+1)
 	for _, r := range shown {
@@ -163,17 +167,19 @@ func renderDiff(title string, lines []string, budget, width int) []string {
 		if width > 3 && codeW > 8 && ansi.StringWidth(text) > codeW {
 			text = ansi.Truncate(text, codeW-1, "…")
 		}
-		gutter := DimStyle.Sprintf("%*d", gw, r.num)
-		var body string
+		var row string
 		switch {
 		case color.NoColor:
-			body = string(r.kind) + " " + text
+			row = fmt.Sprintf("  %*d %c %s", gw, r.num, r.kind, text)
 		case r.kind == ' ':
-			body = DimStyle.Sprint("  " + text)
+			row = "  " + DimStyle.Sprintf("%*d", gw, r.num) + " " + DimStyle.Sprint("  "+text)
 		default:
-			bg := bgAdd
+			// The block covers the gutter too: background from the line
+			// number through the padded end, with the number and marker in
+			// the row's accent color (the code keeps its chroma foregrounds).
+			bg, fg := bgAdd, fgAdd
 			if r.kind == '-' {
-				bg = bgDel
+				bg, fg = bgDel, fgDel
 			}
 			pad := ""
 			if codeW > 8 {
@@ -181,9 +187,10 @@ func renderDiff(title string, lines []string, budget, width int) []string {
 					pad = strings.Repeat(" ", n)
 				}
 			}
-			body = bg + string(r.kind) + " " + highlightDiffLine(text, lang, bg) + pad + "\x1b[0m"
+			row = "  " + bg + fg + fmt.Sprintf("%*d %c ", gw, r.num, r.kind) + "\x1b[39m" +
+				highlightDiffLine(text, lang, bg) + pad + "\x1b[0m"
 		}
-		out = append(out, "  "+gutter+" "+body)
+		out = append(out, row)
 	}
 	if extra > 0 {
 		out = append(out, dim(fmt.Sprintf("  … +%d more lines", extra)))

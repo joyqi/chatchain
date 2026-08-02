@@ -850,7 +850,7 @@ func TestRenderDiffBackgrounds(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("rows = %d, want 2:\n%q", len(rows), rows)
 	}
-	bgAdd, _ := diffBG()
+	bgAdd, _, _, _ := diffShades()
 	for i, row := range rows {
 		if !strings.Contains(row, bgAdd) {
 			t.Errorf("row %d missing the addition background: %q", i, row)
@@ -911,9 +911,38 @@ func TestRenderDiffNoAlienBackgrounds(t *testing.T) {
 		"@@ -1,1 +1,1 @@",
 		"+  重要: 这是发给**开发者**的推荐语（clarity、naturalness）",
 	}, 24, 200)
-	bgAdd, _ := diffBG()
+	bgAdd, _, _, _ := diffShades()
 	stripped := strings.ReplaceAll(rows[0], bgAdd, "")
 	if strings.Contains(stripped, "\x1b[48;") {
 		t.Fatalf("alien background survived in diff row:\n%q", rows[0])
+	}
+}
+
+// The ± block covers the line-number gutter: the row starts with the block
+// background right after the indent, and the number + marker wear the row's
+// accent color before the code's own chroma foregrounds take over.
+func TestRenderDiffGutterInsideBlock(t *testing.T) {
+	old := color.NoColor
+	color.NoColor = false
+	defer func() { color.NoColor = old }()
+
+	rows := renderDiff("main.go", []string{
+		"@@ -1,1 +1,2 @@",
+		"+package main",
+		"-package old",
+	}, 24, 100)
+	bgAdd, bgDel, fgAdd, fgDel := diffShades()
+	if !strings.HasPrefix(rows[0], "  "+bgAdd+fgAdd) {
+		t.Errorf("add row must open with block bg + accent fg over the gutter:\n%q", rows[0])
+	}
+	if !strings.HasPrefix(rows[1], "  "+bgDel+fgDel) {
+		t.Errorf("del row must open with block bg + accent fg over the gutter:\n%q", rows[1])
+	}
+	// The accent yields to the code's own foregrounds after the marker.
+	if !strings.Contains(rows[0], "\x1b[39m") {
+		t.Errorf("accent fg must reset before the code:\n%q", rows[0])
+	}
+	if !strings.Contains(stripANSI(rows[0]), "1 + package main") {
+		t.Errorf("gutter layout changed: %q", stripANSI(rows[0]))
 	}
 }
