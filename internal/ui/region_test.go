@@ -184,3 +184,58 @@ func TestRegionClockPause(t *testing.T) {
 		t.Fatal("dropPreview must clear pausedAt")
 	}
 }
+
+// relabelPreview updates a plain preview's header in place — and ONLY that:
+// call previews relabel through openCallPreview, and a closed preview must
+// not be resurrected by a throttled counter racing the flush.
+func TestRegionRelabelPreview(t *testing.T) {
+	r := &region{emit: func([]string, regionMsg) {}}
+
+	r.openPreview("rendering table…")
+	r.relabelPreview("rendering table… · 12 lines")
+	if r.label != "rendering table… · 12 lines" {
+		t.Fatalf("label = %q", r.label)
+	}
+	if len(r.ptail) != 0 {
+		t.Fatalf("relabel must not grow the preview: %v", r.ptail)
+	}
+
+	r.closePreview()
+	r.relabelPreview("rendering table… · 99 lines")
+	if r.label != "rendering table… · 12 lines" {
+		t.Fatalf("closed preview resurrected: %q", r.label)
+	}
+
+	r.dropPreview()
+	r.openCallPreview("[bash …]")
+	r.relabelPreview("nope")
+	if r.label != "[bash …]" {
+		t.Fatalf("call preview must ignore relabelPreview: %q", r.label)
+	}
+}
+
+// The single-row preview closes the residue/shrink class: a SHORT block
+// (2-row list) morphing over its 1-row preview leaves no residue, and the
+// end-of-turn dropPreview finds nothing to shrink.
+func TestRegionShortBlockNoResidue(t *testing.T) {
+	var snaps []regionMsg
+	r := &region{emit: func(_ []string, snap regionMsg) { snaps = append(snaps, snap) }}
+
+	r.commit([]string{"intro text"})
+	r.openPreview("rendering list…") // single header row, no source lines
+	r.closePreview()
+	r.commit([]string{"• a", "• b"}) // the rendered short list morphs over it
+
+	if len(r.residue) != 0 {
+		t.Fatalf("short block left residue: %v", r.residue)
+	}
+	if r.label != "" {
+		t.Fatalf("preview not replaced: %q", r.label)
+	}
+	rows := len(snaps[len(snaps)-1].tail) + len(snaps[len(snaps)-1].residue)
+	r.dropPreview() // end of turn
+	after := len(snaps[len(snaps)-1].tail) + len(snaps[len(snaps)-1].residue)
+	if after != rows {
+		t.Fatalf("end-of-turn drop shrank the window: %d → %d rows", rows, after)
+	}
+}

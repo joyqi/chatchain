@@ -327,6 +327,20 @@ func (r *region) openCallPreview(label string) {
 	r.publishLocked(over)
 }
 
+// relabelPreview updates a PLAIN preview's header in place (the live
+// "rendering table… · N lines" counter). A no-op for call previews (they
+// relabel through openCallPreview) and once the preview closed — a throttled
+// counter racing the flush must not resurrect the header.
+func (r *region) relabelPreview(label string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.label == "" || !r.since.IsZero() || !r.open {
+		return
+	}
+	r.label = oneRow(label)
+	r.publishLocked(nil)
+}
+
 // pauseClock freezes the call widget's elapsed figure (the user is being
 // consulted — an approval prompt, an interactive tool's surface — and human
 // deliberation must not count as activity time). A no-op without a live call

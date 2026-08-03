@@ -102,6 +102,10 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 | `--system-input` | `-S` | Enter system prompt interactively |
 | `--list` | `-l` | List configured providers, or models for a given provider |
 | `--mcp` | | MCP server (command string or URL, repeatable) |
+| `--resume` | | Resume a saved session (`--resume` to pick interactively, `--resume=<id>` for a specific one) |
+| `--no-save` | | Start ephemeral — nothing touches disk unless `/save` is run |
+| `--max-turns` | | Limit agentic tool turns in non-interactive mode (`-m` only; 0 = unlimited) |
+| `--context-window` | | Context window size for compaction accounting (e.g. `200k`, `1m`; default 128k) |
 | `--agent` | | Enable agent mode (AGENTS.md overlay, skills, `load_skill`, project-scoped sessions) |
 | `--config` | `-c` | Path to config file (default: `~/.chatchain.yaml`) |
 
@@ -598,9 +602,14 @@ chatchain/
 - [bubbles/v2](https://github.com/charmbracelet/bubbles) — UI components (textarea, progress)
 - [lipgloss/v2](https://github.com/charmbracelet/lipgloss) — Style and layout for terminal output (v1 still used by the markdown renderer)
 - [x/ansi](https://github.com/charmbracelet/x) — ANSI escape sequence handling
+- [chroma/v2](https://github.com/alecthomas/chroma) — Syntax highlighting for code blocks and diffs
+- [goldmark](https://github.com/yuin/goldmark) — Markdown → HTML for session export (`/export`)
+- [tiktoken-go](https://github.com/pkoukk/tiktoken-go) — Local token counting for context accounting
+- [yaml.v3](https://gopkg.in/yaml.v3) — YAML config parsing
+- [go-udiff](https://github.com/aymanbagabas/go-udiff) — Unified diff generation for file edits
 - Provider APIs are spoken directly by a minimal built-in wire client
   (`internal/llm`) — no official SDKs (see docs/design/internal-llm-client.md)
-- [go-sdk (MCP)](https://github.com/modelcontextprotocol/go-sdk) — Model Context Protocol SDK
+- [go-sdk (MCP)](https://github.com/modelcontextprotocol/go-sdk) — Model Context Protocol SDK (client; stdio + streamable HTTP transports)
 
 ## License
 

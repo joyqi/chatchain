@@ -88,7 +88,15 @@ type UI interface {
 
 type StreamSink interface {
     CommitLines(lines []string)                 // final ANSI lines → scrollback
-    BlockPreview(label string) io.WriteCloser   // live region: rolling window
+    BlockPreview(label string) io.WriteCloser   // live region: ONE metered header row
+    // The writer COUNTS the streamed source instead of forwarding it: the
+    // preview is a single "rendering table… · 37 lines" row (throttled
+    // counter; the first tick waits a full throttle period, so short blocks
+    // flush before any label churn). A one-row preview is always covered by
+    // the rendered block's morph — the residue/shrink class (a short list
+    // collapsing under its own preview at end of turn) cannot occur. The
+    // rolling multi-row window survives only where it is deliberate display:
+    // activity-group event rows (CallLine) and image partial frames (CallBody).
     Done()                                      // turn finished
 }
 ```
