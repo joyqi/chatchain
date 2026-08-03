@@ -121,8 +121,13 @@ Facade shape decisions from the adversarial review:
   flush ordering (close preview BEFORE committing the rendered block) is
   preserved by construction.
 - **Frame stacking order is fixed and ui-owned** (user-confirmed final):
-  `[staging tail] [stream preview] [queue] ─sep─ [composer] ─sep─
-  [status | suggestions | surface]`. The composer is wrapped by two
+  `[staging tail] [stream preview] [spacer] [queue] ─sep─ [composer] ─sep─
+  [status | suggestions | surface]`. One constant blank spacer row separates
+  the content side from everything input-side (it cannot bounce — it never
+  changes height), and residue rows render BLANK: they hold their height
+  until fresh lines consume them, but their content is stale widget chrome
+  and showing it next to an injected user block read as leaked tool output.
+  The composer is wrapped by two
   separators; the bottom zone below the lower separator holds exactly one
   of the status line, the slash-suggestion row, or an open interaction
   surface (surface > suggestions > status) — swapping them is a content

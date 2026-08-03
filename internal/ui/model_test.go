@@ -1827,3 +1827,66 @@ func TestTakeQueuedMessages(t *testing.T) {
 		t.Fatalf("empty queue must take nothing, got %+v", taken)
 	}
 }
+
+// TestSpacerAboveInputZone: one constant blank row separates the content
+// side from everything input-side — directly above the queue when one shows,
+// directly above the top separator otherwise.
+func TestSpacerAboveInputZone(t *testing.T) {
+	m := newTestModel(t)
+	c := stripSGR(content(m))
+	lines := strings.Split(c, "\n")
+	sep := -1
+	for i, l := range lines {
+		if strings.HasPrefix(l, "───") {
+			sep = i
+			break
+		}
+	}
+	if sep < 1 || strings.TrimSpace(lines[sep-1]) != "" {
+		t.Fatalf("no blank spacer above the top separator:\n%s", c)
+	}
+
+	m = typeText(t, m, "queued")
+	m = enter(t, m)
+	c = stripSGR(content(m))
+	lines = strings.Split(c, "\n")
+	queue := -1
+	for i, l := range lines {
+		if strings.Contains(l, "» queued") {
+			queue = i
+			break
+		}
+	}
+	if queue < 1 || strings.TrimSpace(lines[queue-1]) != "" {
+		t.Fatalf("no blank spacer above the queue row:\n%s", c)
+	}
+}
+
+// TestResidueRendersBlank: residue rows hold their height but show NOTHING —
+// stale widget chrome next to an injected user block read as leaked output.
+func TestResidueRendersBlank(t *testing.T) {
+	m := newTestModel(t)
+	m = step(t, m, regionMsg{
+		tail:    []string{"◇ ran 2 tools in 2s"},
+		residue: []string{"✓ [bash …] · stale", "⎿ 2 tools · 8s"},
+	})
+	c := stripSGR(content(m))
+	if strings.Contains(c, "stale") || strings.Contains(c, "2 tools · 8s") {
+		t.Fatalf("residue text leaked into the frame:\n%s", c)
+	}
+	// Height is kept: tail row + 2 blank residue rows above the spacer+sep.
+	lines := strings.Split(c, "\n")
+	tail := -1
+	for i, l := range lines {
+		if strings.Contains(l, "ran 2 tools") {
+			tail = i
+			break
+		}
+	}
+	if tail < 0 {
+		t.Fatalf("tail row missing:\n%s", c)
+	}
+	if strings.TrimSpace(lines[tail+1]) != "" || strings.TrimSpace(lines[tail+2]) != "" {
+		t.Fatalf("residue rows must render blank:\n%s", c)
+	}
+}

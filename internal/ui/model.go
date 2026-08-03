@@ -919,11 +919,15 @@ func (m *model) View() tea.View {
 		b.WriteString(line + "\n")
 		rowsAbove++
 	}
-	// Residue: stale preview rows a collapsed block didn't cover, kept dim
-	// in place until fresh lines overwrite them (region.go) — the window
-	// height never dips when a thinking block folds into its marker.
-	for _, line := range m.region.residue {
-		b.WriteString(faint + "  " + ansi.Truncate(line, maxInt(4, m.width-4), "…") + sgrReset + "\n")
+	// Residue: rows a collapsed preview didn't cover, held until fresh lines
+	// overwrite them (region.go) — the window height never dips when a widget
+	// folds into its summary. Rendered BLANK: with block previews down to one
+	// metered row, residue only ever holds stale widget chrome (spinner body
+	// rows, the ⎿ status row), and showing that next to an injected user
+	// block read as leaked tool output. The rows keep their height; their
+	// content is noise.
+	for range m.region.residue {
+		b.WriteString("\n")
 		rowsAbove++
 	}
 	if m.region.label != "" {
@@ -958,7 +962,14 @@ func (m *model) View() tea.View {
 		}
 	}
 
-	// Type-ahead queue: dim "»" lines above the separator (content side).
+	// Spacer: one constant blank row between the content side (staging tail,
+	// residue, previews) and everything input-side (queue, separator,
+	// composer) — breathing room the user asked for. Constant height: it can
+	// never bounce the frame.
+	b.WriteString("\n")
+	rowsAbove++
+
+	// Type-ahead queue: dim "»" lines below the spacer, above the separator.
 	if n := len(m.queue); n > 0 {
 		shown := n
 		if shown > queueShownMax {
