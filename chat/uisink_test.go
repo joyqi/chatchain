@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"chatchain/internal/markdown"
 )
 
 // recordingSink captures CommitLines batches and preview lifecycle events.
@@ -37,7 +39,7 @@ func (c *recClose) Close() error                { c.r.events = append(c.r.events
 // pushes the frame back in one hop instead of row-by-row.
 func TestUIMDSinkBatchesLines(t *testing.T) {
 	rec := &recordingSink{}
-	s := newUIMDSink(rec, rec.CommitLines, func() int { return 80 })
+	s := newUIMDSink(rec, rec.CommitLines, func() int { return 80 }, nil)
 
 	// A rendered 4-line block arriving in one Write (flushTable's Fprintln).
 	if _, err := s.Write([]byte("r1\nr2\nr3\nr4\n")); err != nil {
@@ -93,5 +95,46 @@ func TestContentTap(t *testing.T) {
 	}
 	if marks != 1 {
 		t.Fatalf("mark fired %d times, want 1", marks)
+	}
+}
+
+// fakePreviewSink records BlockPreview opens into the shared event list, so
+// ordering against transcript commits is assertable.
+type fakePreviewSink struct{ rec *recSurface }
+
+func (f *fakePreviewSink) BlockPreview(label string) io.WriteCloser {
+	f.rec.events = append(f.rec.events, "preview:"+stripANSI(label))
+	return nopWC{}
+}
+func (f *fakePreviewSink) Done() {}
+
+type nopWC struct{}
+
+func (nopWC) Write(p []byte) (int, error) { return len(p), nil }
+func (nopWC) Close() error                { return nil }
+
+// The separator a block visually needs must be ON SCREEN while its preview
+// shows — not latched until the settle reveals it (seen live: the preview
+// glued to the previous paragraph, the rendered table properly spaced).
+func TestPreviewSpacingMatchesSettle(t *testing.T) {
+	rec := &recSurface{}
+	tr := newTranscript(rec, nil)
+	sink := &fakePreviewSink{rec: rec}
+	msink := newUIMDSink(sink, tr.contentBlock(), func() int { return 80 }, tr.flushPending)
+	mdw := markdown.NewWriter(msink)
+
+	mdw.Write([]byte("intro paragraph\n\n| a | b |\n|---|---|\n| 1 | 2 |\n"))
+	mdw.Flush()
+	msink.flush()
+
+	events := rec.joined()
+	pi := strings.Index(events, "preview:")
+	if pi < 0 {
+		t.Fatalf("no preview opened:\n%s", events)
+	}
+	// The blank separator must precede the preview open, not trail it.
+	before := events[:pi]
+	if !strings.HasSuffix(strings.TrimRight(before, "\n"), "print:") {
+		t.Fatalf("the block separator is not on screen before the preview:\n%s", events)
 	}
 }

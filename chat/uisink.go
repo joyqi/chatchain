@@ -12,18 +12,20 @@ import (
 // uiMDSink adapts the ui to markdown.Sink for the interactive loop: the
 // renderer's committed output is line-buffered and lands in scrollback via
 // commit (the transcript's content block, which owns the spacing); block
-// previews pass straight through to the sink; the layout width is the ui's
-// live width. flush commits any final partial line (call it after
-// markdown.Writer.Flush).
+// previews pass straight through to the sink — after materializing any
+// latched separator via preOpen, so the preview is spaced exactly like the
+// block it morphs into; the layout width is the ui's live width. flush
+// commits any final partial line (call it after markdown.Writer.Flush).
 type uiMDSink struct {
-	sink   ui.StreamSink
-	commit func(lines ...string)
-	width  func() int
-	buf    []byte
+	sink    ui.StreamSink
+	commit  func(lines ...string)
+	width   func() int
+	preOpen func() // nil-safe: transcript.flushPending
+	buf     []byte
 }
 
-func newUIMDSink(sink ui.StreamSink, commit func(lines ...string), width func() int) *uiMDSink {
-	return &uiMDSink{sink: sink, commit: commit, width: width}
+func newUIMDSink(sink ui.StreamSink, commit func(lines ...string), width func() int, preOpen func()) *uiMDSink {
+	return &uiMDSink{sink: sink, commit: commit, width: width, preOpen: preOpen}
 }
 
 // Write commits every complete line in the chunk as ONE CommitLines batch —
@@ -66,7 +68,14 @@ func (s *uiMDSink) flush() {
 func (s *uiMDSink) Width() int { return s.width() }
 
 func (s *uiMDSink) BlockPreview(label string) io.WriteCloser {
-	// No deferral needed here: the ui's staging window (internal/ui/region.go)
+	// The block's separator may sit in the transcript's blank latch (interior
+	// blanks defer until more content follows) — the preview about to occupy
+	// the next row IS that content, so materialize it first: the preview must
+	// be spaced exactly like the block it morphs into.
+	if s.preOpen != nil {
+		s.preOpen()
+	}
+	// No close deferral needed here: the ui's staging window (region.go)
 	// keeps a closed preview on screen until the rendered block replaces it in
 	// place — the close is visually free by construction. The ui renders
 	// labels as given, so markdown's plain "rendering…" labels stay dim.

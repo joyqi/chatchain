@@ -257,6 +257,20 @@ func (t *transcript) beginRound() {
 	t.mu.Unlock()
 }
 
+// flushPending materializes deferred interior blanks NOW. The latch defers
+// them until more content follows so a block never exports trailing blanks —
+// but a block preview about to occupy the next frame row IS more content:
+// without this, the separator a block visually needs sits latched while its
+// preview shows glued to the previous block, and only the settle reveals it.
+// Preview and settled block must be spaced identically.
+func (t *transcript) flushPending() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for ; t.pending > 0; t.pending-- {
+		t.u.PrintLines("")
+	}
+}
+
 // markContent marks the content block open. The provider's content writer
 // calls it on the FIRST content byte — on the stream goroutine, so the mark
 // happens-before any tool-call delta that follows on that same goroutine;

@@ -1252,7 +1252,7 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcrip
 	}
 
 	newContent := func() (*markdown.Writer, *uiMDSink) {
-		msink := newUIMDSink(sink, tr.contentBlock(), u.Width)
+		msink := newUIMDSink(sink, tr.contentBlock(), u.Width, tr.flushPending)
 		return markdown.NewWriter(msink), msink
 	}
 
@@ -1532,7 +1532,7 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *tran
 		if tap.spill.Len() == 0 {
 			return
 		}
-		msink := newUIMDSink(sink, tr.contentBlock(), u.Width)
+		msink := newUIMDSink(sink, tr.contentBlock(), u.Width, tr.flushPending)
 		mdw := markdown.NewWriter(msink)
 		mdw.Write([]byte(tap.spill.String()))
 		mdw.Flush()
@@ -1602,7 +1602,7 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *tran
 	}
 
 	newContent := func() (*markdown.Writer, *uiMDSink) {
-		msink := newUIMDSink(sink, tr.openContent(), u.Width)
+		msink := newUIMDSink(sink, tr.openContent(), u.Width, tr.flushPending)
 		return markdown.NewWriter(msink), msink
 	}
 
