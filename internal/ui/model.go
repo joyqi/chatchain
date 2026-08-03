@@ -430,6 +430,19 @@ func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	m.sugBase = ""
 
+	// ↑ on an EMPTY composer with messages queued pops the newest one back
+	// for editing (LIFO, one per press) — the industry-consensus way to
+	// manage the queue without touching the running turn (Claude Code ↑,
+	// Codex Alt+Up, Gemini ↑). Popping IS the un-queue: edit and resubmit,
+	// or Ctrl+U to discard. With text in the composer the arrows fall
+	// through to history navigation as always.
+	if k.Code == tea.KeyUp && len(m.queue) > 0 && strings.TrimSpace(m.ta.Value()) == "" {
+		last := m.queue[len(m.queue)-1]
+		m.queue = m.queue[:len(m.queue)-1]
+		m.setDraft(last)
+		return m, nil
+	}
+
 	// ↑/↓ walk the input history while the composer holds a single row
 	// (multi-row drafts keep the arrows for cursor movement).
 	if k.Code == tea.KeyUp && m.historyNavigable() {
@@ -970,20 +983,30 @@ func (m *model) View() tea.View {
 	rowsAbove++
 
 	// Type-ahead queue: dim "»" lines below the spacer, above the separator.
+	// The block's bottom row carries the management hint (↑ pops the newest
+	// queued message back into an empty composer for editing).
 	if n := len(m.queue); n > 0 {
 		shown := n
 		if shown > queueShownMax {
 			shown = queueShownMax
 		}
+		const hint = " · ↑ edit"
 		for i := 0; i < shown; i++ {
-			item := ansi.Truncate(m.queue[i], maxInt(4, m.width-4), "…")
+			width := maxInt(4, m.width-4)
+			if i == shown-1 && n == shown {
+				width = maxInt(4, m.width-4-len(hint))
+			}
+			item := ansi.Truncate(m.queue[i], width, "…")
 			if strings.HasPrefix(item, "/") {
 				item = green + item + sgrReset + faint
+			}
+			if i == shown-1 && n == shown {
+				item += hint
 			}
 			b.WriteString(faint + "» " + item + sgrReset + "\n")
 		}
 		if n > shown {
-			fmt.Fprintf(&b, "%s  … +%d more%s\n", faint, n-shown, sgrReset)
+			fmt.Fprintf(&b, "%s  … +%d more%s%s\n", faint, n-shown, hint, sgrReset)
 		}
 		rowsAbove += shown
 		if n > shown {

@@ -264,6 +264,15 @@ shared turn-state races. Adopted instead:
   turn runs are queued inside ui (rendered as dim "queued" lines under the
   composer); the next ReadInput drains them in order. On Ctrl+C/ESC mid-turn,
   ui atomically clears the queue back into the composer draft.
+- **Queue management is ↑, never ESC** (researched across Claude Code /
+  Codex / Gemini CLI / OpenCode / Crush — the ↑-pop-to-composer convention
+  is the industry consensus; Crush's clear-queue-on-first-ESC is the outlier
+  and costs interrupt latency): ↑ on an EMPTY composer pops the newest
+  queued message back for editing — popping IS the un-queue, one item per
+  press, without touching the running turn; the queue block's bottom row
+  advertises it ("· ↑ edit"). With text in the composer the arrows keep
+  their history/cursor roles, and ESC keeps its single meaning: cancel the
+  innermost scope.
 - **Steering (mid-turn injection).** Tool-loop round boundaries are request
   boundaries, and queued PLAIN messages inject there: toolLoop's steer hook
   (ui.TakeQueuedMessages — the contiguous non-command prefix; a slash

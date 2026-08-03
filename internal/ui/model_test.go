@@ -1890,3 +1890,63 @@ func TestResidueRendersBlank(t *testing.T) {
 		t.Fatalf("residue rows must render blank:\n%s", c)
 	}
 }
+
+// TestQueuePopWithUpArrow: ↑ on an EMPTY composer pops the newest queued
+// message back for editing (LIFO, one per press) without touching anything
+// else; with text in the composer ↑ falls through to history navigation and
+// the queue stays put. The queue block's bottom row advertises the key.
+func TestQueuePopWithUpArrow(t *testing.T) {
+	m := newTestModel(t)
+	m = typeText(t, m, "first")
+	m = enter(t, m)
+	m = typeText(t, m, "second")
+	m = enter(t, m) // no waiter → both queue
+
+	if c := stripSGR(content(m)); !strings.Contains(c, "» second · ↑ edit") {
+		t.Fatalf("bottom queue row must advertise ↑ edit:\n%s", c)
+	}
+
+	up := func() { m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyUp})) }
+	up() // empty composer → pops "second"
+	if m.ta.Value() != "second" {
+		t.Fatalf("composer = %q, want the popped newest item", m.ta.Value())
+	}
+	if len(m.queue) != 1 || m.queue[0] != "first" {
+		t.Fatalf("queue = %v, want [first]", m.queue)
+	}
+
+	up() // composer non-empty → history navigation, queue untouched
+	if len(m.queue) != 1 {
+		t.Fatalf("history nav must not pop the queue: %v", m.queue)
+	}
+
+	// Clear and pop the remaining item too.
+	m.setDraft("")
+	m.histIdx = len(m.history)
+	up()
+	if m.ta.Value() != "first" || len(m.queue) != 0 {
+		t.Fatalf("second pop: composer=%q queue=%v", m.ta.Value(), m.queue)
+	}
+
+	// Resubmitting re-queues at the tail.
+	m = enter(t, m)
+	if len(m.queue) != 1 || m.queue[0] != "first" {
+		t.Fatalf("requeue = %v", m.queue)
+	}
+}
+
+// The overflow row ("+N more") carries the hint when newest items are hidden.
+func TestQueueHintOnOverflowRow(t *testing.T) {
+	m := newTestModel(t)
+	for _, s := range []string{"a", "b", "c", "d", "e"} {
+		m = typeText(t, m, s)
+		m = enter(t, m)
+	}
+	c := stripSGR(content(m))
+	if !strings.Contains(c, "+2 more · ↑ edit") {
+		t.Fatalf("overflow row must advertise ↑ edit:\n%s", c)
+	}
+	if strings.Contains(c, "» c · ↑ edit") {
+		t.Fatalf("hidden-newest case must not hint on a visible row:\n%s", c)
+	}
+}
