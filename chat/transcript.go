@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"chatchain/internal/timefmt"
 	"chatchain/tool"
 )
 
@@ -522,7 +523,7 @@ func (t *transcript) settleGroupLocked() {
 func (t *transcript) groupLinesLocked() []string {
 	g := &t.grp
 	if g.tools == 0 {
-		return []string{dim(fmt.Sprintf("%s thought for %s", reasoningSymbol, durElapsed(g.thinkDur)))}
+		return []string{dim(fmt.Sprintf("%s thought for %s", reasoningSymbol, timefmt.Elapsed(g.thinkDur)))}
 	}
 	if g.tools == 1 && g.thinks == 0 {
 		lines := []string{g.firstHeader}
@@ -531,10 +532,10 @@ func (t *transcript) groupLinesLocked() []string {
 		lc.flush()
 		return lines
 	}
-	ran := fmt.Sprintf("ran %d %s in %s", g.tools, pluralTools(g.tools), durElapsed(g.toolsDur))
+	ran := fmt.Sprintf("ran %d %s in %s", g.tools, pluralTools(g.tools), timefmt.Elapsed(g.toolsDur))
 	var line string
 	if g.thinks > 0 {
-		line = dim(fmt.Sprintf("%s thought for %s · %s", reasoningSymbol, durElapsed(g.thinkDur), ran))
+		line = dim(fmt.Sprintf("%s thought for %s · %s", reasoningSymbol, timefmt.Elapsed(g.thinkDur), ran))
 	} else {
 		line = dim(fmt.Sprintf("%s %s", reasoningSymbol, ran))
 	}
@@ -583,16 +584,6 @@ func pluralTools(n int) string {
 	}
 	return "tools"
 }
-
-// durElapsed renders a duration the way the thinking marker always has:
-// whole seconds, "<1s" below one.
-func durElapsed(d time.Duration) string {
-	if d < time.Second {
-		return "<1s"
-	}
-	return fmt.Sprintf("%ds", int(d.Seconds()))
-}
-
 // callDetailLocked refreshes the widget's live status-row prefix from the
 // group's counters ("3 tools · 1.2k tokens").
 func (t *transcript) callDetailLocked() {
@@ -702,7 +693,7 @@ func (t *transcript) settleThinking(start time.Time) {
 	if t.verboseOn() {
 		t.settleGroupLocked()
 	} else {
-		t.u.CallLine(dim(fmt.Sprintf("%s thought %s", reasoningSymbol, durElapsed(d))))
+		t.u.CallLine(dim(fmt.Sprintf("%s thought %s", reasoningSymbol, timefmt.Elapsed(d))))
 		if t.pendingCall == "" {
 			t.ensureWidgetLocked(dim("Working…"))
 		}

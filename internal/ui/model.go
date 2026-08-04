@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"chatchain/internal/textwidth"
+	"chatchain/internal/timefmt"
 )
 
 // spinnerFrames drive the busy/preview headers and the per-insert activity
@@ -966,7 +967,7 @@ func (m *model) View() tea.View {
 			if !m.region.pausedAt.IsZero() {
 				elapsed = m.region.pausedAt.Sub(m.region.since)
 			}
-			status += fmt.Sprintf("%ds", int(elapsed.Seconds()))
+			status += timefmt.Elapsed(elapsed)
 			if len(m.cancels) > 0 {
 				status += " · ESC to cancel"
 			}
@@ -1116,8 +1117,8 @@ func (m *model) statusLine() string {
 		if m.busy.detail != "" {
 			tail += " · " + m.busy.detail
 		}
-		if elapsed := int(time.Since(m.busy.since).Seconds()); elapsed >= 2 {
-			tail += fmt.Sprintf("  %ds", elapsed)
+		if elapsed := time.Since(m.busy.since); elapsed >= 2*time.Second {
+			tail += "  " + timefmt.Elapsed(elapsed)
 		}
 		if len(m.cancels) > 0 {
 			tail += " (ESC to cancel)"
