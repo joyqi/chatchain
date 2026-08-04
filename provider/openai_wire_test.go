@@ -171,3 +171,108 @@ type writeCloserFunc struct {
 }
 
 func (w writeCloserFunc) Close() error { w.onClose(); return nil }
+
+// TestOpenAIStreamInlineThink pins the inline-tag splitting contract: a
+// content stream opening with <think> (tags split across deltas) is a leaked
+// reasoning block — it reaches the reasoning writer, which closes before the
+// first visible write, and the returned content and reasoning are clean.
+func TestOpenAIStreamInlineThink(t *testing.T) {
+	transcript := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"<th"}}]}`,
+		``,
+		`data: {"choices":[{"delta":{"content":"ink>pond"}}]}`,
+		``,
+		`data: {"choices":[{"delta":{"content":"ering</think>"}}]}`,
+		``,
+		`data: {"choices":[{"delta":{"content":"\n\nhello"}}]}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(transcript))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAI("k", srv.URL, "m", nil, srv.Client())
+	var content, reasoning strings.Builder
+	closed := false
+	closedBeforeContent := true
+	rw := writeCloserFunc{&reasoning, func() { closed = true }}
+	cw := writerFunc(func(b []byte) (int, error) {
+		if !closed {
+			closedBeforeContent = false
+		}
+		return content.Write(b)
+	})
+	full, think, err := p.StreamChat(context.Background(), []Message{{Role: "user", Content: "q"}}, cw, rw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if think != "pondering" || reasoning.String() != "pondering" {
+		t.Fatalf("reasoning = %q / %q", think, reasoning.String())
+	}
+	if !closed || !closedBeforeContent {
+		t.Fatalf("reasoning writer close: closed=%v beforeContent=%v", closed, closedBeforeContent)
+	}
+	if full != "hello" || content.String() != "hello" {
+		t.Fatalf("content = %q / %q", full, content.String())
+	}
+}
+
+// TestOpenAIStreamInlineThinkToolRound pins the interleaved-thinking shape:
+// the round ends in tool calls with the think block never closed — the whole
+// text is reasoning, content stays empty, and the raw assistant replay keeps
+// the verbatim unclosed tag with NO duplicate reasoning field.
+func TestOpenAIStreamInlineThinkToolRound(t *testing.T) {
+	transcript := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"<think>need"}}]}`,
+		``,
+		`data: {"choices":[{"delta":{"content":" a tool"}}]}`,
+		``,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f","arguments":"{}"}}]}}]}`,
+		``,
+		`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(transcript))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAI("k", srv.URL, "m", nil, srv.Client())
+	var content, reasoning strings.Builder
+	closed := false
+	rw := writeCloserFunc{&reasoning, func() { closed = true }}
+	full, think, calls, err := p.StreamChatWithTools(context.Background(), []Message{{Role: "user", Content: "q"}}, []ToolDef{{Name: "f"}}, &content, rw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if think != "need a tool" || reasoning.String() != "need a tool" {
+		t.Fatalf("reasoning = %q / %q", think, reasoning.String())
+	}
+	if !closed {
+		t.Fatal("reasoning writer never closed")
+	}
+	if full != "" || content.String() != "" {
+		t.Fatalf("content = %q / %q, want empty", full, content.String())
+	}
+	if len(calls) != 1 || calls[0].ID != "c1" || calls[0].Name != "f" {
+		t.Fatalf("tool calls = %+v", calls)
+	}
+	raw, _ := p.LastRawContent().(string)
+	var rawMsg map[string]any
+	if err := json.Unmarshal([]byte(raw), &rawMsg); err != nil {
+		t.Fatalf("raw = %q: %v", raw, err)
+	}
+	if rawMsg["content"] != "<think>need a tool" {
+		t.Fatalf("raw content must keep the verbatim unclosed tag: %v", rawMsg["content"])
+	}
+	if _, has := rawMsg["reasoning"]; has {
+		t.Fatalf("tag-extracted think must not duplicate into the reasoning field: %v", rawMsg)
+	}
+}

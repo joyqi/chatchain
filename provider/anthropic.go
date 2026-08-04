@@ -147,7 +147,8 @@ func (p *AnthropicProvider) Chat(ctx context.Context, messages []Message) (strin
 			result += block.Text
 		}
 	}
-	return result, nil
+	content, _ := splitInlineThink(result)
+	return content, nil
 }
 
 func (p *AnthropicProvider) StreamChat(ctx context.Context, messages []Message, w io.Writer, reasoningW io.WriteCloser) (string, string, error) {
@@ -197,6 +198,7 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 		}
 	}
 	defer closeReasoning()
+	split := newStreamThinkSplitter(w, reasoningW, closeReasoning)
 
 	// Content blocks accumulate BY INDEX: content_block_delta events address
 	// blocks by `index` and can interleave across open blocks (parallel
@@ -250,8 +252,9 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 			break
 		}
 		if cerr != nil {
-			full, think, _ := assemble()
-			return full, think, nil, fmt.Errorf("stream error: %w", cerr)
+			split.flush()
+			_, think, _ := assemble()
+			return split.content.String(), think + split.think.String(), nil, fmt.Errorf("stream error: %w", cerr)
 		}
 		switch evt.Type {
 		case "message_start":
@@ -275,8 +278,7 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 				fmt.Fprint(reasoningW, evt.Delta.Thinking)
 				block(evt.Index, "thinking").content.WriteString(evt.Delta.Thinking)
 			case "text_delta":
-				closeReasoning()
-				fmt.Fprint(w, evt.Delta.Text)
+				split.write(evt.Delta.Text)
 				block(evt.Index, "text").content.WriteString(evt.Delta.Text)
 			case "input_json_delta":
 				closeReasoning() // thinking is over once tool args stream
@@ -294,9 +296,12 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 			}
 		}
 	}
+	split.flush()
 	closeReasoning()
 
-	full, thinkFull, toolCalls := assemble()
+	_, thinkFull, toolCalls := assemble()
+	full := split.content.String()
+	thinkFull += split.think.String()
 
 	// If model requested tool calls, return them (assembled in index order)
 	if stopReason == "tool_use" && len(toolCalls) > 0 {

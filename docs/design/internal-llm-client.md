@@ -38,6 +38,20 @@ SDK types today (same code volume, no third representation).
 
 Extracted from the SDK sources (versions: openai v3.43.0, anthropic v1.57.0, genai v1.63.0).
 
+Cross-dialect (provider layer, not internal/llm): reasoning models behind relays
+that don't parse thinking leak the chat template's inline `<think>…</think>` into
+plain content on ANY text dialect (observed: kimi via zenmux on both chatcomp and
+responses). Every text provider routes content deltas through `thinkTagSplitter`
+(provider/thinktag.go): only a block OPENING the stream counts as reasoning
+(a literal tag mid-reply passes through, so replies discussing the tag are safe);
+an unclosed block (tool-call round, max_tokens, cancel) is implicitly all
+reasoning — `</think>` marks the think→content transition, not end-of-round;
+tags split across deltas are held back until resolved. Returned content/reasoning
+are clean; raw replay stays verbatim (openai keeps tags inline in rawMsg content
+and never duplicates tag-extracted think into the `reasoning` field;
+responses/google record verbatim items/parts anyway). The non-streaming Chat
+paths (titles, /compact, -m) split the same way.
+
 ### chat-completions (openai + compatibles)
 - `POST {base}/chat/completions`, `GET {base}/models`; `Authorization: Bearer <key>`.
 - Body: model, temperature (omit when nil), reasoning_effort (omit when ""), messages

@@ -135,7 +135,8 @@ func (p *OpenAIProvider) Chat(ctx context.Context, messages []Message) (string, 
 	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("no response choices")
 	}
-	return resp.Choices[0].Message.Content, nil
+	content, _ := splitInlineThink(resp.Choices[0].Message.Content)
+	return content, nil
 }
 
 func (p *OpenAIProvider) StreamChat(ctx context.Context, messages []Message, w io.Writer, reasoningW io.WriteCloser) (string, string, error) {
@@ -164,7 +165,7 @@ func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Mess
 	}
 	defer stream.Close()
 
-	var full, thinkFull string
+	var thinkFull, rawContent string
 	reasoningClosed := false
 	closeReasoning := func() {
 		if !reasoningClosed {
@@ -173,6 +174,7 @@ func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Mess
 		}
 	}
 	defer closeReasoning()
+	split := newStreamThinkSplitter(w, reasoningW, closeReasoning)
 
 	// Accumulate tool calls by stream index (id/name arrive once, arguments
 	// concatenate across deltas).
@@ -190,7 +192,8 @@ func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Mess
 			break
 		}
 		if cerr != nil {
-			return full, thinkFull, nil, fmt.Errorf("stream error: %w", cerr)
+			split.flush()
+			return split.content.String(), thinkFull + split.think.String(), nil, fmt.Errorf("stream error: %w", cerr)
 		}
 		// The final chunk (include_usage) carries token usage and no choices.
 		if chunk.Usage != nil && chunk.Usage.TotalTokens > 0 {
@@ -238,13 +241,17 @@ func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Mess
 			}
 
 			if choice.Delta.Content != "" {
-				closeReasoning()
-				fmt.Fprint(w, choice.Delta.Content)
-				full += choice.Delta.Content
+				// Verbatim for raw replay (inline think tags included); the
+				// splitter routes the display/history copy.
+				rawContent += choice.Delta.Content
+				split.write(choice.Delta.Content)
 			}
 		}
 	}
+	split.flush()
 	closeReasoning()
+	full := split.content.String()
+	reasoning := thinkFull + split.think.String()
 
 	// If the model requested tool calls, parse and return them.
 	if finishReason == "tool_calls" && len(toolCallMap) > 0 {
@@ -271,18 +278,20 @@ func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Mess
 		// Save raw assistant message JSON (preserves reasoning for kimi etc.).
 		rawMsg := map[string]any{
 			"role":       "assistant",
-			"content":    full,
+			"content":    rawContent,
 			"tool_calls": rawTCs,
 		}
+		// Field reasoning only: tag-extracted think text is already inline
+		// in the verbatim content.
 		if thinkFull != "" {
 			rawMsg["reasoning"] = thinkFull
 		}
 		rawJSON, _ := json.Marshal(rawMsg)
 		p.lastAssistantRawJSON = string(rawJSON)
 
-		return full, thinkFull, toolCalls, nil
+		return full, reasoning, toolCalls, nil
 	}
 	p.lastAssistantRawJSON = ""
 
-	return full, thinkFull, nil, nil
+	return full, reasoning, nil, nil
 }

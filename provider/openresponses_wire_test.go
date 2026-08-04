@@ -258,6 +258,55 @@ func TestOpenResponsesStreamTranscript(t *testing.T) {
 	}
 }
 
+// TestOpenResponsesStreamInlineThink pins inline-tag splitting on the
+// Responses dialect: relays that don't parse reasoning (zenmux fronting a
+// thinking model) leak <think> into output_text deltas — the block reaches
+// the reasoning writer, which closes before the first visible write, and the
+// returned content and reasoning are clean.
+func TestOpenResponsesStreamInlineThink(t *testing.T) {
+	transcript := strings.Join([]string{
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"<think>pond"}`,
+		``,
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"ering</think>\n\nhi"}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}`,
+		``,
+	}, "\n")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(transcript))
+	}))
+	defer srv.Close()
+
+	p := NewOpenResponses("k", srv.URL, "m", nil, srv.Client())
+	var content, reasoning strings.Builder
+	closed := false
+	closedBeforeContent := true
+	rw := writeCloserFunc{&reasoning, func() { closed = true }}
+	cw := writerFunc(func(b []byte) (int, error) {
+		if !closed {
+			closedBeforeContent = false
+		}
+		return content.Write(b)
+	})
+	full, think, err := p.StreamChat(context.Background(), []Message{{Role: "user", Content: "q"}}, cw, rw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if think != "pondering" || reasoning.String() != "pondering" {
+		t.Fatalf("reasoning = %q / %q", think, reasoning.String())
+	}
+	if !closed || !closedBeforeContent {
+		t.Fatalf("reasoning writer close: closed=%v beforeContent=%v", closed, closedBeforeContent)
+	}
+	if full != "hi" || content.String() != "hi" {
+		t.Fatalf("content = %q / %q", full, content.String())
+	}
+}
+
 // TestOpenResponsesTerminalEvents pins the terminal-event fix: response.failed,
 // response.incomplete, and error events yield a structured *llm.RespFailure
 // carrying the event's message/code — previously they fell through silently

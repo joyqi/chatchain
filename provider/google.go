@@ -250,7 +250,8 @@ func (p *GoogleProvider) Chat(ctx context.Context, messages []Message) (string, 
 			}
 		}
 	}
-	return resp.Text(), nil
+	content, _ := splitInlineThink(resp.Text())
+	return content, nil
 }
 
 func (p *GoogleProvider) StreamChat(ctx context.Context, messages []Message, w io.Writer, reasoningW io.WriteCloser) (string, string, error) {
@@ -276,7 +277,7 @@ func (p *GoogleProvider) streamChatInternal(ctx context.Context, messages []Mess
 		req.Tools = []*llm.GTool{{FunctionDeclarations: decls}}
 	}
 
-	var full, thinkFull string
+	var thinkFull string
 	var toolCalls []ToolCall
 	p.lastImages = nil
 	var rawParts []*llm.GPart // accumulate all parts to preserve thought signatures
@@ -288,6 +289,7 @@ func (p *GoogleProvider) streamChatInternal(ctx context.Context, messages []Mess
 		}
 	}
 	defer closeReasoning()
+	split := newStreamThinkSplitter(w, reasoningW, closeReasoning)
 	p.lastUsageOK = false
 
 	stream, err := p.client.StreamGenerate(ctx, p.model, req)
@@ -302,7 +304,8 @@ func (p *GoogleProvider) streamChatInternal(ctx context.Context, messages []Mess
 			break
 		}
 		if serr != nil {
-			return full, thinkFull, nil, fmt.Errorf("stream error: %w", serr)
+			split.flush()
+			return split.content.String(), thinkFull + split.think.String(), nil, fmt.Errorf("stream error: %w", serr)
 		}
 		if resp.UsageMetadata != nil {
 			p.lastInput = resp.UsageMetadata.PromptTokenCount
@@ -344,13 +347,14 @@ func (p *GoogleProvider) streamChatInternal(ctx context.Context, messages []Mess
 				// generateContent delivers calls atomically: one notification.
 				p.notifyToolDelta(part.FunctionCall.Name, "")
 			case part.Text != "":
-				closeReasoning()
-				fmt.Fprint(w, part.Text)
-				full += part.Text
+				split.write(part.Text)
 			}
 		}
 	}
+	split.flush()
 	closeReasoning()
+	full := split.content.String()
+	thinkFull += split.think.String()
 
 	if len(toolCalls) > 0 {
 		p.lastModelContent = &llm.GContent{Role: "model", Parts: rawParts}

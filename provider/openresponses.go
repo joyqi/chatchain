@@ -189,7 +189,8 @@ func (p *OpenResponsesProvider) Chat(ctx context.Context, messages []Message) (s
 			p.lastImages = append(p.lastImages, Attachment{MimeType: mime, Data: data})
 		}
 	}
-	return resp.OutputText(), nil
+	content, _ := splitInlineThink(resp.OutputText())
+	return content, nil
 }
 
 func (p *OpenResponsesProvider) StreamChat(ctx context.Context, messages []Message, w io.Writer, reasoningW io.WriteCloser) (string, string, error) {
@@ -221,7 +222,7 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 	}
 	defer stream.Close()
 
-	var full, thinkFull string
+	var thinkFull string
 	reasoningClosed := false
 	closeReasoning := func() {
 		if !reasoningClosed {
@@ -229,6 +230,7 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 			reasoningClosed = true
 		}
 	}
+	split := newStreamThinkSplitter(w, reasoningW, closeReasoning)
 
 	// Track function calls. Key by call_id (always unique per call) rather
 	// than item.ID: Bedrock-backed gateways (zenmux) collapse parallel tool
@@ -270,9 +272,7 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 			fmt.Fprint(reasoningW, evt.Delta)
 			thinkFull += evt.Delta
 		case "response.output_text.delta":
-			closeReasoning()
-			fmt.Fprint(w, evt.Delta)
-			full += evt.Delta
+			split.write(evt.Delta)
 		case "response.image_generation_call.in_progress", "response.image_generation_call.generating":
 			// Generation started: raise the lifecycle widget through the
 			// composing observer (the same channel function calls use).
@@ -350,18 +350,19 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 			p.lastUsageOK = true
 		default:
 			if evt.Delta != "" && evt.Type == "" {
-				closeReasoning()
-				fmt.Fprint(w, evt.Delta)
-				full += evt.Delta
+				split.write(evt.Delta)
 			}
 		}
 	}
+	split.flush()
 	closeReasoning()
+	full := split.content.String()
+	reasoning := thinkFull + split.think.String()
 	if streamErr != nil {
-		if full != "" || thinkFull != "" || len(fnCalls) > 0 {
+		if full != "" || reasoning != "" || len(fnCalls) > 0 {
 			// Ignore stream close errors if we got content
 		} else {
-			return full, thinkFull, nil, fmt.Errorf("stream error: %w", streamErr)
+			return full, reasoning, nil, fmt.Errorf("stream error: %w", streamErr)
 		}
 	}
 
@@ -386,17 +387,17 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 		// (stripping function_call ids) happens in buildRequest, so it also
 		// heals blobs persisted by older builds that rewrote id := call_id.
 		p.lastRawOutput = &openResponsesRawOutput{items: rawOutputItems}
-		return full, thinkFull, toolCalls, nil
+		return full, reasoning, toolCalls, nil
 	}
 
 	// An image round also keeps its raw items: the image_generation_call id
 	// (payload stripped) carries the server-side multiturn context.
 	if len(p.lastImages) > 0 && len(rawOutputItems) > 0 {
 		p.lastRawOutput = &openResponsesRawOutput{items: rawOutputItems}
-		return full, thinkFull, nil, nil
+		return full, reasoning, nil, nil
 	}
 	p.lastRawOutput = nil
-	return full, thinkFull, nil, nil
+	return full, reasoning, nil, nil
 }
 
 // SetImageOutput / ImageOutput implement ImageTunable: the switch advertises
