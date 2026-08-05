@@ -84,6 +84,15 @@ type PresentationReporter interface {
 	Presentation(name string) Presentation
 }
 
+// Owner is an optional Dispatcher capability: name ownership beyond the
+// currently ADVERTISED tools. A deferring wrapper hides tools from Tools()
+// but still owns their names — Merge routes calls (and capability queries)
+// through Owns, so a direct call to a hidden tool reaches the wrapper's
+// implicit-load path instead of dying as "unknown tool".
+type Owner interface {
+	Owns(name string) bool
+}
+
 // Artifact is a call's display payload, posted through the context side
 // channel: content meant for the USER's eyes only (a unified diff), kept out
 // of the model-facing result text so it never costs tokens. Lines are
@@ -388,13 +397,29 @@ func (m *multiDispatcher) Tools() []provider.ToolDef {
 	return tools
 }
 
-func (m *multiDispatcher) CallTool(ctx context.Context, name string, args map[string]any) (string, bool, error) {
+// owner finds the first part owning the name: by the Owner capability when
+// implemented (which sees hidden/deferred names), else by the advertised
+// tool list.
+func (m *multiDispatcher) owner(name string) Dispatcher {
 	for _, p := range m.parts {
+		if o, ok := p.(Owner); ok {
+			if o.Owns(name) {
+				return p
+			}
+			continue
+		}
 		for _, def := range p.Tools() {
 			if def.Name == name {
-				return p.CallTool(ctx, name, args) // first (earliest) owner
+				return p
 			}
 		}
+	}
+	return nil
+}
+
+func (m *multiDispatcher) CallTool(ctx context.Context, name string, args map[string]any) (string, bool, error) {
+	if p := m.owner(name); p != nil {
+		return p.CallTool(ctx, name, args)
 	}
 	return "", true, fmt.Errorf("unknown tool: %s", name)
 }
@@ -403,13 +428,9 @@ func (m *multiDispatcher) CallTool(ctx context.Context, name string, args map[st
 // Parts without the ApprovalReporter capability (e.g. the MCP manager) never
 // require approval — their behavior is unchanged.
 func (m *multiDispatcher) RequiresApproval(name string) bool {
-	for _, p := range m.parts {
-		for _, def := range p.Tools() {
-			if def.Name == name {
-				ar, ok := p.(ApprovalReporter)
-				return ok && ar.RequiresApproval(name)
-			}
-		}
+	if p := m.owner(name); p != nil {
+		ar, ok := p.(ApprovalReporter)
+		return ok && ar.RequiresApproval(name)
 	}
 	return false
 }
@@ -417,15 +438,43 @@ func (m *multiDispatcher) RequiresApproval(name string) bool {
 // Presentation routes the question to the part owning the tool name; parts
 // without the PresentationReporter capability present as PresentGroup.
 func (m *multiDispatcher) Presentation(name string) Presentation {
-	for _, p := range m.parts {
-		for _, def := range p.Tools() {
-			if def.Name == name {
-				if pr, ok := p.(PresentationReporter); ok {
-					return pr.Presentation(name)
-				}
-				return PresentGroup
-			}
+	if p := m.owner(name); p != nil {
+		if pr, ok := p.(PresentationReporter); ok {
+			return pr.Presentation(name)
 		}
 	}
 	return PresentGroup
+}
+
+// SearchTools forwards the client-executed search to the first part with
+// the capability (the protocol defer modes' wrapper).
+func (m *multiDispatcher) SearchTools(query string) []provider.ToolDef {
+	for _, p := range m.parts {
+		if ts, ok := p.(ToolSearcher); ok {
+			return ts.SearchTools(query)
+		}
+	}
+	return nil
+}
+
+// DeferredTools aggregates deferred-tool status from every implementing part.
+func (m *multiDispatcher) DeferredTools() []DeferredToolStatus {
+	var out []DeferredToolStatus
+	for _, p := range m.parts {
+		if di, ok := p.(DeferInspector); ok {
+			out = append(out, di.DeferredTools()...)
+		}
+	}
+	return out
+}
+
+// TakePendingLoads drains frozen-mount loads from every implementing part.
+func (m *multiDispatcher) TakePendingLoads() []provider.ToolDef {
+	var out []provider.ToolDef
+	for _, p := range m.parts {
+		if pl, ok := p.(PendingLoader); ok {
+			out = append(out, pl.TakePendingLoads()...)
+		}
+	}
+	return out
 }
