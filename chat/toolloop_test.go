@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 
 	"chatchain/provider"
@@ -84,5 +85,65 @@ func TestToolLoopUnlimitedByDefault(t *testing.T) {
 	}
 	if tp.calls != 76 || reply != "done" {
 		t.Fatalf("calls = %d reply = %q, want 76 rounds then the final answer", tp.calls, reply)
+	}
+}
+
+// growingDispatcher gains a tool after its search_tools is called — the
+// deferred-loading shape.
+type growingDispatcher struct{ loaded bool }
+
+func (g *growingDispatcher) Tools() []provider.ToolDef {
+	defs := []provider.ToolDef{{Name: "search_tools"}}
+	if g.loaded {
+		defs = append(defs, provider.ToolDef{Name: "late_tool"})
+	}
+	return defs
+}
+func (g *growingDispatcher) CallTool(ctx context.Context, name string, args map[string]any) (string, bool, error) {
+	if name == "search_tools" {
+		g.loaded = true
+		return "Loaded 1 tool(s)", false, nil
+	}
+	return "ok", false, nil
+}
+
+// searchingToolProvider calls search_tools in round 1 and records the tool
+// set each round advertises.
+type searchingToolProvider struct {
+	rounds   int
+	perRound [][]string
+}
+
+func (p *searchingToolProvider) StreamChatWithTools(ctx context.Context, msgs []provider.Message, tools []provider.ToolDef, w io.Writer, reasoning io.WriteCloser) (string, string, []provider.ToolCall, error) {
+	reasoning.Close()
+	var names []string
+	for _, d := range tools {
+		names = append(names, d.Name)
+	}
+	p.perRound = append(p.perRound, names)
+	p.rounds++
+	if p.rounds == 1 {
+		return "", "", []provider.ToolCall{{ID: "c1", Name: "search_tools", Arguments: map[string]any{"query": "late"}}}, nil
+	}
+	return "done", "", nil, nil
+}
+
+// The Once loop re-queries the dispatcher every round: a tool loaded by a
+// search_tools call must be advertised in the very next request.
+func TestExecuteWithToolsRefreshesPerRound(t *testing.T) {
+	tp := &searchingToolProvider{}
+	dispatch := &growingDispatcher{}
+	history := []provider.Message{{Role: "user", Content: "go"}}
+
+	reply, _, err := executeWithTools(context.Background(), tp, dispatch, &history, dispatch.Tools(), "", 0)
+	if err != nil || reply != "done" {
+		t.Fatalf("loop failed: %q %v", reply, err)
+	}
+	if len(tp.perRound) != 2 {
+		t.Fatalf("rounds = %d, want 2", len(tp.perRound))
+	}
+	round2 := strings.Join(tp.perRound[1], ",")
+	if !strings.Contains(round2, "late_tool") {
+		t.Fatalf("round 2 must advertise the searched-in tool, got %v", tp.perRound[1])
 	}
 }

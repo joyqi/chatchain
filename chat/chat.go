@@ -44,6 +44,13 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 	}
 
 	tp, isToolProvider := p.(provider.ToolProvider)
+	if h, ok := p.(interface {
+		SetToolSearcher(func(string) []provider.ToolDef)
+	}); ok && dispatch != nil {
+		if ts, ok2 := dispatch.(tool.ToolSearcher); ok2 {
+			h.SetToolSearcher(ts.SearchTools)
+		}
+	}
 	var tools []provider.ToolDef
 	if dispatch != nil {
 		tools = dispatch.Tools()
@@ -230,6 +237,19 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 		if maxTurns > 0 && rounds == maxTurns {
 			return "", "", fmt.Errorf("%w (%d turns)", errToolRoundsExceeded, maxTurns)
 		}
+		if dispatch != nil && rounds > 0 {
+			// The advertised set is LIVE: tools a search_tools round loaded
+			// (and late-connecting MCP servers) must appear the very next
+			// request, not next turn.
+			tools = dispatch.Tools()
+		}
+		if pl, ok := dispatch.(tool.PendingLoader); ok && dispatch != nil {
+			// Frozen-mount defer (system-tools): loaded schemas append to
+			// history as a system message carrying Tools.
+			if defs := pl.TakePendingLoads(); len(defs) > 0 {
+				*history = append(*history, provider.Message{Role: "system", Tools: defs})
+			}
+		}
 		content, reasoning, toolCalls, err := tp.StreamChatWithTools(ctx,
 			agents.ComposeSendHistory(*history, overlay), tools, io.Discard, nopWriteCloser{io.Discard})
 		if err != nil {
@@ -383,16 +403,38 @@ func printToolResult(w io.Writer, result string, isError bool) {
 	}
 }
 
-// toolStatusLines lists every tool advertised to the model — its source (a
-// built-in tool or which MCP server it came from) and a one-line description — as
-// display lines prefixed by a one-line summary. Rendered in the /tools "Tools"
-// tab.
+// toolStatusLines lists every tool the model can reach — advertised ones with
+// their source (built-in or MCP server), plus deferred-but-hidden ones dimmed
+// at the bottom with their load state. Rendered in the /tools "Tools" tab.
 func toolStatusLines(dispatch tool.Dispatcher, mgr *mcpmgr.Manager) []string {
 	var defs []provider.ToolDef
 	if dispatch != nil {
 		defs = dispatch.Tools()
 	}
-	if len(defs) == 0 {
+
+	// Deferred state: an advertised tool that came in via search keeps a
+	// "loaded" badge; still-hidden ones list after the advertised set.
+	deferState := map[string]tool.DeferredToolStatus{}
+	var hidden []tool.DeferredToolStatus
+	if di, ok := dispatch.(tool.DeferInspector); ok {
+		advertised := make(map[string]bool, len(defs))
+		for _, d := range defs {
+			advertised[d.Name] = true
+		}
+		for _, st := range di.DeferredTools() {
+			deferState[st.Name] = st
+			if !advertised[st.Name] {
+				hidden = append(hidden, st)
+			}
+		}
+		sort.Slice(hidden, func(i, j int) bool {
+			if hidden[i].Group != hidden[j].Group {
+				return hidden[i].Group < hidden[j].Group
+			}
+			return hidden[i].Name < hidden[j].Name
+		})
+	}
+	if len(defs) == 0 && len(hidden) == 0 {
 		return []string{DimStyle.Sprint("No tools available.")}
 	}
 
@@ -412,6 +454,7 @@ func toolStatusLines(dispatch tool.Dispatcher, mgr *mcpmgr.Manager) []string {
 	// Pad names to the longest one so the source tags line up; namespaced
 	// display names ("server:tool") routinely exceed any fixed width.
 	names := make([]string, len(defs))
+	hiddenNames := make([]string, len(hidden))
 	width := 0
 	for i, d := range defs {
 		names[i] = displayToolName(d.Name)
@@ -419,16 +462,37 @@ func toolStatusLines(dispatch tool.Dispatcher, mgr *mcpmgr.Manager) []string {
 			width = len(names[i])
 		}
 	}
+	for i, st := range hidden {
+		hiddenNames[i] = displayToolName(st.Name)
+		if len(hiddenNames[i]) > width {
+			width = len(hiddenNames[i])
+		}
+	}
 
-	lines := make([]string, 0, len(defs)+1)
-	lines = append(lines, DimStyle.Sprintf("%d tool(s) available", len(defs)))
+	head := DimStyle.Sprintf("%d tool(s) available", len(defs))
+	if len(deferState) > 0 {
+		head += DimStyle.Sprintf(" · %d deferred (%d loaded)", len(deferState), len(deferState)-len(hidden))
+	}
+	lines := make([]string, 0, len(defs)+len(hidden)+1)
+	lines = append(lines, head)
 	for i, d := range defs {
 		tag := CodeBlockStyle.Sprint("[built-in]") // green
 		if srv, ok := source[d.Name]; ok {
-			tag = YellowStyle.Sprintf("[mcp: %s]", srv)
+			label := srv
+			if st, ok := deferState[d.Name]; ok {
+				label += " · " + st.State
+			}
+			tag = YellowStyle.Sprintf("[mcp: %s]", label)
 		}
 		desc := strings.ReplaceAll(d.Description, "\n", " ")
 		lines = append(lines, fmt.Sprintf("%s  %s  %s", BoldStyle.Sprintf("%-*s", width, names[i]), tag, DimStyle.Sprint(desc)))
+	}
+	for i, st := range hidden {
+		desc := strings.ReplaceAll(st.Description, "\n", " ")
+		lines = append(lines, fmt.Sprintf("%s  %s  %s",
+			DimStyle.Sprintf("%-*s", width, hiddenNames[i]),
+			DimStyle.Sprintf("[mcp: %s · %s]", st.Group, st.State),
+			DimStyle.Sprint(desc)))
 	}
 	return lines
 }
@@ -436,7 +500,24 @@ func toolStatusLines(dispatch tool.Dispatcher, mgr *mcpmgr.Manager) []string {
 // mcpStatusLines describes every configured MCP server — connection state,
 // endpoint, tools, and any error — as display lines prefixed by a one-line
 // summary. Rendered in the /tools "MCP" tab.
-func mcpStatusLines(mgr *mcpmgr.Manager) []string {
+func mcpStatusLines(mgr *mcpmgr.Manager, dispatch tool.Dispatcher) []string {
+	// Per-server defer tallies for the status row (state "loaded" counts
+	// against the group's total).
+	type tally struct{ total, loaded int }
+	deferBy := map[string]*tally{}
+	if di, ok := dispatch.(tool.DeferInspector); ok {
+		for _, st := range di.DeferredTools() {
+			t := deferBy[st.Group]
+			if t == nil {
+				t = &tally{}
+				deferBy[st.Group] = t
+			}
+			t.total++
+			if st.State == "loaded" {
+				t.loaded++
+			}
+		}
+	}
 	if mgr == nil {
 		return []string{DimStyle.Sprint("No MCP servers configured.")}
 	}
@@ -458,6 +539,9 @@ func mcpStatusLines(mgr *mcpmgr.Manager) []string {
 			status = CodeBlockStyle.Sprint("connected") // green
 		case s.Pending:
 			status = DimStyle.Sprint("connecting…")
+		}
+		if t, ok := deferBy[s.Name]; ok && t.total > 0 {
+			status += DimStyle.Sprintf(" · deferred (%d/%d loaded)", t.loaded, t.total)
 		}
 		lines = append(lines, fmt.Sprintf("%s  [%s]", BoldStyle.Sprint(s.Name), status))
 		lines = append(lines, DimStyle.Sprintf("  endpoint: %s", s.Endpoint))

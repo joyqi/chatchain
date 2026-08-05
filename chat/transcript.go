@@ -584,6 +584,7 @@ func pluralTools(n int) string {
 	}
 	return "tools"
 }
+
 // callDetailLocked refreshes the widget's live status-row prefix from the
 // group's counters ("3 tools · 1.2k tokens").
 func (t *transcript) callDetailLocked() {

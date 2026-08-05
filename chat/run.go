@@ -175,6 +175,16 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 
 	ctx := context.Background()
 	tp, isToolProvider := p.(provider.ToolProvider)
+	// defer_mode tool-search: connect the dispatcher's search seam to the
+	// provider (client-executed search). Inert unless the mode marked tools
+	// Deferred — emission is gated on the marks, not the seam.
+	if h, ok := p.(interface {
+		SetToolSearcher(func(string) []provider.ToolDef)
+	}); ok {
+		if ts, ok2 := dispatch.(tool.ToolSearcher); ok2 {
+			h.SetToolSearcher(ts.SearchTools)
+		}
+	}
 	var tools []provider.ToolDef
 	if dispatch != nil {
 		tools = dispatch.Tools()
@@ -801,8 +811,8 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 				Panels: []ui.Panel{
 					{Title: "Tools", Kind: ui.PanelView, Lines: toolStatusLines(dispatch, mgr),
 						Refresh: func() []string { return toolStatusLines(dispatch, mgr) }},
-					{Title: "MCP", Kind: ui.PanelView, Wrap: true, Lines: mcpStatusLines(mgr),
-						Refresh: func() []string { return mcpStatusLines(mgr) }},
+					{Title: "MCP", Kind: ui.PanelView, Wrap: true, Lines: mcpStatusLines(mgr, dispatch),
+						Refresh: func() []string { return mcpStatusLines(mgr, dispatch) }},
 				},
 			})
 			continue
@@ -1308,7 +1318,15 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 	// No round cap: the user is the brake (ESC cancels the turn; approval
 	// gates cover mutating tools) — industry parity with the major CLIs.
 	interactive := func(name string) bool { return isInteractive(dispatch, name) }
+	rounds := 0
 	for {
+		if rounds > 0 {
+			// The advertised set is LIVE: tools a search_tools round loaded
+			// (and late-connecting MCP servers) must appear the very next
+			// request, not next turn.
+			tools = dispatch.Tools()
+		}
+		rounds++
 		content, reasoning, toolCalls, err := streamToolRound(ctx, u, sink, tr, tp, agents.ComposeSendHistory(*history, overlay), tools, ctxm, interactive)
 		if err != nil {
 			return content, reasoning, err
@@ -1473,6 +1491,18 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 		// echoed the ❯ block and settled the activity group).
 		if steer != nil {
 			*history = append(*history, steer()...)
+		}
+
+		// Frozen-mount defer (system-tools): schemas loaded this round ride
+		// into history as a system message carrying Tools — appended, never
+		// inserted, so the provider-side prompt cache survives. Persisted
+		// with the session like any message; only chatcomp serializes it.
+		if pl, ok := dispatch.(tool.PendingLoader); ok {
+			if defs := pl.TakePendingLoads(); len(defs) > 0 {
+				m := provider.Message{Role: "system", Tools: defs}
+				*history = append(*history, m)
+				ctxm.note(m)
+			}
 		}
 	}
 }

@@ -187,7 +187,7 @@ var rootCmd = &cobra.Command{
 
 		// Build MCP server configs from CLI flags + config file (the
 		// provider's mcp_servers key selects the config-file subset).
-		mcpConfigs, mcpErr := buildMCPConfigs(cfg, pc)
+		mcpConfigs, mcpDefers, mcpErr := buildMCPConfigs(cfg, pc)
 		if mcpErr != nil {
 			return mcpErr
 		}
@@ -237,7 +237,7 @@ var rootCmd = &cobra.Command{
 				mgr.ConnectWait(context.Background())
 				defer mgr.Close()
 			}
-			dispatch := buildDispatcher(pc, mgr, agentMode, toolEnv)
+			dispatch := buildDispatcher(pc, mgr, mcpDefers, agentMode, toolEnv)
 			return chat.Once(context.Background(), p, chatMessage, systemPrompt, dispatch, agentOpts, maxTurns, os.Stdout)
 		}
 
@@ -367,7 +367,7 @@ var rootCmd = &cobra.Command{
 		// MCP connects in the background from inside chat.Run (which owns the
 		// prompt and reports each server as it resolves); the dispatcher reads the
 		// manager's tool set live, so late-arriving tools appear without a rebuild.
-		dispatch := buildDispatcher(pc, mgr, agentMode, toolEnv)
+		dispatch := buildDispatcher(pc, mgr, mcpDefers, agentMode, toolEnv)
 		// The interactive UI requires a terminal (docs/design/ui-architecture.md);
 		// piped input goes through -m/--message.
 		if !term.IsTerminal(int(os.Stdout.Fd())) {
@@ -544,7 +544,7 @@ func providerEnvKey(providerType string) string {
 // activated through its load_skill tool — with a config entry still free to
 // declare it explicitly. Built-ins are passed first so they win any tool-name
 // collision. The result is always non-nil (it may advertise no tools).
-func buildDispatcher(pc config.ProviderConfig, mgr *mcpmgr.Manager, agent bool, env tool.Env) tool.Dispatcher {
+func buildDispatcher(pc config.ProviderConfig, mgr *mcpmgr.Manager, defers []tool.DeferredGroup, agent bool, env tool.Env) tool.Dispatcher {
 	warnf := func(format string, args ...any) {
 		chat.ErrorStyle.Fprintf(os.Stderr, "⚠ "+format+"\n", args...)
 	}
@@ -564,19 +564,38 @@ func buildDispatcher(pc config.ProviderConfig, mgr *mcpmgr.Manager, agent bool, 
 		parts = append(parts, reg)
 	}
 	if mgr != nil {
-		parts = append(parts, mgr)
+		if len(defers) > 0 {
+			// Wire-name prefixes resolve lazily: segments are assigned at
+			// connect time, and the deferring wrapper re-asks per snapshot.
+			prefixOf := func(server string) string {
+				for _, s := range mgr.Servers() {
+					if s.Name == server {
+						return s.WirePrefix()
+					}
+				}
+				return ""
+			}
+			mode := tool.ResolveDeferMode(pc.DeferMode, pc.Type, warnf)
+			parts = append(parts, mode.Wrap(mgr, defers, prefixOf))
+		} else {
+			if pc.DeferMode != "" {
+				warnf("defer_mode has no effect without a deferred mcp server (add `defer: \"<summary>\"` to one)")
+			}
+			parts = append(parts, mgr)
+		}
 	}
 	return tool.Merge(parts...)
 }
 
-func buildMCPConfigs(cfg *config.Config, pc config.ProviderConfig) ([]mcpmgr.ServerConfig, error) {
+func buildMCPConfigs(cfg *config.Config, pc config.ProviderConfig) ([]mcpmgr.ServerConfig, []tool.DeferredGroup, error) {
 	var configs []mcpmgr.ServerConfig
+	var defers []tool.DeferredGroup
 
 	// From config file, filtered by the provider's mcp_servers selection.
 	// --mcp flag servers always load: an explicit flag outranks config.
 	selected, err := cfg.MCPServersFor(pc)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for name, sc := range selected {
 		configs = append(configs, mcpmgr.ServerConfig{
@@ -587,14 +606,28 @@ func buildMCPConfigs(cfg *config.Config, pc config.ProviderConfig) ([]mcpmgr.Ser
 			Env:     sc.Env,
 			Headers: sc.Headers,
 		})
+		// defer opts the server into deferred loading; its VALUE is the
+		// group summary the search manifest shows. A blank value defeats
+		// the point (the summary IS the retrieval corpus) — warn loudly
+		// and advertise the server fully instead.
+		if sc.Defer != nil {
+			if s := strings.TrimSpace(*sc.Defer); s != "" {
+				defers = append(defers, tool.DeferredGroup{Name: name, Summary: s})
+			} else {
+				fmt.Fprintf(os.Stderr, "Warning: mcp server %s: defer needs a one-line summary of the server's tools (not deferred)\n", name)
+			}
+		}
 	}
+	// Deterministic manifest order (map iteration is random; the description
+	// truncation must not shuffle between runs).
+	sort.Slice(defers, func(i, j int) bool { return defers[i].Name < defers[j].Name })
 
 	// From CLI flags
 	for _, flag := range mcpFlags {
 		configs = append(configs, mcpmgr.ParseMCPFlag(flag))
 	}
 
-	return configs, nil
+	return configs, defers, nil
 }
 
 func Execute() {

@@ -175,6 +175,13 @@ mcp_servers:
     url: https://mcp.example.com/sse
     headers:
       Authorization: "Bearer ${env:GITHUB_TOKEN}"
+    # Deferred loading: instead of advertising every schema on every request,
+    # only a search_tools entry is advertised and the model loads this
+    # server's tools on demand — the value IS the group's one-line summary
+    # shown in the manifest (that's why it's a string, not a bool). Worth it
+    # for servers with many tools; leave unset for small ones. The provider
+    # key defer_mode selects the protocol (default "normal"; see docs).
+    defer: "GitHub repos, issues, PRs, code search"
 ```
 
 #### Variable Expansion
