@@ -78,6 +78,9 @@ func (p *AnthropicProvider) buildRequest(messages []Message) *llm.AnthropicReque
 		}
 		switch msg.Role {
 		case "system":
+			if len(msg.Tools) > 0 {
+				continue // a system-tools mount (K3 wire shape): chatcomp-only, skip here
+			}
 			req.System = append(req.System, llm.AnthropicTextBlock{Type: "text", Text: msg.Content})
 		case "user":
 			var blocks []any
@@ -163,9 +166,16 @@ func (p *AnthropicProvider) StreamChatWithTools(ctx context.Context, messages []
 func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []Message, tools []ToolDef, w io.Writer, reasoningW io.WriteCloser) (string, string, []ToolCall, error) {
 	req := p.buildRequest(messages)
 
-	// Add tool definitions if provided
+	// Add tool definitions if provided. Deferred tools (defer_mode
+	// "reference") carry defer_loading and summon the server-side search
+	// tool: the API expands matching defs as tool_reference blocks WITHIN a
+	// response, so search+call complete in one round. (Cross-round reuse
+	// would need replaying the server blocks — a planned optimization; until
+	// then the model re-searches server-side, which costs no client round
+	// trip.)
+	anyDeferred := false
 	for _, t := range tools {
-		schema := llm.AnthropicToolSchema{
+		schema := &llm.AnthropicToolSchema{
 			Type:       "object",
 			Properties: t.InputSchema["properties"],
 		}
@@ -176,10 +186,20 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 				}
 			}
 		}
+		if t.Deferred {
+			anyDeferred = true
+		}
 		req.Tools = append(req.Tools, llm.AnthropicTool{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: schema,
+			Name:         t.Name,
+			Description:  t.Description,
+			InputSchema:  schema,
+			DeferLoading: t.Deferred,
+		})
+	}
+	if anyDeferred {
+		req.Tools = append(req.Tools, llm.AnthropicTool{
+			Type: "tool_search_tool_regex_20251119",
+			Name: "tool_search_tool_regex",
 		})
 	}
 

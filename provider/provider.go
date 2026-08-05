@@ -19,6 +19,12 @@ type ToolDef struct {
 	Name        string
 	Description string
 	InputSchema map[string]any // JSON Schema forwarded to AI provider
+	// Deferred marks the tool for protocol-level deferred loading (the
+	// defer_mode strategies "reference" and "tool-search"): the dialect
+	// emits it with its defer flag instead of a full upfront declaration.
+	// Dialects without a deferral protocol ignore the mark (the tool is
+	// advertised normally — harmless, just not cache-optimal).
+	Deferred bool
 }
 
 // ToolCall represents a model requesting a tool invocation.
@@ -39,6 +45,11 @@ type Message struct {
 	IsError      bool         // tool result messages: whether the call failed
 	Interrupted  bool         // set on assistant messages cut short by the user; replayed as ordinary history
 	RawContent   any          // provider-specific raw content (e.g. *genai.Content for thought signatures)
+	// Tools carries dynamically loaded tool schemas on a system message
+	// (the "system-tools" defer mode, Kimi K3's wire shape: a system-role
+	// message with tools and NO content, appended to history). Only the
+	// chatcomp dialect serializes it; other dialects skip such messages.
+	Tools []ToolDef
 }
 
 type Provider interface {

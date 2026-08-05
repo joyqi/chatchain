@@ -64,6 +64,13 @@ type ProviderConfig struct {
 	// loads, by name. nil (key absent) = all of them; an empty list = none;
 	// names must exist in the top-level map (a typo fails loudly).
 	MCPServers []string `yaml:"mcp_servers"`
+	// DeferMode selects the protocol realizing deferred tool loading for
+	// servers with a `defer` summary: "normal" (default — client-side
+	// search_tools, works everywhere) now; "reference" (Anthropic
+	// defer_loading), "tool-search" (OpenAI Responses client-executed
+	// search), and "system-tools" (Kimi K3) are planned. An unknown or
+	// unsupported mode warns and falls back to normal.
+	DeferMode string `yaml:"defer_mode"`
 	// Agent enables agent mode for this provider (docs/design/agent-mode.md).
 	// yaml.v3 decodes the YAML 1.1 truthy spellings (true/yes/on) natively.
 	Agent         bool   `yaml:"agent"`
@@ -85,6 +92,14 @@ type MCPServerConfig struct {
 	URL     string            `yaml:"url"`
 	Env     map[string]string `yaml:"env"`
 	Headers map[string]string `yaml:"headers"`
+	// Defer opts this server's tools into deferred loading: instead of
+	// advertising every schema on every request, only a search_tools entry
+	// is advertised and the model loads tools on demand. The VALUE is the
+	// server's one-line summary shown in the hidden-groups manifest — the
+	// field is a string, not a bool, precisely so that opting in forces
+	// writing the summary the search relies on. Absent = advertise fully
+	// (today's behavior); present but blank = loud warning, not deferred.
+	Defer *string `yaml:"defer"`
 }
 
 // Config is the top-level config file structure.

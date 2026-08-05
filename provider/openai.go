@@ -76,6 +76,20 @@ func (p *OpenAIProvider) buildRequest(messages []Message) *llm.ChatCompRequest {
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
+			if len(msg.Tools) > 0 {
+				// Dynamically loaded tools (defer_mode system-tools): the
+				// K3 wire shape — tools, no content.
+				tm := llm.ChatToolsMsg{Role: "system"}
+				for _, t := range msg.Tools {
+					tm.Tools = append(tm.Tools, llm.ChatTool{Type: "function", Function: llm.ChatToolFunction{
+						Name:        t.Name,
+						Description: t.Description,
+						Parameters:  t.InputSchema,
+					}})
+				}
+				req.Messages = append(req.Messages, tm)
+				continue
+			}
 			req.Messages = append(req.Messages, llm.ChatMsg{Role: "system", Content: msg.Content})
 		case "user":
 			if len(msg.Attachments) > 0 {

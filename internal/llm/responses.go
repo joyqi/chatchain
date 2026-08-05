@@ -68,6 +68,9 @@ type RespTool struct {
 	Description string         `json:"description"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
 	Strict      bool           `json:"strict"`
+	// DeferLoading opts the tool into deferred loading via the tool-search
+	// tool (emitted only when true).
+	DeferLoading bool `json:"defer_loading,omitempty"`
 }
 
 // RespBuiltinTool declares a server-side built-in tool by bare type
@@ -81,6 +84,29 @@ type RespBuiltinTool struct {
 
 type RespReasoning struct {
 	Effort string `json:"effort"`
+}
+
+// RespToolSearch declares the tool-search server tool with client
+// execution: the model emits tool_search_call items and the CLIENT answers
+// them with tool_search_output items carrying the loaded subset — deferred
+// schemas mount at the end of the context window, preserving the prefix
+// cache (the documented guarantee).
+type RespToolSearch struct {
+	Type      string `json:"type"`      // "tool_search"
+	Execution string `json:"execution"` // "client"
+	// Description and Parameters are REQUIRED for client execution (the
+	// live API rejects their absence): they are what the model sees.
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+}
+
+// RespToolSearchOutput answers one tool_search_call.
+type RespToolSearchOutput struct {
+	Type      string     `json:"type"` // "tool_search_output"
+	CallID    string     `json:"call_id"`
+	Status    string     `json:"status"`    // "completed"
+	Execution string     `json:"execution"` // "client"
+	Tools     []RespTool `json:"tools"`
 }
 
 type RespRequest struct {
@@ -173,6 +199,8 @@ type RespOutputItem struct {
 	Arguments json.RawMessage `json:"arguments"`
 	// Result carries an image_generation_call's base64 image payload.
 	Result string `json:"result"`
+	// Query carries a tool_search_call's search query.
+	Query string `json:"query"`
 	// OutputFormat is the image_generation_call's format ("png", "webp", …).
 	OutputFormat string `json:"output_format"`
 }

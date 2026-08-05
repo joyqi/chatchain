@@ -247,3 +247,48 @@ func TestNoSaveField(t *testing.T) {
 		t.Error("no_save must default false")
 	}
 }
+
+// defer parses as an optional string: absent nil, a summary carries through,
+// and an explicitly empty value stays distinguishable (the cmd layer warns).
+func TestDeferField(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "c.yaml")
+	os.WriteFile(cfgPath, []byte(`
+providers:
+  x:
+    type: openai
+mcp_servers:
+  github:
+    command: gh-mcp
+    defer: "GitHub repos, issues, PRs"
+  fs:
+    command: fs-mcp
+  blank:
+    command: b-mcp
+    defer: ""
+`), 0o644)
+	cfg := Load(cfgPath)
+	if d := cfg.MCPServers["github"].Defer; d == nil || *d != "GitHub repos, issues, PRs" {
+		t.Errorf("defer = %v, want the summary", d)
+	}
+	if d := cfg.MCPServers["fs"].Defer; d != nil {
+		t.Errorf("absent defer must be nil, got %q", *d)
+	}
+	if d := cfg.MCPServers["blank"].Defer; d == nil || *d != "" {
+		t.Errorf("blank defer must be present-and-empty (cmd warns), got %v", d)
+	}
+}
+
+// defer_mode parses per provider and defaults empty (= normal downstream).
+func TestDeferModeField(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "c.yaml")
+	os.WriteFile(cfgPath, []byte("providers:\n  a:\n    type: anthropic\n    defer_mode: reference\n  b:\n    type: openai\n"), 0o644)
+	cfg := Load(cfgPath)
+	if _, pc := cfg.Get("a"); pc.DeferMode != "reference" {
+		t.Errorf("defer_mode = %q, want reference", pc.DeferMode)
+	}
+	if _, pc := cfg.Get("b"); pc.DeferMode != "" {
+		t.Errorf("defer_mode must default empty, got %q", pc.DeferMode)
+	}
+}

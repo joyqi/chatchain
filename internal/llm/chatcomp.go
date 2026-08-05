@@ -22,6 +22,15 @@ type ChatMsg struct {
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 }
 
+// ChatToolsMsg is Kimi K3's dynamically-loaded-tools message: role system,
+// a tools field, and NO content key at all — their API rejects a system
+// message carrying both (400). Appended to messages, never inserted, so the
+// provider-side prompt-cache prefix stays intact.
+type ChatToolsMsg struct {
+	Role  string     `json:"role"` // "system"
+	Tools []ChatTool `json:"tools"`
+}
+
 type ChatTextPart struct {
 	Type string `json:"type"` // "text"
 	Text string `json:"text"`

@@ -43,6 +43,16 @@ type ServerStatus struct {
 	Err       string   // connection/tool-listing error (empty when Connected)
 }
 
+// WirePrefix returns the wire-name prefix shared by this server's tools
+// ("mcp__<segment>__"), or "" while the server has no assigned segment (not
+// yet Connected). Deferred-loading wrappers match tools to their group by it.
+func (s ServerStatus) WirePrefix() string {
+	if !s.Connected || s.Segment == "" {
+		return ""
+	}
+	return wireNamePrefix + s.Segment + "__"
+}
+
 // toolTarget locates a registered tool: which session serves it and the raw
 // (un-namespaced) name that server knows it by. The corresponding ToolDef
 // carries the wire name (see ComposeWireName).

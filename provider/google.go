@@ -142,6 +142,9 @@ func (p *GoogleProvider) buildContents(messages []Message) ([]*llm.GContent, *ll
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
+			if len(msg.Tools) > 0 {
+				continue // a system-tools mount (K3 wire shape): chatcomp-only, skip here
+			}
 			system = textContent("user", msg.Content)
 		case "user":
 			if len(msg.Attachments) > 0 {

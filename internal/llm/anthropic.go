@@ -64,9 +64,15 @@ type AnthropicToolResultBlock struct {
 }
 
 type AnthropicTool struct {
-	Name        string              `json:"name"`
-	Description string              `json:"description"`
-	InputSchema AnthropicToolSchema `json:"input_schema"`
+	// Type is set only for server tools (the tool-search tool); function
+	// tools omit it.
+	Type        string               `json:"type,omitempty"`
+	Name        string               `json:"name"`
+	Description string               `json:"description,omitempty"`
+	InputSchema *AnthropicToolSchema `json:"input_schema,omitempty"`
+	// DeferLoading opts the tool into server-side deferred loading (the
+	// tool search tool expands matching defs as tool_reference blocks).
+	DeferLoading bool `json:"defer_loading,omitempty"`
 }
 
 type AnthropicToolSchema struct {

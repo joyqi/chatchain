@@ -28,9 +28,19 @@ type OpenResponsesProvider struct {
 	baseProvider
 	imageOutput   bool
 	imagePartial  func(data []byte)
+	toolSearcher  func(query string) []ToolDef
 	client        llm.Responses
 	lastRawOutput *openResponsesRawOutput
 	lastImages    []Attachment
+}
+
+// SetToolSearcher installs the client-executed tool-search callback (the
+// defer_mode "tool-search" seam): with it set, deferred tools are emitted
+// with defer_loading behind a tool_search entry, and the model's searches
+// are answered client-side mid-call. nil disables the protocol (deferred
+// tools then advertise normally — harmless, not cache-optimal).
+func (p *OpenResponsesProvider) SetToolSearcher(fn func(query string) []ToolDef) {
+	p.toolSearcher = fn
 }
 
 func NewOpenResponses(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *OpenResponsesProvider {
@@ -85,6 +95,9 @@ func (p *OpenResponsesProvider) buildRequest(messages []Message) *llm.RespReques
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
+			if len(msg.Tools) > 0 {
+				continue // a system-tools mount (K3 wire shape): chatcomp-only, skip here
+			}
 			// System prompts ride in instructions, never as input items; the
 			// last system message wins.
 			instructions := msg.Content
@@ -204,23 +217,38 @@ func (p *OpenResponsesProvider) StreamChatWithTools(ctx context.Context, message
 
 func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages []Message, tools []ToolDef, w io.Writer, reasoningW io.WriteCloser) (string, string, []ToolCall, error) {
 	req := p.buildRequest(messages)
+	anyDeferred := false
 	for _, t := range tools {
+		if t.Deferred {
+			anyDeferred = true
+		}
 		req.Tools = append(req.Tools, llm.RespTool{
-			Type:        "function",
-			Name:        t.Name,
-			Description: t.Description,
-			Parameters:  t.InputSchema,
-			Strict:      false,
+			Type:         "function",
+			Name:         t.Name,
+			Description:  t.Description,
+			Parameters:   t.InputSchema,
+			Strict:       false,
+			DeferLoading: t.Deferred && p.toolSearcher != nil,
+		})
+	}
+	if anyDeferred && p.toolSearcher != nil {
+		// defer_mode tool-search: the model searches, we answer (client
+		// execution) inside this call — search legs are invisible upstream.
+		req.Tools = append(req.Tools, llm.RespToolSearch{
+			Type: "tool_search", Execution: "client",
+			Description: "Search and load additional deferred tools by capability keywords before first use.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{"type": "string", "description": "Capability keywords"},
+				},
+				"required": []string{"query"},
+			},
 		})
 	}
 
 	p.lastUsageOK = false
 	p.lastImages = nil
-	stream, err := p.client.StreamResponse(ctx, req)
-	if err != nil {
-		return "", "", nil, fmt.Errorf("stream error: %w", err)
-	}
-	defer stream.Close()
 
 	var thinkFull string
 	reasoningClosed := false
@@ -258,100 +286,165 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 	}
 
 	var streamErr error
-	for {
-		evt, cerr := stream.Next()
-		if cerr == io.EOF {
-			break
+	// Search legs: a tool_search_call ends a leg; we answer with the loaded
+	// subset and continue the SAME logical response in a follow-up request.
+	// Bounded — a model stuck searching must not loop forever.
+	type searchCall struct {
+		raw    json.RawMessage
+		callID string
+		query  string
+	}
+	for leg := 0; leg < 4; leg++ {
+		var legSearches []searchCall
+		legStart := len(rawOutputItems)
+		stream, serr := p.client.StreamResponse(ctx, req)
+		if serr != nil {
+			return "", "", nil, fmt.Errorf("stream error: %w", serr)
 		}
-		if cerr != nil {
-			streamErr = cerr
-			break
-		}
-		switch evt.Type {
-		case "response.reasoning_summary_text.delta":
-			fmt.Fprint(reasoningW, evt.Delta)
-			thinkFull += evt.Delta
-		case "response.output_text.delta":
-			split.write(evt.Delta)
-		case "response.image_generation_call.in_progress", "response.image_generation_call.generating":
-			// Generation started: raise the lifecycle widget through the
-			// composing observer (the same channel function calls use).
-			closeReasoning()
-			p.notifyToolDelta("image_generation", "…")
-		case "response.image_generation_call.partial_image":
-			if p.imagePartial != nil && evt.PartialImageB64 != "" {
-				if data, derr := base64.StdEncoding.DecodeString(evt.PartialImageB64); derr == nil && len(data) > 0 {
-					p.imagePartial(data)
-				}
+		for {
+			evt, cerr := stream.Next()
+			if cerr == io.EOF {
+				break
 			}
-		case "response.function_call_arguments.delta":
-			closeReasoning() // thinking is over once tool args stream
-			getPendingArgs(evt.ItemID).WriteString(evt.Delta)
-			p.notifyToolDelta("", evt.Delta)
-		case "response.function_call_arguments.done":
-			b := getPendingArgs(evt.ItemID)
-			b.Reset()
-			b.WriteString(evt.Arguments)
-		case "response.output_item.done":
-			// Capture every completed output item as raw JSON for replay.
-			var peeked llm.RespOutputItem
-			peekOK := json.Unmarshal(evt.Item, &peeked) == nil
-			if peekOK && peeked.Type == "image_generation_call" {
-				// The generated image: base64 in `result`. Surface it via
-				// LastImages; the raw replay keeps the item WITHOUT the
-				// payload (megabytes of base64 — the id alone carries the
-				// multiturn context server-side).
-				if data, derr := base64.StdEncoding.DecodeString(peeked.Result); derr == nil && len(data) > 0 {
-					mime := "image/png"
-					if peeked.OutputFormat != "" {
-						mime = "image/" + peeked.OutputFormat
-					}
-					p.lastImages = append(p.lastImages, Attachment{MimeType: mime, Data: data})
-				}
-				var obj map[string]json.RawMessage
-				if json.Unmarshal(evt.Item, &obj) == nil {
-					delete(obj, "result")
-					if reencoded, rerr := json.Marshal(obj); rerr == nil {
-						rawOutputItems = append(rawOutputItems, reencoded)
-					}
-				}
-				continue
+			if cerr != nil {
+				streamErr = cerr
+				break
 			}
-			rawOutputItems = append(rawOutputItems, evt.Item)
-			var item llm.RespOutputItem
-			if json.Unmarshal(evt.Item, &item) == nil && item.Type == "function_call" {
-				callID := item.CallID
-				if callID == "" {
-					callID = item.ID
-				}
-				if _, exists := fnCalls[callID]; !exists {
-					acc := &fnCallAcc{
-						callID: item.CallID,
-						name:   item.Name,
-					}
-					// Prefer the authoritative arguments from the completed
-					// item; fall back to whatever we accumulated via deltas.
-					if argsStr := item.ArgumentsString(); argsStr != "" {
-						acc.args.WriteString(argsStr)
-					} else if b, ok := pendingArgs[item.ID]; ok {
-						acc.args.WriteString(b.String())
-					}
-					fnCalls[callID] = acc
-					fnCallOrder = append(fnCallOrder, callID)
-				}
-			}
-		case "response.completed":
-			var usage llm.RespUsage
-			if evt.Response != nil && evt.Response.Usage != nil {
-				usage = *evt.Response.Usage
-			}
-			p.lastInput = usage.InputTokens
-			p.lastOutput = usage.OutputTokens
-			p.lastUsageOK = true
-		default:
-			if evt.Delta != "" && evt.Type == "" {
+			switch evt.Type {
+			case "response.reasoning_summary_text.delta":
+				fmt.Fprint(reasoningW, evt.Delta)
+				thinkFull += evt.Delta
+			case "response.output_text.delta":
 				split.write(evt.Delta)
+			case "response.image_generation_call.in_progress", "response.image_generation_call.generating":
+				// Generation started: raise the lifecycle widget through the
+				// composing observer (the same channel function calls use).
+				closeReasoning()
+				p.notifyToolDelta("image_generation", "…")
+			case "response.image_generation_call.partial_image":
+				if p.imagePartial != nil && evt.PartialImageB64 != "" {
+					if data, derr := base64.StdEncoding.DecodeString(evt.PartialImageB64); derr == nil && len(data) > 0 {
+						p.imagePartial(data)
+					}
+				}
+			case "response.function_call_arguments.delta":
+				closeReasoning() // thinking is over once tool args stream
+				getPendingArgs(evt.ItemID).WriteString(evt.Delta)
+				p.notifyToolDelta("", evt.Delta)
+			case "response.function_call_arguments.done":
+				b := getPendingArgs(evt.ItemID)
+				b.Reset()
+				b.WriteString(evt.Arguments)
+			case "response.output_item.done":
+				// Capture every completed output item as raw JSON for replay.
+				var peeked llm.RespOutputItem
+				peekOK := json.Unmarshal(evt.Item, &peeked) == nil
+				if peekOK && peeked.Type == "image_generation_call" {
+					// The generated image: base64 in `result`. Surface it via
+					// LastImages; the raw replay keeps the item WITHOUT the
+					// payload (megabytes of base64 — the id alone carries the
+					// multiturn context server-side).
+					if data, derr := base64.StdEncoding.DecodeString(peeked.Result); derr == nil && len(data) > 0 {
+						mime := "image/png"
+						if peeked.OutputFormat != "" {
+							mime = "image/" + peeked.OutputFormat
+						}
+						p.lastImages = append(p.lastImages, Attachment{MimeType: mime, Data: data})
+					}
+					var obj map[string]json.RawMessage
+					if json.Unmarshal(evt.Item, &obj) == nil {
+						delete(obj, "result")
+						if reencoded, rerr := json.Marshal(obj); rerr == nil {
+							rawOutputItems = append(rawOutputItems, reencoded)
+						}
+					}
+					continue
+				}
+				var peekSearch llm.RespOutputItem
+				if json.Unmarshal(evt.Item, &peekSearch) == nil && peekSearch.Type == "tool_search_call" {
+					callID := peekSearch.CallID
+					if callID == "" {
+						callID = peekSearch.ID
+					}
+					// The live API nests the query in an arguments OBJECT
+					// ({"arguments":{"query":"…"}}, verified on gpt-5.5); a
+					// top-level "query" is kept as a fallback shape.
+					query := peekSearch.Query
+					var sargs struct {
+						Query string `json:"query"`
+					}
+					if json.Unmarshal(peekSearch.Arguments, &sargs) == nil && sargs.Query != "" {
+						query = sargs.Query
+					}
+					legSearches = append(legSearches, searchCall{raw: evt.Item, callID: callID, query: query})
+					rawOutputItems = append(rawOutputItems, evt.Item)
+					continue
+				}
+				rawOutputItems = append(rawOutputItems, evt.Item)
+				var item llm.RespOutputItem
+				if json.Unmarshal(evt.Item, &item) == nil && item.Type == "function_call" {
+					callID := item.CallID
+					if callID == "" {
+						callID = item.ID
+					}
+					if _, exists := fnCalls[callID]; !exists {
+						acc := &fnCallAcc{
+							callID: item.CallID,
+							name:   item.Name,
+						}
+						// Prefer the authoritative arguments from the completed
+						// item; fall back to whatever we accumulated via deltas.
+						if argsStr := item.ArgumentsString(); argsStr != "" {
+							acc.args.WriteString(argsStr)
+						} else if b, ok := pendingArgs[item.ID]; ok {
+							acc.args.WriteString(b.String())
+						}
+						fnCalls[callID] = acc
+						fnCallOrder = append(fnCallOrder, callID)
+					}
+				}
+			case "response.completed":
+				var usage llm.RespUsage
+				if evt.Response != nil && evt.Response.Usage != nil {
+					usage = *evt.Response.Usage
+				}
+				p.lastInput = usage.InputTokens
+				p.lastOutput = usage.OutputTokens
+				p.lastUsageOK = true
+			default:
+				if evt.Delta != "" && evt.Type == "" {
+					split.write(evt.Delta)
+				}
 			}
+		}
+		stream.Close()
+		if p.toolSearcher == nil || len(legSearches) == 0 || streamErr != nil {
+			break
+		}
+		// Replay EVERYTHING this leg produced, in arrival order: gpt-5.x
+		// pairs its reasoning items with the tool_search_call and rejects
+		// the call replayed without them.
+		for _, item := range rawOutputItems[legStart:] {
+			req.Input = append(req.Input, item)
+		}
+		for _, sc := range legSearches {
+			hits := p.toolSearcher(sc.query)
+			out := llm.RespToolSearchOutput{
+				Type: "tool_search_output", CallID: sc.callID,
+				Status: "completed", Execution: "client",
+			}
+			for _, h := range hits {
+				out.Tools = append(out.Tools, llm.RespTool{
+					Type: "function", Name: h.Name, Description: h.Description,
+					Parameters: h.InputSchema, DeferLoading: true,
+				})
+			}
+			outRaw, _ := json.Marshal(out)
+			// The answer joins the request input AND the raw replay blob:
+			// later rounds must carry the pair so mounted tools stay loaded
+			// (they live in history, not the array).
+			req.Input = append(req.Input, json.RawMessage(outRaw))
+			rawOutputItems = append(rawOutputItems, json.RawMessage(outRaw))
 		}
 	}
 	split.flush()
