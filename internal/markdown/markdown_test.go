@@ -1425,6 +1425,28 @@ func TestTableNeverExactTerminalWidth(t *testing.T) {
 // paint Error with an alarm BACKGROUND (github: white on deep red) — seen
 // live as garish blocks through normal code. Highlight renders Error tokens
 // as plain text: no background sequence may survive, under either theme.
+// TestBareFenceUsesDefaultForeground pins the bare-fence immunity: a fence
+// with no language carries NO color sequences. Chroma's plaintext path would
+// paint the whole block in the style's Text color (monokai: near-white),
+// betting readability on background detection; the terminal's default
+// foreground is readable on any background.
+func TestBareFenceUsesDefaultForeground(t *testing.T) {
+	color.NoColor = false
+	SetCodeTheme("monokai")
+	src := "```\n┌───┐\n│ A │\n└───┘\n```\n"
+	var out strings.Builder
+	m := newTestWriter(&out)
+	m.Write([]byte(src))
+	m.Flush()
+	got := out.String()
+	if strings.Contains(got, "\x1b[38;") || strings.Contains(got, "\x1b[48;") {
+		t.Errorf("bare fence must not carry color sequences:\n%q", got)
+	}
+	if !strings.Contains(visible(got), "│ A │") {
+		t.Errorf("content missing:\n%q", visible(got))
+	}
+}
+
 func TestHighlightNeutralizesErrorTokens(t *testing.T) {
 	line := "重要: 这是一条发给**特定领域开发者**的推荐语（clarity、naturalness）"
 	for _, style := range []string{"github", "monokai"} {

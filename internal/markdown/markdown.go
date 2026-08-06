@@ -1447,6 +1447,16 @@ func highlightCode(code, lang string) string {
 	if color.NoColor {
 		return indentCode(code)
 	}
+	// A bare fence has nothing to highlight: the plaintext lexer marks every
+	// rune Text, so chroma would paint the whole block in the style's plain
+	// foreground — betting the block's readability on background detection
+	// (monokai's Text is near-white: invisible on a light terminal a
+	// misdetection left it on). The terminal's default foreground is readable
+	// by definition; github already behaves this way (it defines no Text
+	// color), so this only changes the dark-theme path.
+	if lang == "" {
+		return indentCode(code)
+	}
 	var sb strings.Builder
 	if err := Highlight(&sb, code, lang, codeStyleName()); err != nil {
 		return indentCode(codeFallbackStyle.Sprint(code))
