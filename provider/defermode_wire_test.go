@@ -167,3 +167,120 @@ func TestOpenAISystemToolsMessageWire(t *testing.T) {
 		t.Fatalf("mounted tools wrong: %v", tm["tools"])
 	}
 }
+
+// Server search blocks (reference mode) are captured from the stream —
+// server_tool_use recomposed from its input deltas, tool_search_tool_result
+// verbatim from its start event — exposed via LastRawContent, and must
+// round-trip through Marshal/Unmarshal. The server search must NOT raise the
+// tool-call widget observer.
+func TestAnthropicServerBlockCapture(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(
+			`event: content_block_start` + "\n" +
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srv_1","name":"tool_search_tool_regex","input":{}}}` + "\n\n" +
+				`event: content_block_delta` + "\n" +
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"pattern\":\"weather\"}"}}` + "\n\n" +
+				`event: content_block_start` + "\n" +
+				`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_search_tool_result","tool_use_id":"srv_1","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"atmos_query"}]}}}` + "\n\n" +
+				`event: content_block_start` + "\n" +
+				`data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}` + "\n\n" +
+				`event: content_block_delta` + "\n" +
+				`data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"found it"}}` + "\n\n" +
+				`event: message_stop` + "\n" +
+				`data: {"type":"message_stop"}` + "\n\n"))
+	}))
+	defer srv.Close()
+
+	p := NewAnthropic("sk-test", srv.URL, "claude-sonnet-5", nil, srv.Client())
+	var observed []string
+	p.SetToolCallObserver(func(name, delta string) { observed = append(observed, name) })
+	var sink strings.Builder
+	// Capture is gated on the reference protocol being active: the request
+	// must carry a deferred tool.
+	full, _, _, err := p.StreamChatWithTools(context.Background(),
+		[]Message{{Role: "user", Content: "go"}},
+		[]ToolDef{{Name: "atmos_query", Description: "d", InputSchema: map[string]any{"type": "object"}, Deferred: true}},
+		&sink, nopWC{})
+	if err != nil || full != "found it" {
+		t.Fatalf("full=%q err=%v", full, err)
+	}
+	if len(observed) != 0 {
+		t.Errorf("server search deltas must not reach the tool observer, got %v", observed)
+	}
+
+	raw, ok := p.LastRawContent().(*anthropicRawBlocks)
+	if !ok || len(raw.Blocks) != 2 {
+		t.Fatalf("LastRawContent = %#v, want 2 server blocks", p.LastRawContent())
+	}
+	if !strings.Contains(string(raw.Blocks[0]), `"server_tool_use"`) ||
+		!strings.Contains(string(raw.Blocks[0]), `"pattern":"weather"`) {
+		t.Errorf("block 0 not recomposed with its input: %s", raw.Blocks[0])
+	}
+	if !strings.Contains(string(raw.Blocks[1]), `"tool_search_tool_result"`) ||
+		!strings.Contains(string(raw.Blocks[1]), `"atmos_query"`) {
+		t.Errorf("block 1 not captured verbatim: %s", raw.Blocks[1])
+	}
+
+	// Persistence round-trip.
+	blob, err := p.MarshalRawContent(raw)
+	if err != nil || len(blob) == 0 {
+		t.Fatalf("marshal: %v", err)
+	}
+	back, err := p.UnmarshalRawContent(blob)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	rb := back.(*anthropicRawBlocks)
+	if len(rb.Blocks) != 2 || string(rb.Blocks[1]) != string(raw.Blocks[1]) {
+		t.Fatalf("round-trip lost blocks: %v", rb.Blocks)
+	}
+}
+
+// Replay is gated on the reference protocol being active in THIS request: a
+// deferred tool in the tools array replays the captured blocks; without one
+// (defer_mode normal, or a resumed session on a provider whose endpoint never
+// saw defer_loading) the history degrades to its text — no endpoint guessing.
+func TestAnthropicServerBlockReplay(t *testing.T) {
+	blocks := []json.RawMessage{
+		json.RawMessage(`{"type":"server_tool_use","id":"srv_1","name":"tool_search_tool_regex","input":{"pattern":"weather"}}`),
+		json.RawMessage(`{"type":"tool_search_tool_result","tool_use_id":"srv_1","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"atmos_query"}]}}`),
+	}
+	msgs := []Message{
+		{Role: "user", Content: "search"},
+		{Role: "assistant", Content: "found atmos_query", RawContent: &anthropicRawBlocks{Blocks: blocks}},
+		{Role: "user", Content: "use it"},
+	}
+	deferredTool := ToolDef{Name: "atmos_query", Description: "d", InputSchema: map[string]any{"type": "object"}, Deferred: true}
+	plainTool := ToolDef{Name: "atmos_query", Description: "d", InputSchema: map[string]any{"type": "object"}}
+
+	for _, tc := range []struct {
+		name  string
+		tools []ToolDef
+		want  string
+	}{
+		{"deferred-tool-replays", []ToolDef{deferredTool}, "server_tool_use,tool_search_tool_result,text"},
+		{"no-deferred-strips", []ToolDef{plainTool}, "text"},
+	} {
+		var got map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			json.Unmarshal(body, &got)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+		}))
+		p := NewAnthropic("sk-test", srv.URL, "claude-sonnet-5", nil, srv.Client())
+		var sink strings.Builder
+		p.StreamChatWithTools(context.Background(), msgs, tc.tools, &sink, nopWC{})
+		srv.Close()
+
+		asst := got["messages"].([]any)[1].(map[string]any)
+		var types []string
+		for _, b := range asst["content"].([]any) {
+			types = append(types, b.(map[string]any)["type"].(string))
+		}
+		if strings.Join(types, ",") != tc.want {
+			t.Errorf("%s: content types = %v, want %v", tc.name, types, tc.want)
+		}
+	}
+}

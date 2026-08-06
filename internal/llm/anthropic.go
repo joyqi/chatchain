@@ -135,8 +135,24 @@ type AnthropicUsage struct {
 
 type AnthropicContentBlock struct {
 	Type string `json:"type"` // text | thinking | tool_use | ...
-	ID   string `json:"id"`   // tool_use
-	Name string `json:"name"` // tool_use
+	ID   string `json:"id"`   // tool_use / server_tool_use
+	Name string `json:"name"` // tool_use / server_tool_use
+	// Raw preserves the block's full start-event JSON. Server search result
+	// blocks (tool_search_tool_result) arrive complete in content_block_start
+	// and replay verbatim in later requests — the parsed fields above cover
+	// only the common subset.
+	Raw json.RawMessage `json:"-"`
+}
+
+func (b *AnthropicContentBlock) UnmarshalJSON(data []byte) error {
+	type plain AnthropicContentBlock
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	*b = AnthropicContentBlock(p)
+	b.Raw = append(json.RawMessage(nil), data...)
+	return nil
 }
 
 type AnthropicDelta struct {

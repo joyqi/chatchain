@@ -17,12 +17,22 @@ import (
 var _ ToolProvider = (*AnthropicProvider)(nil)
 var _ UsageReporter = (*AnthropicProvider)(nil)
 var _ Tunable = (*AnthropicProvider)(nil)
+var _ RawContentProvider = (*AnthropicProvider)(nil)
 
 const anthropicDefaultBaseURL = "https://api.anthropic.com"
 
 type AnthropicProvider struct {
 	baseProvider
 	client llm.Anthropic
+	// lastServerBlocks holds the server search blocks (server_tool_use +
+	// tool_search_tool_result) of the last response, in arrival order.
+	// Replaying them keeps the tool_reference schema expansion alive across
+	// rounds; without them the model blind-calls deferred tools with guessed
+	// arguments (live-verified 2026-08-05). Capture and replay are gated on
+	// the request carrying defer_loading tools (defer_mode "reference") —
+	// the blocks belong to that protocol, so the gate needs no endpoint
+	// guessing and switching to a non-reference provider strips them.
+	lastServerBlocks []json.RawMessage
 }
 
 func NewAnthropic(apiKey, baseURL, model string, temperature *float64, httpClient *http.Client) *AnthropicProvider {
@@ -38,6 +48,38 @@ func NewAnthropic(apiKey, baseURL, model string, temperature *float64, httpClien
 	}
 }
 
+// anthropicRawBlocks is the RawContent payload: the response's server search
+// blocks, replayed at the front of the assistant message they came from.
+type anthropicRawBlocks struct {
+	Blocks []json.RawMessage
+}
+
+func (p *AnthropicProvider) LastRawContent() any {
+	if len(p.lastServerBlocks) == 0 {
+		return nil
+	}
+	return &anthropicRawBlocks{Blocks: p.lastServerBlocks}
+}
+
+func (p *AnthropicProvider) MarshalRawContent(v any) ([]byte, error) {
+	rb, ok := v.(*anthropicRawBlocks)
+	if !ok || rb == nil || len(rb.Blocks) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(rb.Blocks)
+}
+
+func (p *AnthropicProvider) UnmarshalRawContent(data []byte) (any, error) {
+	var blocks []json.RawMessage
+	if err := json.Unmarshal(data, &blocks); err != nil {
+		return nil, err
+	}
+	if len(blocks) == 0 {
+		return nil, nil
+	}
+	return &anthropicRawBlocks{Blocks: blocks}, nil
+}
+
 func (p *AnthropicProvider) ListModels(ctx context.Context) ([]string, error) {
 	models, err := p.client.Models(ctx)
 	if err != nil {
@@ -46,7 +88,7 @@ func (p *AnthropicProvider) ListModels(ctx context.Context) ([]string, error) {
 	return models, nil
 }
 
-func (p *AnthropicProvider) buildRequest(messages []Message) *llm.AnthropicRequest {
+func (p *AnthropicProvider) buildRequest(messages []Message, replayServerBlocks bool) *llm.AnthropicRequest {
 	req := &llm.AnthropicRequest{
 		Model:       p.model,
 		MaxTokens:   4096,
@@ -108,8 +150,16 @@ func (p *AnthropicProvider) buildRequest(messages []Message) *llm.AnthropicReque
 			pendingToolResults = append(pendingToolResults, blocks...)
 			flushToolResults()
 		case "assistant":
+			var blocks []any
+			// Server search blocks replay ahead of the reconstructed content
+			// (search precedes speech; the result block must follow its
+			// server_tool_use).
+			if raw, ok := msg.RawContent.(*anthropicRawBlocks); ok && raw != nil && replayServerBlocks {
+				for _, b := range raw.Blocks {
+					blocks = append(blocks, b)
+				}
+			}
 			if len(msg.ToolCalls) > 0 {
-				var blocks []any
 				if msg.Content != "" {
 					blocks = append(blocks, llm.AnthropicTextBlock{Type: "text", Text: msg.Content})
 				}
@@ -120,10 +170,10 @@ func (p *AnthropicProvider) buildRequest(messages []Message) *llm.AnthropicReque
 					}
 					blocks = append(blocks, llm.AnthropicToolUseBlock{Type: "tool_use", ID: tc.ID, Input: input, Name: tc.Name})
 				}
-				req.Messages = append(req.Messages, llm.AnthropicMsg{Role: "assistant", Content: blocks})
-			} else {
-				req.Messages = append(req.Messages, llm.AnthropicMsg{Role: "assistant", Content: []any{llm.AnthropicTextBlock{Type: "text", Text: msg.Content}}})
+			} else if msg.Content != "" || len(blocks) == 0 {
+				blocks = append(blocks, llm.AnthropicTextBlock{Type: "text", Text: msg.Content})
 			}
+			req.Messages = append(req.Messages, llm.AnthropicMsg{Role: "assistant", Content: blocks})
 		case "tool":
 			// Coalesce consecutive tool results into a single user message
 			pendingToolResults = append(pendingToolResults, llm.AnthropicToolResultBlock{
@@ -140,7 +190,7 @@ func (p *AnthropicProvider) buildRequest(messages []Message) *llm.AnthropicReque
 }
 
 func (p *AnthropicProvider) Chat(ctx context.Context, messages []Message) (string, error) {
-	resp, err := p.client.Message(ctx, p.buildRequest(messages))
+	resp, err := p.client.Message(ctx, p.buildRequest(messages, false))
 	if err != nil {
 		return "", fmt.Errorf("chat error: %w", err)
 	}
@@ -164,16 +214,21 @@ func (p *AnthropicProvider) StreamChatWithTools(ctx context.Context, messages []
 }
 
 func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []Message, tools []ToolDef, w io.Writer, reasoningW io.WriteCloser) (string, string, []ToolCall, error) {
-	req := p.buildRequest(messages)
-
-	// Add tool definitions if provided. Deferred tools (defer_mode
-	// "reference") carry defer_loading and summon the server-side search
-	// tool: the API expands matching defs as tool_reference blocks WITHIN a
-	// response, so search+call complete in one round. (Cross-round reuse
-	// would need replaying the server blocks — a planned optimization; until
-	// then the model re-searches server-side, which costs no client round
-	// trip.)
+	// Deferred tools (defer_mode "reference") carry defer_loading and summon
+	// the server-side search tool: the API expands matching defs as
+	// tool_reference blocks WITHIN a response, so search+call complete in
+	// one round. Cross-round reuse works by replaying the captured server
+	// blocks (see anthropicRawBlocks); without them the model blind-calls
+	// with guessed arguments. anyDeferred is the protocol gate for both
+	// capture and replay.
 	anyDeferred := false
+	for _, t := range tools {
+		if t.Deferred {
+			anyDeferred = true
+			break
+		}
+	}
+	req := p.buildRequest(messages, anyDeferred)
 	for _, t := range tools {
 		schema := &llm.AnthropicToolSchema{
 			Type:       "object",
@@ -185,9 +240,6 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 					schema.Required = append(schema.Required, s)
 				}
 			}
-		}
-		if t.Deferred {
-			anyDeferred = true
 		}
 		req.Tools = append(req.Tools, llm.AnthropicTool{
 			Name:         t.Name,
@@ -204,6 +256,7 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 	}
 
 	p.lastUsageOK = false
+	p.lastServerBlocks = nil // an interrupted stream must not leak stale blocks
 	stream, err := p.client.StreamMessage(ctx, req)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("stream error: %w", err)
@@ -225,11 +278,12 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 	// tool_use), so a single "current block" accumulator would mix fragments
 	// of different blocks. Assembly walks the indexes in order at the end.
 	type blockAcc struct {
-		kind    string          // "text" | "thinking" | "tool_use"
-		id      string          // tool_use
-		name    string          // tool_use
+		kind    string          // "text" | "thinking" | "tool_use" | server block types
+		id      string          // tool_use / server_tool_use
+		name    string          // tool_use / server_tool_use
 		content strings.Builder // text/thinking deltas
 		args    strings.Builder // input_json deltas
+		raw     json.RawMessage // start-event JSON (server result blocks replay verbatim)
 	}
 	blocks := make(map[int]*blockAcc)
 	block := func(idx int, kind string) *blockAcc {
@@ -240,7 +294,7 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 		}
 		return acc
 	}
-	assemble := func() (full, think string, toolCalls []ToolCall) {
+	assemble := func() (full, think string, toolCalls []ToolCall, serverBlocks []json.RawMessage) {
 		idxs := make([]int, 0, len(blocks))
 		for i := range blocks {
 			idxs = append(idxs, i)
@@ -260,9 +314,27 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 					json.Unmarshal([]byte(argsStr), &args)
 				}
 				toolCalls = append(toolCalls, ToolCall{ID: acc.id, Name: acc.name, Arguments: args})
+			case "server_tool_use":
+				// input streams via input_json_delta; recompose the block.
+				input := json.RawMessage("{}")
+				if s := acc.args.String(); json.Valid([]byte(s)) && s != "" {
+					input = json.RawMessage(s)
+				}
+				b, _ := json.Marshal(struct {
+					Type  string          `json:"type"`
+					ID    string          `json:"id"`
+					Name  string          `json:"name"`
+					Input json.RawMessage `json:"input"`
+				}{"server_tool_use", acc.id, acc.name, input})
+				serverBlocks = append(serverBlocks, b)
+			case "tool_search_tool_result":
+				// Arrives complete in content_block_start; replays verbatim.
+				if len(acc.raw) > 0 {
+					serverBlocks = append(serverBlocks, acc.raw)
+				}
 			}
 		}
-		return text.String(), thinking.String(), toolCalls
+		return text.String(), thinking.String(), toolCalls, serverBlocks
 	}
 
 	var stopReason string
@@ -273,7 +345,7 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 		}
 		if cerr != nil {
 			split.flush()
-			_, think, _ := assemble()
+			_, think, _, _ := assemble()
 			return split.content.String(), think + split.think.String(), nil, fmt.Errorf("stream error: %w", cerr)
 		}
 		switch evt.Type {
@@ -287,6 +359,7 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 					kind: evt.ContentBlock.Type,
 					id:   evt.ContentBlock.ID,
 					name: evt.ContentBlock.Name,
+					raw:  evt.ContentBlock.Raw,
 				}
 			}
 		case "content_block_delta":
@@ -304,7 +377,12 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 				closeReasoning() // thinking is over once tool args stream
 				acc := block(evt.Index, "tool_use")
 				acc.args.WriteString(evt.Delta.PartialJSON)
-				p.notifyToolDelta(acc.name, evt.Delta.PartialJSON)
+				// Server search args are not a client tool call — raising the
+				// lifecycle widget for them would leave it dangling (no
+				// CallTool ever settles it).
+				if acc.kind == "tool_use" {
+					p.notifyToolDelta(acc.name, evt.Delta.PartialJSON)
+				}
 			}
 		case "message_delta":
 			if evt.Delta != nil {
@@ -319,7 +397,13 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 	split.flush()
 	closeReasoning()
 
-	_, thinkFull, toolCalls := assemble()
+	_, thinkFull, toolCalls, serverBlocks := assemble()
+	if anyDeferred {
+		// Only reference-protocol responses replay their server blocks; other
+		// server tools' blocks (e.g. a future web_search) must not be dragged
+		// into history as orphans.
+		p.lastServerBlocks = serverBlocks
+	}
 	full := split.content.String()
 	thinkFull += split.think.String()
 
