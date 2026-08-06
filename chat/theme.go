@@ -1,39 +1,38 @@
 package chat
 
 import (
-	"time"
-
+	"chatchain/internal/host"
 	"chatchain/internal/markdown"
 	"chatchain/internal/ui"
-
-	"github.com/muesli/termenv"
 )
 
-// bgUnsupported latches when the terminal ignores the OSC 11 background query,
-// so later turns don't pay termenv's timeout again.
-var bgUnsupported bool
-
-// detectCodeTheme re-detects the terminal background (OSC 11 via termenv) and
-// updates the markdown code theme. Call it only at quiet moments (startup, the
-// start of a turn) — never mid-stream — so the query can't race user
-// keystrokes. A responsive terminal answers in milliseconds, so per-turn
-// re-detection is cheap and tracks light/dark switches; a terminal that
-// ignores OSC 11 hits termenv's 5s timeout once, after which we latch off.
-//
-// This is a TERMINAL interaction, which is why it lives in chat (the caller)
-// rather than in the pure internal/markdown package; the result is injected
-// via markdown.SetCodeTheme.
+// detectCodeTheme resolves the terminal background at startup through the
+// host layer (internal/host): a host with a native theme channel (cmux RPC)
+// answers without touching the tty; the plain terminal pays one OSC 11
+// round-trip, which is why this must run pre-Program — mid-Program it would
+// race the event loop's stdin ownership.
 func detectCodeTheme() {
-	if bgUnsupported {
-		return
+	applyCodeTheme(host.DetectBackground(host.SystemEnv()))
+}
+
+// refreshCodeTheme re-resolves the background between turns through hosts
+// that answer without a terminal round-trip (the Presenter capability) —
+// tracking a light/dark switch mid-session. Everywhere else ok=false and
+// the startup theme stands. Runs on the chat goroutine at turn start, so
+// the theme never flips inside a streaming block.
+func refreshCodeTheme(pres *host.Presenter) {
+	if dark, ok := pres.DarkBackground(); ok {
+		applyCodeTheme(dark)
 	}
-	start := time.Now()
-	dark := termenv.HasDarkBackground()
-	if time.Since(start) > time.Second {
-		bgUnsupported = true
-	}
-	ui.SetDarkBackground(dark) // adaptive ui shades (input background)
-	themeDark = dark           // showcase diff block shades (diff.go)
+}
+
+// applyCodeTheme fans the resolved background out to every shade consumer:
+// the markdown code theme, the adaptive ui shades (input background), and
+// the showcase diff renderer's block shades (diff.go). Already-printed code
+// keeps its baked-in colors — only new blocks pick up a change.
+func applyCodeTheme(dark bool) {
+	ui.SetDarkBackground(dark)
+	themeDark = dark
 	if dark {
 		markdown.SetCodeTheme("monokai")
 		diffCodeTheme = "monokai"

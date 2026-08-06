@@ -25,6 +25,11 @@ type Cmux struct {
 	exec func(argv []string) // one CLI invocation; tests inject a recorder
 	mail chan [][]string     // capacity 1; post replaces a waiting batch
 	done chan struct{}
+	// background resolves the pane background through cmux's RPC (see
+	// background.go) — the BackgroundReporter capability: tty-free, so the
+	// code theme can track light/dark switches BETWEEN turns, which the
+	// ANSI OSC path cannot do once the Program owns stdin.
+	background func() (dark, ok bool)
 }
 
 // cmuxKey names both the status row and the loading spinner's loader id.
@@ -38,13 +43,24 @@ func detectCmux(env Env) Host {
 	if err != nil {
 		return nil
 	}
-	return newCmux(func(argv []string) {
+	c := newCmux(func(argv []string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, path, argv...)
 		cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 		_ = cmd.Run() // sidebar dressing must never fail the chat
 	})
+	sid := env.Getenv("CMUX_SURFACE_ID")
+	c.background = func() (bool, bool) { return cmuxBackground(path, sid) }
+	return c
+}
+
+// DarkBackground implements BackgroundReporter.
+func (c *Cmux) DarkBackground() (bool, bool) {
+	if c.background == nil {
+		return false, false
+	}
+	return c.background()
 }
 
 func newCmux(run func(argv []string)) *Cmux {

@@ -927,6 +927,7 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 		// The transport reports upload progress / headers-received through
 		// this slot (progress.go); the stream loops attach the handlers.
 		turnCtx = withTurnProgress(turnCtx)
+		refreshCodeTheme(pres) // track light/dark switches (tty-free hosts only)
 		sink := u.StartStream(cancelTurn)
 		pres.SetState(host.StateBusy)
 		var reply, thinking string
