@@ -146,6 +146,29 @@ func TestChooseParsesAndFormats(t *testing.T) {
 	}
 }
 
+// TestChooseStringBooleans: models occasionally serialize booleans as
+// strings — a silent type mismatch must not turn a promised multi-select
+// into a single-select (or drop an explicit allow_custom=false).
+func TestChooseStringBooleans(t *testing.T) {
+	spec, err := parseChooseArgs(map[string]any{"questions": []any{
+		map[string]any{
+			"header": "Pets", "question": "Which pets?",
+			"options":      []any{map[string]any{"label": "cat"}, map[string]any{"label": "dog"}},
+			"multiple":     "true",
+			"allow_custom": "false",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !spec.Questions[0].Multiple {
+		t.Error(`multiple:"true" (string) must coerce to true`)
+	}
+	if spec.Questions[0].AllowCustom {
+		t.Error(`allow_custom:"false" (string) must coerce to false`)
+	}
+}
+
 func TestChooseValidation(t *testing.T) {
 	choose, _ := askTools(t, &fakeInteractor{})
 	for name, args := range map[string]map[string]any{

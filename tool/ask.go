@@ -41,6 +41,8 @@ func (t *chooseTool) Def() provider.ToolDef {
 			"Use ONLY when you are blocked on a decision that is genuinely the user's to make " +
 			"and the choices are enumerable; for open-ended discussion just ask in text. " +
 			"Each question's `header` is a TAB LABEL — keep it under ~12 characters. " +
+			"If a question's wording invites picking several options (\"select all that apply\"), " +
+			"you MUST set `multiple: true` on that question — the selector renders single-select otherwise. " +
 			"Unless allow_custom is false the user can always answer with their own text instead. " +
 			"The user may also decline to answer; proceed sensibly when that happens.",
 		InputSchema: map[string]any{
@@ -75,7 +77,7 @@ func (t *chooseTool) Def() provider.ToolDef {
 							},
 							"multiple": map[string]any{
 								"type":        "boolean",
-								"description": "Allow selecting several options (default false)",
+								"description": "Allow selecting several options (default false). Required whenever the question wording invites multiple picks.",
 							},
 							"allow_custom": map[string]any{
 								"type":        "boolean",
@@ -172,13 +174,6 @@ func parseChooseArgs(args map[string]any) (AskSpec, error) {
 		spec.Questions = append(spec.Questions, q)
 	}
 	return spec, nil
-}
-
-func boolArg(m map[string]any, key string, def bool) bool {
-	if v, ok := m[key].(bool); ok {
-		return v
-	}
-	return def
 }
 
 type confirmTool struct{ it Interactor }

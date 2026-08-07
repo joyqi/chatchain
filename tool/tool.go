@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 
 	"chatchain/provider"
@@ -477,4 +478,20 @@ func (m *multiDispatcher) TakePendingLoads() []provider.ToolDef {
 		}
 	}
 	return out
+}
+
+// boolArg reads an optional boolean tool argument. Models occasionally
+// serialize booleans as strings; a silent type mismatch must not flip a
+// flag's meaning (a promised multi-select rendering single-select, a
+// replace_all editing one occurrence), so string spellings coerce.
+func boolArg(m map[string]any, key string, def bool) bool {
+	switch v := m[key].(type) {
+	case bool:
+		return v
+	case string:
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
+	}
+	return def
 }

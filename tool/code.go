@@ -672,7 +672,7 @@ func (t *codeEditFile) Call(ctx context.Context, args map[string]any) (string, b
 	}
 	oldStr, _ := args["old_string"].(string)
 	newStr, _ := args["new_string"].(string)
-	replaceAll, _ := args["replace_all"].(bool)
+	replaceAll := boolArg(args, "replace_all", false)
 	display := t.cs.display(abs)
 	switch {
 	case oldStr == "":

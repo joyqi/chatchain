@@ -226,8 +226,9 @@ func TestCodeEditFile(t *testing.T) {
 	}
 
 	// replace_all handles both occurrences without a re-read (the edit itself
-	// refreshed the ledger).
-	out, isErr = call(t, tools["edit_file"], map[string]any{"path": "f.go", "old_string": "aaa", "new_string": "xxx", "replace_all": true})
+	// refreshed the ledger). A string-typed "true" (model serialization
+	// quirk) coerces instead of silently editing one occurrence.
+	out, isErr = call(t, tools["edit_file"], map[string]any{"path": "f.go", "old_string": "aaa", "new_string": "xxx", "replace_all": "true"})
 	if isErr || !strings.Contains(out, "2 replacement(s)") {
 		t.Fatalf("replace_all = (%q, %v)", out, isErr)
 	}
