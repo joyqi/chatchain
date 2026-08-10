@@ -1463,3 +1463,103 @@ func TestHighlightNeutralizesErrorTokens(t *testing.T) {
 		}
 	}
 }
+
+// previewTrace records the interleaving of committed lines and preview opens,
+// which is what block spacing during streaming actually looks like.
+type previewTrace struct {
+	events []string
+	buf    strings.Builder
+}
+
+func (s *previewTrace) Width() int { return 80 }
+
+func (s *previewTrace) Write(p []byte) (int, error) {
+	s.buf.Write(p)
+	for {
+		txt := s.buf.String()
+		i := strings.IndexByte(txt, '\n')
+		if i < 0 {
+			break
+		}
+		line := txt[:i]
+		s.buf.Reset()
+		s.buf.WriteString(txt[i+1:])
+		if strings.TrimSpace(stripANSI(line)) == "" {
+			s.events = append(s.events, "BLANK")
+		} else {
+			s.events = append(s.events, "LINE")
+		}
+	}
+	return len(p), nil
+}
+
+func (s *previewTrace) BlockPreview(string) io.WriteCloser {
+	s.events = append(s.events, "PREVIEW")
+	return nopWriteCloser{}
+}
+
+type nopWriteCloser struct{}
+
+func (nopWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (nopWriteCloser) Close() error                { return nil }
+
+// A block preview must sit exactly where the block it morphs into will sit,
+// so the separating blank line is paid when the preview OPENS — not when the
+// block flushes, which is where beginBlock would otherwise write it.
+//
+// Markdown does not require a blank line before a block, and models routinely
+// omit one ("Here is a list:" followed straight by the bullets). That case
+// used to glue the preview to the previous line and only reveal the gap on
+// settle, for every one of the five buffering block types.
+func TestBlockPreviewPaysItsSeparatorOnOpen(t *testing.T) {
+	for _, tc := range []struct{ name, src string }{
+		{"list", "Here is a list:\n- one\n- two\n"},
+		{"table", "Here is a table:\n| a | b |\n|---|---|\n| 1 | 2 |\n"},
+		{"code", "Here is code:\n```go\nx := 1\n```\n"},
+		{"quote", "Here is a quote:\n> hi\n"},
+		{"math", "Here is math:\n$$\nx = 1\n$$\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// No blank in the source: the gap must appear anyway, before the
+			// preview.
+			glued := renderTrace(t, tc.src)
+			assertPreviewFollowsBlank(t, glued)
+
+			// A source that DOES carry the blank must not end up with two:
+			// beginBlock consumes the credit the preview already paid.
+			spaced := renderTrace(t, strings.Replace(tc.src, ":\n", ":\n\n", 1))
+			assertPreviewFollowsBlank(t, spaced)
+			if len(spaced) != len(glued) {
+				t.Fatalf("blank in the source changed the layout:\nglued  %v\nspaced %v", glued, spaced)
+			}
+		})
+	}
+}
+
+func renderTrace(t *testing.T, src string) []string {
+	t.Helper()
+	s := &previewTrace{}
+	w := NewWriter(s)
+	if _, err := io.WriteString(w, src); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	w.Flush()
+	return s.events
+}
+
+func assertPreviewFollowsBlank(t *testing.T, events []string) {
+	t.Helper()
+	for i, e := range events {
+		if e != "PREVIEW" {
+			continue
+		}
+		if i == 0 || events[i-1] != "BLANK" {
+			t.Fatalf("preview not preceded by its separator: %v", events)
+		}
+		if i >= 2 && events[i-2] == "BLANK" {
+			t.Fatalf("doubled separator before the preview: %v", events)
+		}
+		return
+	}
+	t.Fatalf("no preview opened: %v", events)
+}

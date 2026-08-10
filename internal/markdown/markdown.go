@@ -168,12 +168,15 @@ type Writer struct {
 	inList    bool       // a list block is buffering
 	listItems []listItem // parsed items of the buffering list block
 	listLoose bool       // a blank line was kept inside the block (loose list)
-	listBlank bool       // one blank line is held, pending the next line's verdict
-	inQuote   bool       // a blockquote block is buffering
-	quoteBody []string   // buffered inner quote lines (one leading "> "/">" stripped)
-	inMath    bool       // a display-math ($$…$$ / \[…\]) block is buffering
-	mathLines []string   // buffered inner display-math lines (fence lines excluded)
-	lastUnit  mdUnit     // classification of the last emitted unit (spacing state machine)
+	// gapPaid: the buffering block's separating blank was already written when
+	// its preview opened, so beginBlock must not write it again (openPreview).
+	gapPaid   bool
+	listBlank bool     // one blank line is held, pending the next line's verdict
+	inQuote   bool     // a blockquote block is buffering
+	quoteBody []string // buffered inner quote lines (one leading "> "/">" stripped)
+	inMath    bool     // a display-math ($$…$$ / \[…\]) block is buffering
+	mathLines []string // buffered inner display-math lines (fence lines excluded)
+	lastUnit  mdUnit   // classification of the last emitted unit (spacing state machine)
 	// tableView / codeView / listView / quoteView show a live "rendering…"
 	// preview of a block while it buffers (nil when the sink has no preview);
 	// the flush Closes it before emitting the result.
@@ -242,7 +245,7 @@ func (m *Writer) consumeLine(line string) error {
 			m.inFence = true
 			m.fenceLang = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "```"))
 			m.codeLines = nil
-			m.codeView = m.w.BlockPreview(codeLabel(m.fenceLang))
+			m.codeView = m.openPreview(codeLabel(m.fenceLang))
 		}
 		return nil
 	}
@@ -862,7 +865,7 @@ func indentLevel(indent string) int {
 // startList opens a list block with the given marker line as its first item.
 func (m *Writer) startList(line string) {
 	m.inList = true
-	m.listView = m.w.BlockPreview("rendering list…")
+	m.listView = m.openPreview("rendering list…")
 	m.listAppendItem(line)
 	m.listPreview(line)
 }
@@ -1007,7 +1010,7 @@ func stripQuoteMarker(line string) string {
 func (m *Writer) startQuote(line string) {
 	m.inQuote = true
 	m.quoteBody = nil
-	m.quoteView = m.w.BlockPreview("rendering quote…")
+	m.quoteView = m.openPreview("rendering quote…")
 	m.quoteAppend(line)
 }
 
@@ -1118,12 +1121,40 @@ func (m *Writer) emitText(s string) error {
 // block (text→block or block→block boundary); after a blank or at the start it
 // writes nothing. It deliberately does not update lastUnit — the block's render
 // followed by endBlock does that.
+//
+// A buffering block whose preview already paid the separator (openPreview)
+// consumes that credit here instead of writing a second blank.
 func (m *Writer) beginBlock() error {
-	if m.lastUnit == unitText || m.lastUnit == unitBlock {
+	if m.gapPaid {
+		m.gapPaid = false
+		return nil
+	}
+	if m.needsGap() {
 		_, err := io.WriteString(m.w, "\n")
 		return err
 	}
 	return nil
+}
+
+// needsGap reports whether a block starting now must be preceded by a
+// separating blank line.
+func (m *Writer) needsGap() bool { return m.lastUnit == unitText || m.lastUnit == unitBlock }
+
+// openPreview opens a buffering block's live preview, paying its separating
+// blank line FIRST — the preview occupies the row the rendered block will, so
+// it has to sit where that block will sit. Paying at block OPEN (rather than
+// at flush, where beginBlock would) is what keeps the streaming layout and the
+// settled layout identical; beginBlock then skips the blank it already owes.
+//
+// Without this the gap only appeared when the source happened to carry a blank
+// line before the block — which markdown does not require, and which models
+// routinely omit ("Here is a list:" followed straight by the bullets).
+func (m *Writer) openPreview(label string) io.WriteCloser {
+	if m.needsGap() {
+		io.WriteString(m.w, "\n")
+		m.gapPaid = true
+	}
+	return m.w.BlockPreview(label)
 }
 
 // endBlock records that a rendered block was just written. The blank line that
@@ -1369,7 +1400,7 @@ func (m *Writer) flushCode() error {
 func (m *Writer) startMath() {
 	m.inMath = true
 	m.mathLines = nil
-	m.mathView = m.w.BlockPreview("rendering math…")
+	m.mathView = m.openPreview("rendering math…")
 }
 
 // mathAppend buffers one inner display-math line and mirrors the raw line into
@@ -1542,7 +1573,7 @@ func codeStyleName() string { return codeTheme }
 // opening the live preview on the first row and feeding it the raw line.
 func (m *Writer) tableConsume(line string) {
 	if len(m.tableRows) == 0 {
-		m.tableView = m.w.BlockPreview("rendering table…")
+		m.tableView = m.openPreview("rendering table…")
 	}
 	cells := parseTableCells(line)
 	m.tableRows = append(m.tableRows, cells)
