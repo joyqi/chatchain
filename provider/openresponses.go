@@ -185,9 +185,13 @@ func (p *OpenResponsesProvider) buildRequest(messages []Message) *llm.RespReques
 
 func (p *OpenResponsesProvider) Chat(ctx context.Context, messages []Message) (string, error) {
 	p.lastImages = nil
+	p.lastUsageOK = false // this call owns the figures from here (see LastUsage)
 	resp, err := p.client.Create(ctx, p.buildRequest(messages))
 	if err != nil {
 		return "", fmt.Errorf("chat error: %w", err)
+	}
+	if resp.Usage != nil {
+		p.setUsage(respUsage(resp.Usage))
 	}
 	// The unary path surfaces generated images too (-m single-shot runs).
 	for _, item := range resp.Output {
@@ -404,13 +408,12 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 					}
 				}
 			case "response.completed":
-				var usage llm.RespUsage
+				// A completed response without a usage block reports nothing
+				// rather than an all-zero call: zeros would read as a real
+				// (free) call to the context and session accounting.
 				if evt.Response != nil && evt.Response.Usage != nil {
-					usage = *evt.Response.Usage
+					p.setUsage(respUsage(evt.Response.Usage))
 				}
-				p.lastInput = usage.InputTokens
-				p.lastOutput = usage.OutputTokens
-				p.lastUsageOK = true
 			default:
 				if evt.Delta != "" && evt.Type == "" {
 					split.write(evt.Delta)

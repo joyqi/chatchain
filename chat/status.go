@@ -38,7 +38,7 @@ type statusItem struct {
 // usage and how that count was obtained, last turn's token counts, message and
 // attachment counts, MCP wiring, and the session id. Fields degrade gracefully
 // when not yet known.
-func statusLines(p provider.Provider, b *contextBudget, history []provider.Message, pending int, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter) []statusItem {
+func statusLines(p provider.Provider, b *contextBudget, total provider.Usage, history []provider.Message, pending int, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter) []statusItem {
 	model := p.Model()
 	if model == "" {
 		model = "(not selected)"
@@ -100,6 +100,7 @@ func statusLines(p provider.Provider, b *contextBudget, history []provider.Messa
 			statusItem{"Context", fmt.Sprintf("%d / %d tokens (%d%%)", b.used, b.window, pct)},
 			statusItem{"Token count", source},
 			statusItem{"Last turn", last},
+			statusItem{"Session total", fmt.Sprintf("input %d, output %d", total.Input, total.Output)},
 		)
 	}
 	if g, ok := p.(provider.ImageGenTunable); ok {

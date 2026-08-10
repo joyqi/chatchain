@@ -95,9 +95,14 @@ type ChatStreamOptions struct {
 // --- response wire shapes ---
 
 type ChatUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
+	PromptTokens     int `json:"prompt_tokens"` // ALREADY includes cached tokens
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// PromptTokensDetails breaks out the cache-hit share of PromptTokens —
+	// a SUBSET of it, never an addition.
+	PromptTokensDetails *struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
 }
 
 type ChatCompResponse struct {
@@ -106,6 +111,7 @@ type ChatCompResponse struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
+	Usage *ChatUsage `json:"usage"`
 }
 
 type ChatChunk struct {

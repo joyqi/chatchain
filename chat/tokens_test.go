@@ -97,6 +97,53 @@ func TestCtxMeterLiveFlow(t *testing.T) {
 	}
 }
 
+// record books a finished call in TWO places at once — the message that call
+// produced (which goes to disk) and the session totals (which drive the ↑/↓
+// figures) — so a resumed session recomputes exactly what the live status
+// line showed. A call that reported nothing books nothing: the previous
+// call's numbers must never be counted twice.
+func TestCtxMeterRecord(t *testing.T) {
+	b := &contextBudget{window: 100_000, counter: newTokenCounter()}
+	p := &usageStub{in: 1_200, out: 300}
+	m := newCtxMeter(b, p, func() {})
+
+	first := provider.Usage{Input: 1_200, Output: 300}
+	var msg provider.Message
+	if u := m.record(&msg); u == nil || *u != first {
+		t.Fatalf("record returned %+v, want %+v", u, first)
+	}
+	if msg.Usage == nil || *msg.Usage != first {
+		t.Fatalf("message not stamped: %+v", msg.Usage)
+	}
+	if got := m.totals(); got != first {
+		t.Fatalf("totals = %+v, want %+v", got, first)
+	}
+
+	// A call the provider reported no usage for: nothing stamped, nothing added.
+	p.noUsage = true
+	var quiet provider.Message
+	if u := m.record(&quiet); u != nil || quiet.Usage != nil {
+		t.Fatalf("a usage-less call booked %+v / %+v", u, quiet.Usage)
+	}
+	if got := m.totals(); got != first {
+		t.Fatalf("totals moved on a usage-less call: %+v", got)
+	}
+
+	// Another accounted call accumulates on top.
+	p.noUsage = false
+	p.in, p.out = 800, 100
+	m.record(nil) // no message (a compaction pass) — still counted
+	if want := (provider.Usage{Input: 2_000, Output: 400}); m.totals() != want {
+		t.Fatalf("totals = %+v, want %+v", m.totals(), want)
+	}
+
+	// Seeding replaces them wholesale: resume, or a switch to another session.
+	m.seedTotals(provider.Usage{Input: 9, Output: 8})
+	if want := (provider.Usage{Input: 9, Output: 8}); m.totals() != want {
+		t.Fatalf("after seed: %+v, want %+v", m.totals(), want)
+	}
+}
+
 // A nil meter (provider without token accounting) is a no-op everywhere —
 // the call sites stay unconditional.
 func TestCtxMeterNilSafe(t *testing.T) {
@@ -107,10 +154,23 @@ func TestCtxMeterNilSafe(t *testing.T) {
 	m.note(provider.Message{Content: "x"})
 	m.settle(nil)
 	m.reset()
+	if u := m.record(&provider.Message{}); u != nil {
+		t.Fatalf("nil record = %+v", u)
+	}
+	if got := m.totals(); got != (provider.Usage{}) {
+		t.Fatalf("nil totals = %+v", got)
+	}
+	m.seedTotals(provider.Usage{Input: 1})
 }
 
 // usageStub is a minimal UsageReporter-bearing provider for settle tests.
-type usageStub struct{ in, out int }
+// noUsage makes it report nothing, like a call whose response carried no
+// usage block.
+type usageStub struct {
+	in, out int
+	total   int // 0 = dialect reports no total (anthropic); ContextTokens sums the parts
+	noUsage bool
+}
 
 func (usageStub) ListModels(context.Context) ([]string, error) { return nil, nil }
 func (usageStub) Chat(context.Context, []provider.Message) (string, error) {
@@ -122,11 +182,36 @@ func (usageStub) StreamChat(context.Context, []provider.Message, io.Writer, io.W
 func (usageStub) Type() string                  { return "stub" }
 func (usageStub) Model() string                 { return "stub" }
 func (usageStub) SetModel(string)               {}
-func (s usageStub) LastUsage() (int, int, bool) { return s.in, s.out, true }
-func (usageStub) ResetUsage()                   {}
+func (s usageStub) LastUsage() (int, int, bool) { return s.in, s.out, !s.noUsage }
+func (s usageStub) LastUsageFull() (provider.Usage, bool) {
+	return provider.Usage{Input: s.in, Output: s.out, Total: s.total}, !s.noUsage
+}
+func (usageStub) ResetUsage() {}
+
+// The trigger point takes whichever rule leaves more room: the flat
+// percentage on small windows, window-minus-reserve on large ones.
+func TestCompactThreshold(t *testing.T) {
+	for _, tc := range []struct {
+		window, want int
+		why          string
+	}{
+		{window: 20_000, want: 16_000, why: "small window: 80% (a 16k reserve would leave 4k)"},
+		{window: 128_000, want: 112_000, why: "128k: reserve beats 80% (102.4k)"},
+		{window: 1_000_000, want: 984_000, why: "1m: 80% would waste 184k of window"},
+		{window: 16_000, want: 12_800, why: "window == reserve: percentage keeps it usable"},
+	} {
+		b := &contextBudget{window: tc.window}
+		if got := b.threshold(); got != tc.want {
+			t.Errorf("window %d: threshold = %d, want %d (%s)", tc.window, got, tc.want, tc.why)
+		}
+		if b.threshold() >= b.window {
+			t.Errorf("window %d: threshold %d must stay below the window", tc.window, b.threshold())
+		}
+	}
+}
 
 func TestShouldOfferCompact(t *testing.T) {
-	// Window 100k, threshold 80% → 80k. Snooze step 5% → 5k.
+	// Window 100k → threshold max(80k, 100k-16k) = 84k. Snooze step 5% → 5k.
 	b := &contextBudget{window: 100_000}
 
 	// Below the threshold: never offered, declined or not.
@@ -136,27 +221,27 @@ func TestShouldOfferCompact(t *testing.T) {
 	}
 
 	// At the threshold, never declined: offered.
-	b.used = 80_000
+	b.used = 84_000
 	if !b.shouldOfferCompact(0, 0) {
 		t.Error("at threshold, never declined: not offered, want offered")
 	}
 
-	// Declined at 80k: snoozed until usage grows by 5% of the window.
-	if b.shouldOfferCompact(0, 80_000) {
+	// Declined at 84k: snoozed until usage grows by 5% of the window.
+	if b.shouldOfferCompact(0, 84_000) {
 		t.Error("just declined: offered, want snoozed")
 	}
-	b.used = 84_000
-	if b.shouldOfferCompact(0, 80_000) {
+	b.used = 88_000
+	if b.shouldOfferCompact(0, 84_000) {
 		t.Error("grown <5%: offered, want snoozed")
 	}
-	b.used = 85_000
-	if !b.shouldOfferCompact(0, 80_000) {
+	b.used = 89_000
+	if !b.shouldOfferCompact(0, 84_000) {
 		t.Error("grown 5%: not offered, want offered")
 	}
 
 	// extra counts toward the growth, matching shouldCompact's accounting.
-	b.used = 83_000
-	if !b.shouldOfferCompact(2_000, 80_000) {
+	b.used = 87_000
+	if !b.shouldOfferCompact(2_000, 84_000) {
 		t.Error("used+extra grown 5%: not offered, want offered")
 	}
 }

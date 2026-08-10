@@ -44,6 +44,12 @@ type StatusData struct {
 	CtxUsed   int
 	CtxWindow int
 	Estimated bool // token figure is a local estimate (≈ prefix)
+	// InTokens/OutTokens are the session's CUMULATIVE token cost, rendered
+	// as ↑/↓. They keep growing across the whole session (a resumed one
+	// picks up its log's totals), unlike CtxUsed, which measures only what
+	// the next request will carry.
+	InTokens  int
+	OutTokens int
 }
 
 // ProgressState drives the terminal's NATIVE progress indicator (ConEmu

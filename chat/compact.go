@@ -11,6 +11,11 @@ import (
 // compactThresholdPercent: compact when projected tokens reach this % of the window.
 const compactThresholdPercent = 80
 
+// compactReserveTokens is the room the next exchange needs: one reply plus the
+// message that asks for it. Windows large enough to spare it compact at
+// window-minus-reserve instead of the flat percentage — see contextBudget.threshold.
+const compactReserveTokens = 16_000
+
 const summaryPrefix = "[Earlier conversation summary]\n"
 const summarySeparator = "\n\n———\n\n"
 

@@ -67,7 +67,7 @@ func TestCompactionMarkerReload(t *testing.T) {
 		{Role: "user", Content: "u2"}, {Role: "assistant", Content: "a2"},
 	})
 	// Supersede u1,a1 (retain last 2 conv messages: u2,a2).
-	if err := sw.AppendCompaction("THE-SUMMARY", 2); err != nil {
+	if err := sw.AppendCompaction("THE-SUMMARY", 2, nil); err != nil {
 		t.Fatalf("AppendCompaction: %v", err)
 	}
 	sw.Close()

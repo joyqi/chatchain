@@ -190,9 +190,13 @@ func (p *AnthropicProvider) buildRequest(messages []Message, replayServerBlocks 
 }
 
 func (p *AnthropicProvider) Chat(ctx context.Context, messages []Message) (string, error) {
+	p.lastUsageOK = false // this call owns the figures from here (see LastUsage)
 	resp, err := p.client.Message(ctx, p.buildRequest(messages, false))
 	if err != nil {
 		return "", fmt.Errorf("chat error: %w", err)
+	}
+	if resp.Usage != nil {
+		p.setUsage(anthropicUsage(*resp.Usage))
 	}
 	var result string
 	for _, block := range resp.Content {
@@ -338,6 +342,10 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 	}
 
 	var stopReason string
+	// Usage arrives in two events: input (plus cache counts) at message_start,
+	// the cumulative output at message_delta. Accumulate here and publish once
+	// the output figure lands.
+	var usage Usage
 	for {
 		evt, cerr := stream.Next()
 		if cerr == io.EOF {
@@ -351,7 +359,7 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 		switch evt.Type {
 		case "message_start":
 			if evt.Message != nil {
-				p.lastInput = evt.Message.Usage.InputTokens
+				usage = anthropicUsage(evt.Message.Usage)
 			}
 		case "content_block_start":
 			if evt.ContentBlock != nil {
@@ -389,8 +397,8 @@ func (p *AnthropicProvider) streamChatInternal(ctx context.Context, messages []M
 				stopReason = evt.Delta.StopReason
 			}
 			if evt.Usage != nil {
-				p.lastOutput = evt.Usage.OutputTokens // cumulative
-				p.lastUsageOK = true
+				usage.Output = evt.Usage.OutputTokens // cumulative
+				p.setUsage(usage)
 			}
 		}
 	}

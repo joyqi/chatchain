@@ -75,7 +75,7 @@ type UI interface {
 
     Busy(label string) (stop func())   // frame spinner; ui appends elapsed
                                        // time + "(ESC to cancel)" itself
-    SetStatus(StatusData)              // model · ctx used/window (pct) …
+    SetStatus(StatusData)              // model · ↑in ↓out · pct% / window …
     SetTitle(string)                   // tea View.WindowTitle
 
     // Modal-ish surfaces, rendered in the frame.

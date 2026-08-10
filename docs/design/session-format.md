@@ -95,11 +95,20 @@ Mirrors every field of `provider.Message`. The session layer uses its own DTOs (
 // role=tool, tool result
 { "role": "tool", "tool_call_id": "call_1", "tool_call_name": "analyze", "is_error": false, "content": "trend is up" }
 
-// role=assistant, final text reply
-{ "role": "assistant", "content": "the chart shows…", "reasoning": "…" }
+// role=assistant, final text reply — with what the API call that produced it cost
+{ "role": "assistant", "content": "the chart shows…", "reasoning": "…",
+  "usage": { "in": 14200, "out": 320 } }
 ```
 
 Empty values are dropped via `omitempty` to keep lines compact.
+
+**`usage`** rides the assistant message the call produced (and the compaction
+marker, §4.5 — the summary pass is a billed call too). It is local bookkeeping:
+no dialect sends it upstream. Summing it over the WHOLE log — compacted-away
+rounds included, since those were paid for — is how a resumed session restores
+the cumulative ↑/↓ token figures on the status line instead of restarting at
+zero. Sessions written before the field existed contribute nothing and load
+unchanged.
 
 ### 4.3 DTO definitions (Go)
 
@@ -116,6 +125,15 @@ type sessionMessage struct {
     ToolCallName string              `json:"tool_call_name,omitempty"`
     IsError      bool                `json:"is_error,omitempty"`
     Raw          *sessionRaw         `json:"raw,omitempty"`
+    Usage        *sessionUsage       `json:"usage,omitempty"`
+}
+
+type sessionUsage struct {
+    Input      int `json:"in"`
+    Output     int `json:"out"`
+    CacheRead  int `json:"cache_read,omitempty"`
+    CacheWrite int `json:"cache_write,omitempty"`
+    Total      int `json:"total,omitempty"`  // the provider's own total, when reported
 }
 
 type sessionToolCall struct {

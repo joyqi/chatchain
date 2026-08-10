@@ -534,9 +534,12 @@ func TestRegionSnapshotChangesView(t *testing.T) {
 // TestStatusLine: fields render; narrow widths truncate to a single row.
 func TestStatusLine(t *testing.T) {
 	m := newTestModel(t)
-	m = step(t, m, statusMsg(StatusData{Model: "gpt-4o", CtxUsed: 12000, CtxWindow: 128000, Estimated: true}))
+	m = step(t, m, statusMsg(StatusData{
+		Model: "gpt-4o", CtxUsed: 12000, CtxWindow: 128000, Estimated: true,
+		InTokens: 148000, OutTokens: 3400,
+	}))
 	c := content(m)
-	for _, want := range []string{"gpt-4o", "≈12k", "128k", "(9%)"} {
+	for _, want := range []string{"gpt-4o", "↑ 148k", "↓ 3.4k", "≈9% / 128k"} {
 		if !strings.Contains(c, want) {
 			t.Fatalf("status missing %q:\n%s", want, c)
 		}
@@ -960,7 +963,7 @@ func TestListPagingParity(t *testing.T) {
 // last remaining composer bounce.
 func TestBusyInStatusLine(t *testing.T) {
 	m := newTestModel(t)
-	// Give the status row context figures — the ctx segment hides without
+	// Give the status row context figures — the context segment hides without
 	// them (token-less providers), and this test locates the row by it.
 	m = step(t, m, statusMsg(StatusData{Model: "gpt-4o", CtxUsed: 1000, CtxWindow: 128000}))
 	before := content(m)
@@ -974,9 +977,9 @@ func TestBusyInStatusLine(t *testing.T) {
 	if !strings.Contains(during, "Compacting context…") {
 		t.Fatalf("busy label not in the status line:\n%s", during)
 	}
-	// The label sits on the SAME row as the model/ctx status.
+	// The label sits on the SAME row as the model/context status.
 	for _, line := range strings.Split(stripSGR(during), "\n") {
-		if strings.Contains(line, "Compacting context…") && !strings.Contains(line, "ctx") {
+		if strings.Contains(line, "Compacting context…") && !strings.Contains(line, "gpt-4o") {
 			t.Fatalf("busy not on the status row: %q", line)
 		}
 	}
@@ -1040,7 +1043,7 @@ func TestWrappedComposerLayout(t *testing.T) {
 			sepIdx = append(sepIdx, i)
 		case strings.Contains(l, "❯"):
 			composerIdx = i
-		case strings.Contains(l, "gpt-4o · ctx"):
+		case strings.Contains(l, "gpt-4o · "):
 			statusIdx = i
 		case strings.Contains(l, "» queued"):
 			queueIdx = i
@@ -1061,7 +1064,7 @@ func TestWrappedComposerLayout(t *testing.T) {
 	reply := make(chan TabbedResult, 1)
 	m = openList(t, m, "/model", []string{"a"}, reply)
 	c = stripSGR(content(m))
-	if strings.Contains(c, "gpt-4o · ctx") {
+	if strings.Contains(c, "gpt-4o · ") {
 		t.Fatalf("status visible while a surface is open:\n%s", c)
 	}
 	if strings.Index(c, "❯") > strings.Index(c, "/model") {
@@ -1069,7 +1072,7 @@ func TestWrappedComposerLayout(t *testing.T) {
 	}
 	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
 	<-reply
-	if !strings.Contains(stripSGR(content(m)), "gpt-4o · ctx") {
+	if !strings.Contains(stripSGR(content(m)), "gpt-4o · ") {
 		t.Fatal("status not restored after the surface closed")
 	}
 
@@ -1077,7 +1080,7 @@ func TestWrappedComposerLayout(t *testing.T) {
 	m = step(t, m, setCommandsMsg([]string{"/model"}))
 	m = typeText(t, m, "/m")
 	c = stripSGR(content(m))
-	if strings.Contains(c, "gpt-4o · ctx") || !strings.Contains(c, "/model") {
+	if strings.Contains(c, "gpt-4o · ") || !strings.Contains(c, "/model") {
 		t.Fatalf("suggestions should replace the status row:\n%s", c)
 	}
 }
@@ -1291,24 +1294,60 @@ func TestViewScrollKeepsWrappedStyle(t *testing.T) {
 }
 
 // TestStatusLineFieldHues pins the v1 composer-status color contract (ported
-// from chat/inputchrome_test.go, died with the old stack): the model and ctx
-// segments carry DIFFERENT hues (cyan vs green, both faint) so the fields
-// read as distinct at a glance, with faint separators between them.
+// from chat/inputchrome_test.go, died with the old stack): the model, token
+// and context segments carry DIFFERENT hues (all faint) so the fields read as
+// distinct at a glance, with faint separators between them.
 func TestStatusLineFieldHues(t *testing.T) {
 	m := newTestModel(t)
-	m = step(t, m, statusMsg(StatusData{Model: "gpt-4o", CtxUsed: 1000, CtxWindow: 128000, Estimated: true}))
+	m = step(t, m, statusMsg(StatusData{
+		Model: "gpt-4o", CtxUsed: 1000, CtxWindow: 128000, Estimated: true,
+		InTokens: 1000, OutTokens: 500,
+	}))
 	line := m.statusLine()
 	if !strings.Contains(line, cyan+faint+"gpt-4o"+sgrReset) {
 		t.Fatalf("model segment not cyan+faint:\n%q", line)
 	}
-	if !strings.Contains(line, green+faint+"ctx ≈1k / 128k (0%)"+sgrReset) {
-		t.Fatalf("ctx segment not green+faint (or format drifted):\n%q", line)
+	if !strings.Contains(line, green+faint+"↑ 1k ↓ 500"+sgrReset) {
+		t.Fatalf("token segment not green+faint (or format drifted):\n%q", line)
+	}
+	if !strings.Contains(line, green+faint+"≈0% / 128k"+sgrReset) {
+		t.Fatalf("context segment not green+faint (or format drifted):\n%q", line)
 	}
 
 	// No model yet: an em-dash placeholder keeps the field visible.
 	m = step(t, m, statusMsg(StatusData{}))
 	if !strings.Contains(stripSGR(m.statusLine()), "—") {
 		t.Fatalf("missing em-dash placeholder:\n%q", m.statusLine())
+	}
+}
+
+// TestStatusLineContextHues: the context figure warms as the window fills, so
+// the auto-compaction threshold announces itself before it fires.
+func TestStatusLineContextHues(t *testing.T) {
+	for _, tc := range []struct {
+		used int
+		hue  string
+		name string
+	}{
+		{used: 50_000, hue: green, name: "roomy"},
+		{used: 100_000, hue: yellow, name: "past 70%"},
+		{used: 120_000, hue: red, name: "past 90%"},
+	} {
+		m := newTestModel(t)
+		m = step(t, m, statusMsg(StatusData{Model: "gpt-4o", CtxUsed: tc.used, CtxWindow: 128_000}))
+		if line := m.statusLine(); !strings.Contains(line, tc.hue+faint) {
+			t.Fatalf("%s: context segment missing its hue:\n%q", tc.name, line)
+		}
+	}
+}
+
+// A token-less provider (no usage reported, no window) drops both figure
+// segments instead of rendering zeros.
+func TestStatusLineWithoutTokenAccounting(t *testing.T) {
+	m := newTestModel(t)
+	m = step(t, m, statusMsg(StatusData{Model: "imagen-4"}))
+	if line := stripSGR(m.statusLine()); strings.ContainsAny(line, "↑↓%") {
+		t.Fatalf("token-less status should carry no figures: %q", line)
 	}
 }
 

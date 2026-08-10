@@ -125,9 +125,14 @@ type RespRequest struct {
 // --- response wire shapes ---
 
 type RespUsage struct {
-	InputTokens  int `json:"input_tokens"`
+	InputTokens  int `json:"input_tokens"` // ALREADY includes cached tokens
 	OutputTokens int `json:"output_tokens"`
 	TotalTokens  int `json:"total_tokens"`
+	// InputTokensDetails breaks out the cache-hit share of InputTokens — a
+	// SUBSET of it, never an addition.
+	InputTokensDetails *struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"input_tokens_details"`
 }
 
 type RespError struct {

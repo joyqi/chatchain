@@ -1086,7 +1086,7 @@ func (m *model) suggestionRow() string {
 	return ansi.Truncate(row.String(), maxInt(4, m.width), "…")
 }
 
-// statusLine renders " model · ctx used/window (pct)", with the busy
+// statusLine renders " model · ↑ in ↓ out · pct% / window", with the busy
 // indicator appended while a turn is working. The busy state lives HERE — on
 // a permanent frame row — precisely so its appearance/disappearance never
 // changes the frame height (a transient busy row above the separator was the
@@ -1096,18 +1096,32 @@ func (m *model) statusLine() string {
 	if model == "" {
 		model = "—"
 	}
-	approx := ""
-	if m.status.Estimated {
-		approx = "≈"
+	// What the session has cost so far: ↑ input, ↓ output. Each arrow shows
+	// only once its side is non-zero, so a provider without token accounting
+	// (and a session that hasn't spent anything yet) drops the segment
+	// instead of printing zeros.
+	tokens := ""
+	if m.status.InTokens > 0 {
+		tokens = "↑ " + formatTokens(m.status.InTokens)
 	}
-	// No context figures at all (a provider without token accounting): the
-	// segment disappears rather than reading "ctx 0 / 0".
-	ctx := ""
-	if m.status.CtxWindow > 0 || m.status.CtxUsed > 0 {
-		ctx = fmt.Sprintf("ctx %s%s / %s", approx, formatTokens(m.status.CtxUsed), formatTokens(m.status.CtxWindow))
-		if m.status.CtxWindow > 0 {
-			ctx += fmt.Sprintf(" (%d%%)", m.status.CtxUsed*100/m.status.CtxWindow)
+	if m.status.OutTokens > 0 {
+		if tokens != "" {
+			tokens += " "
 		}
+		tokens += "↓ " + formatTokens(m.status.OutTokens)
+	}
+	// How full the context window is — the auto-compaction threshold's only
+	// visible warning, hence the hue shift as it fills. A leading ≈ marks a
+	// locally estimated figure.
+	ctx, ctxHue := "", green
+	if m.status.CtxWindow > 0 {
+		pct := m.status.CtxUsed * 100 / m.status.CtxWindow
+		approx := ""
+		if m.status.Estimated {
+			approx = "≈"
+		}
+		ctx = fmt.Sprintf("%s%d%% / %s", approx, pct, formatTokens(m.status.CtxWindow))
+		ctxHue = usageHue(pct)
 	}
 
 	frame, tail := "", ""
@@ -1126,8 +1140,10 @@ func (m *model) statusLine() string {
 	}
 
 	plain := "  " + model
-	if ctx != "" {
-		plain += " · " + ctx
+	for _, seg := range []string{tokens, ctx} {
+		if seg != "" {
+			plain += " · " + seg
+		}
 	}
 	if m.busy != nil {
 		plain += " · " + frame + tail
@@ -1136,13 +1152,30 @@ func (m *model) statusLine() string {
 		return faint + ansi.Truncate(plain, maxInt(4, m.width), "…") + sgrReset
 	}
 	out := "  " + cyan + faint + model + sgrReset
+	if tokens != "" {
+		out += faint + " · " + sgrReset + green + faint + tokens + sgrReset
+	}
 	if ctx != "" {
-		out += faint + " · " + sgrReset + green + faint + ctx + sgrReset
+		out += faint + " · " + sgrReset + ctxHue + faint + ctx + sgrReset
 	}
 	if m.busy != nil {
 		out += faint + " · " + sgrReset + cyan + frame + sgrReset + faint + tail + sgrReset
 	}
 	return out
+}
+
+// usageHue warms the context figure as the window fills: green while there is
+// room, yellow past 70%, red past 90% — the 80% auto-compaction prompt should
+// never arrive as a surprise.
+func usageHue(pct int) string {
+	switch {
+	case pct > 90:
+		return red
+	case pct > 70:
+		return yellow
+	default:
+		return green
+	}
 }
 
 // formatTokens renders a token count compactly: 128000 → "128k".

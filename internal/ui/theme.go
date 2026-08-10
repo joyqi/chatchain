@@ -11,6 +11,7 @@ import "sync/atomic"
 //	faint  — chrome and secondary text: separators, hints, placeholders
 //	cyan   — the accent: cursor rows, markers, prompt, spinner
 //	green  — positive: checked boxes, command highlight
+//	yellow — warning: a figure heading somewhere the user should notice
 //	red    — alerts (ErrPrefix)
 //	revOn  — strong emphasis: focused tab chips, user blocks
 //
@@ -21,6 +22,7 @@ const (
 	faint    = "\x1b[2m"
 	cyan     = "\x1b[36m"
 	green    = "\x1b[32m"
+	yellow   = "\x1b[33m"
 	red      = "\x1b[31m"
 	revOn    = "\x1b[7m"
 	sgrReset = "\x1b[0m"

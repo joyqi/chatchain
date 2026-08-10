@@ -104,6 +104,64 @@ func TestSessionRoundTrip(t *testing.T) {
 	}
 }
 
+// Usage rides the assistant message to disk, and a reload sums the WHOLE log
+// — the rounds a compaction superseded and the compaction pass itself
+// included, since those were paid for — so a resumed session's cumulative
+// ↑/↓ figures continue instead of restarting at zero.
+func TestSessionUsageRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	p := &stubProvider{model: "m1"}
+	sw, err := NewSessionWriter(p, nil, "", "", false)
+	if err != nil {
+		t.Fatalf("NewSessionWriter: %v", err)
+	}
+	id := sw.ID()
+	if err := sw.AppendMessages([]provider.Message{
+		{Role: "user", Content: "u1"},
+		{Role: "assistant", Content: "a1", Usage: &provider.Usage{Input: 1000, Output: 200}},
+	}); err != nil {
+		t.Fatalf("AppendMessages: %v", err)
+	}
+	// The summary pass is a billed call of its own; the marker carries it.
+	if err := sw.AppendCompaction("SUMMARY", 0, &provider.Usage{Input: 500, Output: 50}); err != nil {
+		t.Fatalf("AppendCompaction: %v", err)
+	}
+	if err := sw.AppendMessages([]provider.Message{
+		{Role: "user", Content: "u2"},
+		{Role: "assistant", Content: "a2", Usage: &provider.Usage{Input: 1500, Output: 300}},
+	}); err != nil {
+		t.Fatalf("AppendMessages: %v", err)
+	}
+	sw.Close()
+
+	want := provider.Usage{Input: 3000, Output: 550}
+	if got := sw.Usage(); got != want {
+		t.Errorf("writer totals = %+v, want %+v", got, want)
+	}
+
+	w2, sess, err := ResumeSession(id, p)
+	if err != nil {
+		t.Fatalf("ResumeSession: %v", err)
+	}
+	defer w2.Close()
+	if sess.Usage != want {
+		t.Errorf("reloaded totals = %+v, want %+v (compacted rounds count too)", sess.Usage, want)
+	}
+	if got := w2.Usage(); got != want {
+		t.Errorf("resumed writer totals = %+v, want %+v", got, want)
+	}
+	last := sess.Messages[len(sess.Messages)-1]
+	if last.Usage == nil || *last.Usage != (provider.Usage{Input: 1500, Output: 300}) {
+		t.Errorf("per-message usage lost in the round trip: %+v", last.Usage)
+	}
+
+	// Sessions written before usage was recorded contribute nothing rather
+	// than breaking the load.
+	if len(sess.Messages) > 0 && sess.Messages[0].Usage != nil {
+		t.Errorf("user message carries usage it never had: %+v", sess.Messages[0].Usage)
+	}
+}
+
 // The Interrupted flag on an assistant message survives AppendMessages →
 // loadLog, so a resumed session replays the partial reply as ordinary history.
 func TestInterruptedFlagRoundTrip(t *testing.T) {
@@ -370,7 +428,7 @@ func TestLoadFullHistoryIgnoresCompaction(t *testing.T) {
 	if err := sw.AppendMessages(round1); err != nil {
 		t.Fatalf("AppendMessages: %v", err)
 	}
-	if err := sw.AppendCompaction("SUMMARY", 0); err != nil {
+	if err := sw.AppendCompaction("SUMMARY", 0, nil); err != nil {
 		t.Fatalf("AppendCompaction: %v", err)
 	}
 	if err := sw.AppendMessages(round2); err != nil {

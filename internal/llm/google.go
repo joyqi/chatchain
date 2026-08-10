@@ -111,8 +111,13 @@ type GenerateRequest struct {
 
 type GUsageMetadata struct {
 	PromptTokenCount     int `json:"promptTokenCount"`
-	CandidatesTokenCount int `json:"candidatesTokenCount"`
-	TotalTokenCount      int `json:"totalTokenCount"`
+	CandidatesTokenCount int `json:"candidatesTokenCount"` // EXCLUDES thoughts
+	// ThoughtsTokenCount is billed reasoning that CandidatesTokenCount leaves
+	// out; TotalTokenCount does include it, which is why context math prefers
+	// the total.
+	ThoughtsTokenCount      int `json:"thoughtsTokenCount"`
+	CachedContentTokenCount int `json:"cachedContentTokenCount"`
+	TotalTokenCount         int `json:"totalTokenCount"`
 }
 
 type GenerateResponse struct {

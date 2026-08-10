@@ -142,22 +142,26 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 	pres := host.NewPresenter(host.SystemEnv(), host.NewANSI(u), notify)
 	defer pres.Close()
 
+	// The live context meter (nil without token accounting): the status
+	// line's context figure moves while a turn streams, instead of jumping
+	// once at turn end — a long tool loop used to freeze it for minutes. It
+	// also keeps the session's cumulative ↑/↓ token figures, so pushStatus
+	// (defined first, to be the meter's push callback) reads it lazily.
+	var ctxm *ctxMeter
 	pushStatus := func() {
 		sd := ui.StatusData{Model: statusModelLabel(p.Model(), p.Type())}
 		if tokenAware {
 			sd.CtxUsed, sd.CtxWindow, sd.Estimated = budget.used, budget.window, !budget.haveUsage
+			total := ctxm.totals()
+			sd.InTokens, sd.OutTokens = total.Input, total.Output
 		}
 		u.SetStatus(sd)
 	}
-	pushStatus()
-
-	// The live context meter (nil without token accounting): the status
-	// line's ctx figure moves while a turn streams, instead of jumping once
-	// at turn end — a long tool loop used to freeze it for minutes.
-	var ctxm *ctxMeter
 	if tokenAware {
 		ctxm = newCtxMeter(budget, p, pushStatus)
+		ctxm.seedTotals(sw.Usage()) // a resumed session picks up its own log
 	}
+	pushStatus()
 
 	// The transcript is the ONLY writer to the chat area from here on: every
 	// block (input, thinking, content, tool calls, notices, echoes) declares
@@ -245,7 +249,9 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 			return
 		}
 		history = newHist
-		if err := sw.AppendCompaction(summary, retainTail); err != nil {
+		// The summary pass is a billed call of its own: book it (no message
+		// carries it, so the marker record does).
+		if err := sw.AppendCompaction(summary, retainTail, ctxm.record(nil)); err != nil {
 			printErr("Warning: failed to persist compaction marker: %v", err)
 		}
 		persisted = len(history)
@@ -268,6 +274,12 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 			printDim("%d attachment(s) kept for your next message.", len(dropped))
 		}
 		if persist {
+			// A cancelled call rarely reports usage, but when it did (the
+			// figures arrived before the user hit ESC) the partial message
+			// carries them like any other.
+			if last := len(history) - 1; last >= 0 && history[last].Interrupted {
+				ctxm.record(&history[last])
+			}
 			persistTurn()
 		} else {
 			titler.unseed(history)
@@ -734,6 +746,7 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 			history = sess.Messages
 			persisted = len(history)
 			budget.reseed(history)
+			ctxm.seedTotals(sw.Usage()) // the switched-to session brings its own
 			if ur, ok := p.(interface{ ResetUsage() }); ok {
 				ur.ResetUsage()
 			}
@@ -870,7 +883,7 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 			continue
 		}
 		if input == "/status" || strings.HasPrefix(input, "/status ") {
-			items := statusLines(p, budget, history, len(pendingAttachments), dispatch, mgr, sw)
+			items := statusLines(p, budget, ctxm.totals(), history, len(pendingAttachments), dispatch, mgr, sw)
 			lines := make([]string, len(items))
 			for i, it := range items {
 				lines[i] = fmt.Sprintf("%s  %s", BoldStyle.Sprintf("%-12s", it.Name), it.Value)
@@ -992,6 +1005,7 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 		}
 
 		amsg := provider.Message{Role: "assistant", Content: reply, Reasoning: thinking}
+		ctxm.record(&amsg) // the final round's cost rides its own message
 		collectImages(p, tr, u.Width, sw.ImagesDir, &amsg)
 		history = append(history, amsg)
 		persistTurn()
@@ -1337,6 +1351,7 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 		}
 
 		msg := provider.Message{Role: "assistant", Content: content, ToolCalls: toolCalls}
+		ctxm.record(&msg) // this round's call, booked on the message it produced
 		if rcp, ok := tp.(provider.RawContentProvider); ok {
 			msg.RawContent = rcp.LastRawContent()
 		}

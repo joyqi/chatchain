@@ -142,9 +142,13 @@ func (p *OpenAIProvider) buildRequest(messages []Message) *llm.ChatCompRequest {
 }
 
 func (p *OpenAIProvider) Chat(ctx context.Context, messages []Message) (string, error) {
+	p.lastUsageOK = false // this call owns the figures from here (see LastUsage)
 	resp, err := p.client.Complete(ctx, p.buildRequest(messages))
 	if err != nil {
 		return "", fmt.Errorf("chat error: %w", err)
+	}
+	if resp.Usage != nil {
+		p.setUsage(chatUsage(resp.Usage))
 	}
 	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("no response choices")
@@ -211,9 +215,7 @@ func (p *OpenAIProvider) streamChatInternal(ctx context.Context, messages []Mess
 		}
 		// The final chunk (include_usage) carries token usage and no choices.
 		if chunk.Usage != nil && chunk.Usage.TotalTokens > 0 {
-			p.lastInput = chunk.Usage.PromptTokens
-			p.lastOutput = chunk.Usage.CompletionTokens
-			p.lastUsageOK = true
+			p.setUsage(chatUsage(chunk.Usage))
 		}
 		for _, choice := range chunk.Choices {
 			if choice.FinishReason != "" {

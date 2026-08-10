@@ -129,9 +129,11 @@ Clear separation of duties: **the `/model` Context tab manages the window size, 
 | `/model` → **Context** tab | Pick the window from the preset list `8k / 32k / 128k / 200k / 256k / 1m` (a non-preset current value is inserted, sorted, and marked). Enter commits all `/model` tabs at once; `q`/Esc or Ctrl+C cancels with no changes. |
 | `/compact [hint]` | **Immediately** compact; an optional hint guides this summarization (appended to the §5.3 prompt). |
 
+- The trigger point is `max(80% of the window, window - 16k)` — whichever leaves MORE room. The percentage keeps small windows safe (80% of 20k still leaves 4k, where a flat reserve would put the trigger at zero); the reserve stops large ones from wasting capacity (80% of 1M would interrupt with 200k still free). pi uses the reserve rule alone (16384); the percentage floor is the part chatchain adds for small windows.
 - Unit parsing: `k=1_000`, `m=1_000_000` (token sizes are conventionally decimal, not 1024). Units apply to `--context-window` and the config key; industry windows already reach **1M** (Gemini 2.5, Claude 1M beta), so parsing allows 1M+.
 - The command word is **`compact`** — the industry-standard term (Claude Code, Codex CLI, etc. all use `/compact`), zero learning cost.
-- `/status` shows `used / window` (e.g. `12.4k / 128k (9%)`) on its own line.
+- `/status` shows `used / window` (e.g. `12.4k / 128k (9%)`) on its own line, plus a `Session total` row with the session's cumulative input/output tokens.
+- The status line carries the same occupancy as `pct% / window` next to the session's cumulative `↑ input ↓ output` figures (`ctx` as a word is gone). Its hue warms with the fill — green, yellow past 70%, red past 90% — so the 80% auto-compaction prompt never arrives unannounced.
 - The non-interactive window entry remains `--context-window` (same units) + config `context_window` (§4); the `/model` Context tab is the runtime override.
 - Besides manual `/compact`, crossing the threshold before a send pops a **Confirm** surface (`Context <used / window (pct)> — compact before sending?` with `Compact now` / `Not now`); declining snoozes the offer until usage grows further.
 

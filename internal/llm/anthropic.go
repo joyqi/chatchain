@@ -104,6 +104,7 @@ type AnthropicResponse struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
+	Usage *AnthropicUsage `json:"usage"`
 }
 
 // AnthropicEvent is one streaming event. The SSE grammar: message_start /
@@ -129,8 +130,12 @@ type AnthropicEventMessage struct {
 }
 
 type AnthropicUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	// InputTokens EXCLUDES both cache figures below — anthropic reports the
+	// three side by side and no total, so context math must add them up.
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
 
 type AnthropicContentBlock struct {

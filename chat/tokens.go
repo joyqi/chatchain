@@ -89,12 +89,18 @@ func (c *tokenCounter) countMessages(msgs []provider.Message) int {
 				total += c.count(k) + c.count(fmt.Sprintf("%v", v))
 			}
 		}
-		for range m.Attachments {
-			total += 256 // images/PDFs aren't text-tokenizable; nominal cost
-		}
+		total += len(m.Attachments) * attachmentTokens
 	}
 	return total
 }
+
+// attachmentTokens is what one attachment is assumed to cost: images and PDFs
+// are not text-tokenizable, so the estimator needs a stand-in figure. 1200 is
+// the ballpark a full-size image actually bills at across providers (and what
+// pi assumes, as 4800 chars over its chars/4 heuristic). The 256 used before
+// was low by roughly 5x, which let an image-heavy history slip past the
+// compaction threshold unnoticed.
+const attachmentTokens = 1200
 
 // contextBudget tracks the model context window and current usage. used prefers
 // the provider's real reported usage and falls back to the local tokenizer.
@@ -114,10 +120,14 @@ func newContextBudget(window int) *contextBudget {
 
 // update refreshes current usage after a turn: real usage if the provider
 // reports it, else a local tokenizer count over the full history.
+//
+// The figure is the LAST call's full context occupancy (Usage.ContextTokens,
+// which knows each dialect's cache/total contract) — that call carried the
+// whole conversation, so it is also what the next request starts from.
 func (b *contextBudget) update(p provider.Provider, history []provider.Message) {
 	if ur, ok := p.(provider.UsageReporter); ok {
-		if in, out, ok := ur.LastUsage(); ok {
-			b.used = in + out
+		if u, ok := ur.LastUsageFull(); ok {
+			b.used = u.ContextTokens()
 			b.haveUsage = true
 			return
 		}
@@ -158,13 +168,33 @@ func (b *contextBudget) reseed(history []provider.Message) {
 	b.haveUsage = false
 }
 
+// threshold is the usage at which the next request should compact first. Two
+// rules apply, whichever leaves MORE window to work with:
+//
+//   - a share of the window (compactThresholdPercent), which is what keeps
+//     small windows safe: 80% of 20k still leaves 4k, where a flat reserve
+//     would put the trigger at or below zero and compact forever;
+//   - the window minus a fixed reserve, which stops large windows from
+//     throwing away a fifth of their capacity — 80% of 1M would interrupt the
+//     user with 200k still free.
+//
+// pi uses the reserve rule alone (16384 tokens); the percentage floor is what
+// makes it safe across the window sizes chatchain also has to serve.
+func (b *contextBudget) threshold() int {
+	pct := b.window * compactThresholdPercent / 100
+	if reserve := b.window - compactReserveTokens; reserve > pct {
+		return reserve
+	}
+	return pct
+}
+
 // shouldCompact reports whether the next request (current usage + `extra` tokens
 // of new, not-yet-sent content) would reach the compaction threshold.
 func (b *contextBudget) shouldCompact(extra int) bool {
 	if b.window <= 0 {
 		return false
 	}
-	return b.used+extra >= b.window*compactThresholdPercent/100
+	return b.used+extra >= b.threshold()
 }
 
 // compactSnoozePercent is how much of the window usage must grow, after the
@@ -203,6 +233,11 @@ type ctxMeter struct {
 	last    time.Time
 	pending strings.Builder // deltas batched since the last flush: counting
 	// per SSE chunk would overcount (chunk boundaries split tokens)
+	// session accumulates what every API call of this session cost — the
+	// status line's ↑/↓ figures. Unlike the budget (which measures what the
+	// NEXT request carries) it only grows, and it survives a resume: see
+	// record.
+	session provider.Usage
 }
 
 func newCtxMeter(budget *contextBudget, p provider.Provider, push func()) *ctxMeter {
@@ -262,6 +297,55 @@ func (m *ctxMeter) reset() {
 		return
 	}
 	m.pending.Reset()
+}
+
+// record books the API call that just finished: it stamps msg (the assistant
+// message that call produced; nil for callers with no message, e.g. a
+// compaction pass) with the usage and folds it into the session totals,
+// returning what it recorded. ONE call site owns both sides, so the live
+// figures and the ones a resumed session recomputes from its log cannot
+// drift.
+//
+// Every provider clears its usage flag when a call starts, so a call that
+// reported nothing records nothing — the previous call's figures can never be
+// counted twice.
+func (m *ctxMeter) record(msg *provider.Message) *provider.Usage {
+	if m == nil {
+		return nil
+	}
+	ur, ok := m.p.(provider.UsageReporter)
+	if !ok {
+		return nil
+	}
+	u, ok := ur.LastUsageFull()
+	if !ok {
+		return nil
+	}
+	if msg != nil {
+		msg.Usage = &u
+	}
+	m.session.Add(u)
+	m.push()
+	return &u
+}
+
+// totals is the session's cumulative usage (zero on a nil meter — a provider
+// without token accounting reports none).
+func (m *ctxMeter) totals() provider.Usage {
+	if m == nil {
+		return provider.Usage{}
+	}
+	return m.session
+}
+
+// seedTotals replaces the cumulative figures wholesale: a resumed session
+// starts from what its log adds up to, a switched-to session from its own.
+func (m *ctxMeter) seedTotals(u provider.Usage) {
+	if m == nil {
+		return
+	}
+	m.session = u
+	m.push()
 }
 
 // status renders "used / window (pct)"; a leading ≈ marks a local estimate.

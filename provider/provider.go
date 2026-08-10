@@ -50,6 +50,52 @@ type Message struct {
 	// message with tools and NO content, appended to history). Only the
 	// chatcomp dialect serializes it; other dialects skip such messages.
 	Tools []ToolDef
+	// Usage is what the API call that produced this assistant message cost
+	// (nil when the provider reported nothing). Local bookkeeping only — no
+	// dialect sends it upstream — but it IS persisted, so a resumed session
+	// recomputes its cumulative token figures from the log instead of
+	// restarting from zero.
+	Usage *Usage
+}
+
+// Usage is the token accounting of ONE API call. Fields a dialect does not
+// report stay zero; ContextTokens knows how to read the mix.
+type Usage struct {
+	Input  int
+	Output int
+	// CacheRead/CacheWrite are prompt-caching counts. Whether they are
+	// INSIDE Input or beside it is dialect-specific — see ContextTokens.
+	CacheRead  int
+	CacheWrite int
+	// Total is the provider's own total for the call, when it reports one.
+	// It is authoritative: it covers token classes we do not break out
+	// (Gemini's thinking tokens live in totalTokenCount but not in
+	// candidatesTokenCount).
+	Total int
+}
+
+// ContextTokens is what one API call occupied in the model's context window.
+//
+// The provider's own total wins when present, because the parts we itemize
+// do not always add up to it and because dialects disagree on what "input"
+// covers: OpenAI's prompt_tokens ALREADY includes cached tokens (adding
+// CacheRead would double-count), while Anthropic reports cache reads and
+// writes BESIDE input_tokens and gives no total at all — which is exactly
+// what the fallback sum handles. Same formula pi and Codex settled on.
+func (u Usage) ContextTokens() int {
+	if u.Total > 0 {
+		return u.Total
+	}
+	return u.Input + u.Output + u.CacheRead + u.CacheWrite
+}
+
+// Add folds another call's usage into the running total.
+func (u *Usage) Add(o Usage) {
+	u.Input += o.Input
+	u.Output += o.Output
+	u.CacheRead += o.CacheRead
+	u.CacheWrite += o.CacheWrite
+	u.Total += o.Total
 }
 
 type Provider interface {
@@ -78,8 +124,13 @@ type ToolProvider interface {
 // LastUsage returns the input/output token counts from the most recent API call
 // (ok=false when the provider didn't report usage — callers fall back to a local
 // tokenizer). Used to drive context-window accounting / compaction.
+//
+// LastUsageFull returns the same call's complete accounting — cache counts and
+// the provider's own total included — which is what context-window math needs
+// (Usage.ContextTokens). Every provider implements both via baseProvider.
 type UsageReporter interface {
 	LastUsage() (input int, output int, ok bool)
+	LastUsageFull() (Usage, bool)
 }
 
 // Tunable is an optional interface for providers whose sampling/reasoning

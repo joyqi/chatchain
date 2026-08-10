@@ -78,6 +78,37 @@ type sessionMessage struct {
 	// leading conversation messages (non-system, non-marker) this summary
 	// supersedes. The view keeps system + summary + conv[CompactedThrough:].
 	CompactedThrough int `json:"compacted_through,omitempty"`
+	// Usage is what the API call behind this record cost — set on assistant
+	// messages and on compaction markers (the summary pass is a real call).
+	// The session's cumulative token figures are recomputed by summing these
+	// on load, so they survive a resume; sessions written before this field
+	// existed simply contribute nothing.
+	Usage *sessionUsage `json:"usage,omitempty"`
+}
+
+type sessionUsage struct {
+	Input  int `json:"in"`
+	Output int `json:"out"`
+	// Cache counts and the provider's own total, when the dialect reports
+	// them — Usage.ContextTokens needs the whole set to read each dialect's
+	// contract correctly (see provider/usage.go).
+	CacheRead  int `json:"cache_read,omitempty"`
+	CacheWrite int `json:"cache_write,omitempty"`
+	Total      int `json:"total,omitempty"`
+}
+
+func toSessionUsage(u provider.Usage) *sessionUsage {
+	return &sessionUsage{
+		Input: u.Input, Output: u.Output,
+		CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, Total: u.Total,
+	}
+}
+
+func (u sessionUsage) toProvider() provider.Usage {
+	return provider.Usage{
+		Input: u.Input, Output: u.Output,
+		CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, Total: u.Total,
+	}
 }
 
 type sessionToolCall struct {
@@ -114,6 +145,9 @@ type SessionInfo struct {
 type Session struct {
 	Meta     sessionMeta
 	Messages []provider.Message
+	// Usage is the session's cumulative token cost, summed over the WHOLE
+	// log (compacted-away rounds included — they were paid for).
+	Usage provider.Usage
 }
 
 // ---- paths ----
@@ -282,6 +316,9 @@ type SessionWriter struct {
 	p         provider.Provider
 	convCount int  // conversation messages appended (excludes system + compaction markers)
 	created   bool // whether the on-disk bundle exists yet (lazy)
+	// usage is what the log held when it was opened: a resumed session's
+	// cumulative token figures pick up from here instead of zero.
+	usage provider.Usage
 
 	// titleMu guards meta.Title: the async first-reply title goroutine writes
 	// it (SetTitle) while the main loop may read it (Title, e.g. /export).
@@ -352,7 +389,7 @@ func ResumeSession(id string, p provider.Provider) (*SessionWriter, *Session, er
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot read session %s: %w", id, err)
 	}
-	view, convCount, err := loadLog(dir, p)
+	view, convCount, usage, err := loadLog(dir, p)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -360,8 +397,18 @@ func ResumeSession(id string, p provider.Provider) (*SessionWriter, *Session, er
 	if err != nil {
 		return nil, nil, err
 	}
-	w := &SessionWriter{dir: dir, meta: meta, f: f, p: p, convCount: convCount, created: true}
-	return w, &Session{Meta: meta, Messages: view}, nil
+	w := &SessionWriter{dir: dir, meta: meta, f: f, p: p, convCount: convCount, created: true, usage: usage}
+	return w, &Session{Meta: meta, Messages: view, Usage: usage}, nil
+}
+
+// Usage returns the cumulative token cost the session log already accounts
+// for — the starting point for a resumed session's ↑/↓ figures. Zero for a
+// fresh session (and on a nil writer, i.e. ephemeral mode).
+func (w *SessionWriter) Usage() provider.Usage {
+	if w == nil {
+		return provider.Usage{}
+	}
+	return w.usage
 }
 
 // ApplySessionTuning replays a resumed session's persisted tuning knobs onto
@@ -466,6 +513,9 @@ func (w *SessionWriter) toSessionMessage(msg provider.Message) (sessionMessage, 
 		IsError:      msg.IsError,
 		Interrupted:  msg.Interrupted,
 	}
+	if msg.Usage != nil {
+		sm.Usage = toSessionUsage(*msg.Usage)
+	}
 	for _, att := range msg.Attachments {
 		sa, err := w.writeAttachment(att)
 		if err != nil {
@@ -514,6 +564,9 @@ func (w *SessionWriter) AppendMessages(msgs []provider.Message) error {
 		if msg.Role != "system" {
 			w.convCount++
 		}
+		if msg.Usage != nil {
+			w.usage.Add(*msg.Usage) // keep Usage() == what the log sums to
+		}
 	}
 	if err := w.f.Sync(); err != nil {
 		return err
@@ -524,8 +577,10 @@ func (w *SessionWriter) AppendMessages(msgs []provider.Message) error {
 // AppendCompaction records a compaction marker: the summary plus how many leading
 // conversation messages it supersedes (convCount - retainTail). The original
 // messages stay in the log (Event Store); the marker drives the derived view on
-// reload. No-op on a nil writer.
-func (w *SessionWriter) AppendCompaction(summary string, retainTail int) error {
+// reload. usage (nil when the provider reported none) is what the summary pass
+// itself cost — a real call, so it belongs in the session's totals. No-op on a
+// nil writer.
+func (w *SessionWriter) AppendCompaction(summary string, retainTail int, usage *provider.Usage) error {
 	if w == nil {
 		return nil
 	}
@@ -537,6 +592,10 @@ func (w *SessionWriter) AppendCompaction(summary string, retainTail int) error {
 		through = 0
 	}
 	sm := sessionMessage{Role: "compaction", Content: summary, CompactedThrough: through}
+	if usage != nil {
+		sm.Usage = toSessionUsage(*usage)
+		w.usage.Add(*usage)
+	}
 	line, err := json.Marshal(sm)
 	if err != nil {
 		return err
@@ -718,6 +777,10 @@ func fromSessionMessage(sm sessionMessage, dir string, p provider.Provider) prov
 		IsError:      sm.IsError,
 		Interrupted:  sm.Interrupted,
 	}
+	if sm.Usage != nil {
+		u := sm.Usage.toProvider()
+		msg.Usage = &u
+	}
 	for _, sa := range sm.Attachments {
 		data, err := readAttachmentRef(dir, sa.DataRef)
 		if err != nil {
@@ -775,9 +838,11 @@ func scanRecords(dir string, fn func(sessionMessage)) error {
 
 // loadLog reads messages.jsonl and reconstructs the derived view (Event Store):
 // system + latest summary + conversation tail after the latest compaction marker.
-// Returns the view and convCount (total conversation messages on disk, for the
-// writer's marker indexing). Truncated/corrupt trailing lines are tolerated.
-func loadLog(dir string, p provider.Provider) (view []provider.Message, convCount int, err error) {
+// Returns the view, convCount (total conversation messages on disk, for the
+// writer's marker indexing), and the log's cumulative token usage — summed
+// over EVERY record, including the rounds a compaction later superseded: they
+// were paid for. Truncated/corrupt trailing lines are tolerated.
+func loadLog(dir string, p provider.Provider) (view []provider.Message, convCount int, usage provider.Usage, err error) {
 	var system *provider.Message
 	var conv []provider.Message
 	var summary string
@@ -785,6 +850,9 @@ func loadLog(dir string, p provider.Provider) (view []provider.Message, convCoun
 	hasSummary := false
 
 	err = scanRecords(dir, func(sm sessionMessage) {
+		if sm.Usage != nil {
+			usage.Add(sm.Usage.toProvider())
+		}
 		if sm.Role == "compaction" {
 			hasSummary = true
 			summary = sm.Content
@@ -800,7 +868,7 @@ func loadLog(dir string, p provider.Provider) (view []provider.Message, convCoun
 		conv = append(conv, m)
 	})
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, provider.Usage{}, err
 	}
 	convCount = len(conv)
 
@@ -829,7 +897,7 @@ func loadLog(dir string, p provider.Provider) (view []provider.Message, convCoun
 	default:
 		view = append(view, retained...)
 	}
-	return view, convCount, nil
+	return view, convCount, usage, nil
 }
 
 // LoadSession reads a session bundle into its in-memory view (see loadLog).
@@ -842,11 +910,11 @@ func LoadSession(id string, p provider.Provider) (*Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot read session %s: %w", id, err)
 	}
-	view, _, err := loadLog(dir, p)
+	view, _, usage, err := loadLog(dir, p)
 	if err != nil {
 		return nil, err
 	}
-	return &Session{Meta: meta, Messages: view}, nil
+	return &Session{Meta: meta, Messages: view, Usage: usage}, nil
 }
 
 // LoadFullHistory reads a session's complete conversation log: every message

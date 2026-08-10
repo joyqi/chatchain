@@ -238,9 +238,13 @@ func (p *GoogleProvider) buildRequest(messages []Message) *llm.GenerateRequest {
 
 func (p *GoogleProvider) Chat(ctx context.Context, messages []Message) (string, error) {
 	p.lastImages = nil
+	p.lastUsageOK = false // this call owns the figures from here (see LastUsage)
 	resp, err := p.client.Generate(ctx, p.model, p.buildRequest(messages))
 	if err != nil {
 		return "", fmt.Errorf("chat error: %w", err)
+	}
+	if resp.UsageMetadata != nil {
+		p.setUsage(googleUsage(resp.UsageMetadata))
 	}
 	// The unary path surfaces generated images too (-m single-shot runs).
 	if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
@@ -311,9 +315,7 @@ func (p *GoogleProvider) streamChatInternal(ctx context.Context, messages []Mess
 			return split.content.String(), thinkFull + split.think.String(), nil, fmt.Errorf("stream error: %w", serr)
 		}
 		if resp.UsageMetadata != nil {
-			p.lastInput = resp.UsageMetadata.PromptTokenCount
-			p.lastOutput = resp.UsageMetadata.CandidatesTokenCount
-			p.lastUsageOK = true
+			p.setUsage(googleUsage(resp.UsageMetadata))
 		}
 		if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
 			continue
