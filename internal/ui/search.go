@@ -51,6 +51,8 @@ type searchState struct {
 	// It is NOT len(view): a query matching nothing falls back to showing
 	// everything, and the hint row must be able to tell those two apart.
 	matched int
+	// inOff is the query field's horizontal window start column (inputField).
+	inOff int
 }
 
 // ensureInput builds the query field on first use, styled like the Custom

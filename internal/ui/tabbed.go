@@ -156,6 +156,7 @@ type panelState struct {
 	wrapped int             // View(Wrap): wrapped row count from the last render
 	hoff    int             // View(!Wrap): horizontal pan offset (h/l)
 	input   textinput.Model // Input, and the inline Custom editor
+	inOff   int             // input: horizontal window start column (see inputField)
 	editing bool            // List/Multi Custom: the inline editor is open
 	rows    int             // last visible row budget, for paging
 
@@ -332,8 +333,9 @@ func (s *surfaceState) setFocus(i int) {
 // inputCursorCols converts the field cursor's RUNE index (what
 // textinput.Cursor reports as X) into display columns: wide (CJK) runes
 // occupy two columns, so the raw index drifts the real terminal cursor one
-// column left per wide rune before it. Horizontal scroll is not modeled —
-// content longer than the box already approximates.
+// column left per wide rune before it. The result is an ABSOLUTE column in
+// the full value — inputField turns it into a column inside the visible
+// window.
 func inputCursorCols(ti textinput.Model, runeIdx int) int {
 	runes := []rune(ti.Value())
 	if runeIdx > len(runes) {
@@ -343,6 +345,63 @@ func inputCursorCols(ti textinput.Model, runeIdx int) int {
 		runeIdx = 0
 	}
 	return textwidth.StringWidth(string(runes[:runeIdx]))
+}
+
+// inputField renders a text field clipped to boxW columns and reports where
+// the cursor sits INSIDE that window, panning *off as needed to keep the
+// cursor visible.
+//
+// The field's own horizontal scrolling is deliberately switched off —
+// SetWidth(0), which bubbles reads as "no viewport", so View() returns the
+// whole value. Letting it scroll instead is what used to misplace the
+// cursor: its offset is unexported, and its Cursor() reports an absolute
+// position that ignores the scroll, so any value longer than the box parked
+// the real terminal cursor outside the field (typically pinned to the right
+// edge, or past it). Owning the window here keeps ONE model of what is
+// visible, and the cursor column is derived from that same model.
+//
+// The rendered view already ends in the cursor's own cell (textinput draws a
+// blank there), so the value's last column and the cursor both fit inside the
+// box.
+func inputField(ti *textinput.Model, off *int, boxW int) (string, int) {
+	ti.SetWidth(0)
+	view := ti.View()
+	if boxW < 1 {
+		boxW = 1
+	}
+	cur := 0
+	if c := ti.Cursor(); c != nil {
+		cur = inputCursorCols(*ti, c.X)
+	}
+	total := ansi.StringWidth(view)
+	if total <= boxW {
+		*off = 0 // fits, cursor cell included: never pan
+	} else {
+		if *off > cur {
+			*off = cur
+		}
+		if edge := cur - (boxW - 1); *off < edge {
+			*off = edge
+		}
+		// Don't pan past the end — trailing blanks inside the box read as a
+		// rendering bug when text is sitting off to the left.
+		if max := total - boxW; *off > max {
+			*off = max
+		}
+		if *off < 0 {
+			*off = 0
+		}
+	}
+	// A window that starts mid-glyph (wide runes are two columns) would make
+	// ansi.Cut keep the whole glyph and overflow the box: step right until it
+	// lands on a boundary. The cursor column follows the window, so it stays
+	// inside either way.
+	field := ansi.Cut(view, *off, *off+boxW)
+	for ansi.StringWidth(field) > boxW && *off < total {
+		*off++
+		field = ansi.Cut(view, *off, *off+boxW)
+	}
+	return field, cur - *off
 }
 
 // sliderStep ports the v1 SliderPanel semantics: integer step indices (no
@@ -449,8 +508,7 @@ func (m *model) renderSurface(b *strings.Builder) {
 						prefixCols += 4
 					}
 					boxW := clampInt(40, 4, maxInt(4, w-prefixCols-4))
-					st.input.SetWidth(boxW)
-					field := st.input.View()
+					field, curCol := inputField(&st.input, &st.inOff, boxW)
 					if st.input.Value() == "" {
 						field = faint + ansi.Truncate("your answer", boxW, "…")
 					}
@@ -461,7 +519,7 @@ func (m *model) renderSurface(b *strings.Builder) {
 					if c := st.input.Cursor(); c != nil {
 						m.surfCur = c
 						m.surfCur.Y = strings.Count(b.String(), "\n") + 1
-						m.surfCur.X = prefixCols + inputCursorCols(st.input, c.X)
+						m.surfCur.X = prefixCols + curCol
 					}
 					// No leading padding column: the field's first text cell
 					// sits exactly where the option labels start, so the box
@@ -526,8 +584,7 @@ func (m *model) renderSurface(b *strings.Builder) {
 			boxW = 40
 		}
 		boxW = clampInt(boxW, 4, maxInt(4, w-6))
-		st.input.SetWidth(boxW)
-		view := st.input.View()
+		view, curCol := inputField(&st.input, &st.inOff, boxW)
 		if st.input.Value() == "" && p.Placeholder != "" {
 			// Our own placeholder render: faint on the field background
 			// (textinput's would come unstyled — indistinguishable from
@@ -544,7 +601,7 @@ func (m *model) renderSurface(b *strings.Builder) {
 		if c := st.input.Cursor(); c != nil {
 			m.surfCur = c
 			m.surfCur.Y = strings.Count(b.String(), "\n") + 2
-			m.surfCur.X = 3 + inputCursorCols(st.input, c.X)
+			m.surfCur.X = 3 + curCol
 		}
 		// Blank rows above and below, like the slider. Text renders in the
 		// default foreground on the adaptive background shade; the trailing
@@ -659,12 +716,11 @@ func (m *model) renderSurface(b *strings.Builder) {
 func (m *model) renderSearchRow(b *strings.Builder, p Panel, st *panelState, w int) {
 	ti := &st.search.input
 	boxW := clampInt(32, 4, maxInt(4, w-24))
-	ti.SetWidth(boxW)
-	field := ti.View()
+	field, curCol := inputField(ti, &st.search.inOff, boxW)
 	if c := ti.Cursor(); c != nil {
 		m.surfCur = c
 		m.surfCur.Y = strings.Count(b.String(), "\n") + 1
-		m.surfCur.X = 1 + inputCursorCols(*ti, c.X)
+		m.surfCur.X = 1 + curCol
 	}
 	b.WriteString("\n" + cyan + "/" + sgrReset + field +
 		faint + " · " + searchTypingHint(p, st) + sgrReset)
