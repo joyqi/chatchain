@@ -1989,3 +1989,25 @@ func TestQueueHintOnOverflowRow(t *testing.T) {
 		t.Fatalf("hidden-newest case must not hint on a visible row:\n%s", c)
 	}
 }
+
+// The cache share QUALIFIES the input figure rather than standing beside it:
+// cache is a subset of input in every dialect, so a third parallel figure
+// would read as a third quantity. It disappears when nothing was cached.
+func TestStatusLineCacheShare(t *testing.T) {
+	m := newTestModel(t)
+	m = step(t, m, statusMsg(StatusData{
+		Model: "gpt-4o", CtxUsed: 12000, CtxWindow: 128000,
+		InTokens: 148000, OutTokens: 22000, CacheHitPct: 76.8,
+	}))
+	if c := content(m); !strings.Contains(c, "↑ 148k (77% cached) ↓ 22k") {
+		t.Fatalf("cache share missing or misplaced:\n%s", c)
+	}
+
+	m = step(t, m, statusMsg(StatusData{
+		Model: "claude", CtxUsed: 12000, CtxWindow: 128000,
+		InTokens: 148000, OutTokens: 22000,
+	}))
+	if c := stripSGR(content(m)); strings.Contains(c, "cached") {
+		t.Fatalf("cache share shown without any cache activity:\n%s", c)
+	}
+}

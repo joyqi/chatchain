@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"chatchain/internal/tokfmt"
 	"sort"
 	"strconv"
 )
@@ -58,7 +59,7 @@ func contextWindowRows(current int) (values []int, labels []string, curIdx int) 
 	}
 	labels = make([]string, len(values))
 	for i, v := range values {
-		labels[i] = formatTokens(v)
+		labels[i] = tokfmt.Tokens(v)
 		if v == current {
 			labels[i] += " (current)"
 			curIdx = i

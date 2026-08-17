@@ -17,6 +17,7 @@ import (
 
 	"chatchain/internal/textwidth"
 	"chatchain/internal/timefmt"
+	"chatchain/internal/tokfmt"
 )
 
 // spinnerFrames drive the busy/preview headers and the per-insert activity
@@ -1099,16 +1100,20 @@ func (m *model) statusLine() string {
 	// What the session has cost so far: ↑ input, ↓ output. Each arrow shows
 	// only once its side is non-zero, so a provider without token accounting
 	// (and a session that hasn't spent anything yet) drops the segment
-	// instead of printing zeros.
+	// instead of printing zeros. The cache share qualifies ↑ instead of
+	// standing beside it — it is part of that input, not a third quantity.
 	tokens := ""
 	if m.status.InTokens > 0 {
-		tokens = "↑ " + formatTokens(m.status.InTokens)
+		tokens = "↑ " + tokfmt.Tokens(m.status.InTokens)
+		if m.status.CacheHitPct > 0 {
+			tokens += fmt.Sprintf(" (%.0f%% cached)", m.status.CacheHitPct)
+		}
 	}
 	if m.status.OutTokens > 0 {
 		if tokens != "" {
 			tokens += " "
 		}
-		tokens += "↓ " + formatTokens(m.status.OutTokens)
+		tokens += "↓ " + tokfmt.Tokens(m.status.OutTokens)
 	}
 	// How full the context window is — the auto-compaction threshold's only
 	// visible warning, hence the hue shift as it fills. A leading ≈ marks a
@@ -1120,7 +1125,7 @@ func (m *model) statusLine() string {
 		if m.status.Estimated {
 			approx = "≈"
 		}
-		ctx = fmt.Sprintf("%s%d%% / %s", approx, pct, formatTokens(m.status.CtxWindow))
+		ctx = fmt.Sprintf("%s%d%% / %s", approx, pct, tokfmt.Tokens(m.status.CtxWindow))
 		ctxHue = usageHue(pct)
 	}
 
@@ -1176,23 +1181,6 @@ func usageHue(pct int) string {
 	default:
 		return green
 	}
-}
-
-// formatTokens renders a token count compactly: 128000 → "128k".
-func formatTokens(n int) string {
-	switch {
-	case n >= 1_000_000:
-		return trimZero(float64(n)/1e6) + "m"
-	case n >= 1_000:
-		return trimZero(float64(n)/1e3) + "k"
-	default:
-		return fmt.Sprintf("%d", n)
-	}
-}
-
-func trimZero(f float64) string {
-	s := fmt.Sprintf("%.1f", f)
-	return strings.TrimSuffix(s, ".0")
 }
 
 func maxInt(a, b int) int {

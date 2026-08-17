@@ -50,6 +50,12 @@ type StatusData struct {
 	// the next request will carry.
 	InTokens  int
 	OutTokens int
+	// CacheHitPct is how much of the cumulative input came from the
+	// provider's cache. It rides the ↑ figure rather than standing on its
+	// own: cache is a SUBSET of input (every dialect files it that way —
+	// there is no such thing as output cache), so a third parallel figure
+	// would misrepresent it. Zero hides it.
+	CacheHitPct float64
 }
 
 // ProgressState drives the terminal's NATIVE progress indicator (ConEmu

@@ -108,3 +108,48 @@ func TestDialectUsageConversion(t *testing.T) {
 		}
 	})
 }
+
+// The cache-hit ratio has to be read against the RIGHT denominator, which is
+// dialect-specific: OpenAI and Gemini file cached tokens inside Input, while
+// Anthropic files them beside it. Using Input blindly would report the same
+// cache activity as two very different percentages.
+func TestUsagePromptTokensAndHitRate(t *testing.T) {
+	t.Run("cache inside input", func(t *testing.T) {
+		// 13056 of a 17000-token prompt came from cache.
+		u := Usage{Input: 17000, Output: 500, CacheRead: 13056, Total: 17500}
+		if got := u.PromptTokens(); got != 17000 {
+			t.Fatalf("PromptTokens = %d, want 17000 (cache already inside)", got)
+		}
+		if got := u.CacheHitRate(); got < 76.7 || got > 76.9 {
+			t.Fatalf("hit rate = %.2f, want ~76.8", got)
+		}
+	})
+
+	t.Run("cache beside input", func(t *testing.T) {
+		// Anthropic: 200 fresh tokens on top of a 9800-token cached prefix.
+		u := Usage{Input: 200, Output: 300, CacheRead: 9800}
+		if got := u.PromptTokens(); got != 10000 {
+			t.Fatalf("PromptTokens = %d, want 10000 (cache is additional)", got)
+		}
+		if got := u.CacheHitRate(); got != 98 {
+			t.Fatalf("hit rate = %.2f, want 98", got)
+		}
+	})
+
+	t.Run("no cache reports nothing", func(t *testing.T) {
+		u := Usage{Input: 1000, Output: 100, Total: 1100}
+		if u.Cached() {
+			t.Fatal("Cached() true without any cache activity")
+		}
+		if got := u.CacheHitRate(); got != 0 {
+			t.Fatalf("hit rate = %.2f, want 0", got)
+		}
+	})
+
+	t.Run("empty usage", func(t *testing.T) {
+		var u Usage
+		if u.Cached() || u.CacheHitRate() != 0 || u.PromptTokens() != 0 {
+			t.Fatalf("zero usage misreports: %+v", u)
+		}
+	})
+}

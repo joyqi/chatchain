@@ -83,11 +83,42 @@ type Usage struct {
 // writes BESIDE input_tokens and gives no total at all — which is exactly
 // what the fallback sum handles. Same formula pi and Codex settled on.
 func (u Usage) ContextTokens() int {
-	if u.Total > 0 {
-		return u.Total
+	if u.cacheBesideInput() {
+		return u.Input + u.Output + u.CacheRead + u.CacheWrite
 	}
-	return u.Input + u.Output + u.CacheRead + u.CacheWrite
+	return u.Total
 }
+
+// cacheBesideInput reports whether this dialect files its cache counts BESIDE
+// Input rather than inside it. The absent total is the tell: every dialect
+// that folds cache into Input (OpenAI, Responses, Gemini) also reports a
+// total, and anthropic — the one that does not fold — reports none.
+func (u Usage) cacheBesideInput() bool { return u.Total == 0 }
+
+// PromptTokens is the call's whole input, cache included however the dialect
+// files it. Without this the same cache-hit ratio would mean two different
+// things depending on the provider.
+func (u Usage) PromptTokens() int {
+	if u.cacheBesideInput() {
+		return u.Input + u.CacheRead + u.CacheWrite
+	}
+	return u.Input
+}
+
+// CacheHitRate is the percentage of the prompt that was served from cache;
+// 0 when nothing was cached or the provider reports no cache figures.
+func (u Usage) CacheHitRate() float64 {
+	prompt := u.PromptTokens()
+	if prompt <= 0 || u.CacheRead <= 0 {
+		return 0
+	}
+	return float64(u.CacheRead) / float64(prompt) * 100
+}
+
+// Cached reports whether any cache activity was accounted for at all — the
+// gate for showing cache figures, so providers that never cache (or are not
+// asked to) show nothing instead of a row of zeros.
+func (u Usage) Cached() bool { return u.CacheRead > 0 || u.CacheWrite > 0 }
 
 // Add folds another call's usage into the running total.
 func (u *Usage) Add(o Usage) {

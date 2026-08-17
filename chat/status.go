@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"chatchain/internal/tokfmt"
 	mcpmgr "chatchain/mcp"
 	"chatchain/provider"
 	"chatchain/tool"
@@ -53,8 +54,11 @@ func statusLines(p provider.Provider, b *contextBudget, total provider.Usage, hi
 	}
 	last := "(none yet)"
 	if ur, ok := p.(provider.UsageReporter); ok {
-		if in, out, ok := ur.LastUsage(); ok {
-			last = fmt.Sprintf("input %d, output %d", in, out)
+		if u, ok := ur.LastUsageFull(); ok {
+			last = fmt.Sprintf("input %s, output %s", tokfmt.Tokens(u.Input), tokfmt.Tokens(u.Output))
+			if u.Cached() {
+				last += fmt.Sprintf(", cache %s (%.1f%%)", tokfmt.Tokens(u.CacheRead), u.CacheHitRate())
+			}
 		}
 	}
 	session := "not saved (ephemeral)"
@@ -97,11 +101,22 @@ func statusLines(p provider.Provider, b *contextBudget, total provider.Usage, hi
 	// knobs above: the assertion is the capability.
 	if _, ok := p.(provider.UsageReporter); ok {
 		items = append(items,
-			statusItem{"Context", fmt.Sprintf("%d / %d tokens (%d%%)", b.used, b.window, pct)},
+			statusItem{"Context", fmt.Sprintf("%s / %s tokens (%d%%)",
+				tokfmt.Tokens(b.used), tokfmt.Tokens(b.window), pct)},
 			statusItem{"Token count", source},
 			statusItem{"Last turn", last},
-			statusItem{"Session total", fmt.Sprintf("input %d, output %d", total.Input, total.Output)},
+			statusItem{"Session input", tokfmt.Tokens(total.Input) + " tokens"},
+			statusItem{"Session output", tokfmt.Tokens(total.Output) + " tokens"},
 		)
+		// Cache rows only where caching actually happened: a provider that
+		// reports none (or is never asked to cache) shows nothing rather than
+		// a row of zeros.
+		if total.Cached() {
+			items = append(items, statusItem{"Session cache",
+				fmt.Sprintf("%s read, %s written (%.1f%% of input)",
+					tokfmt.Tokens(total.CacheRead), tokfmt.Tokens(total.CacheWrite),
+					total.CacheHitRate())})
+		}
 	}
 	if g, ok := p.(provider.ImageGenTunable); ok {
 		items = append(items, statusItem{"Image params", imageGenLabel(g.ImageGenParams())})

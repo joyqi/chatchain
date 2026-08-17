@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"chatchain/internal/tokfmt"
 	"chatchain/provider"
 	"chatchain/tool"
 
@@ -64,7 +65,7 @@ func TestActivityGroupAggregates(t *testing.T) {
 	content := tr.contentBlock()
 	content("Done.")
 
-	tokens := formatTokensShort(tokenCount("some reasoning text")) + " tokens"
+	tokens := tokfmt.Tokens(tokenCount("some reasoning text")) + " tokens"
 	want := []string{
 		"user:hello",
 		"print:", "call:" + DimStyle.Sprint("Thinking"),
@@ -564,21 +565,6 @@ func TestLineCommitterGluesTrailingReset(t *testing.T) {
 	want := []string{"\x1b[2m  ⎿ /Users/joyqi\x1b[0m"}
 	if len(got) != 1 || got[0] != want[0] {
 		t.Fatalf("committed %q, want %q", got, want)
-	}
-}
-
-func TestFormatTokensShort(t *testing.T) {
-	for n, want := range map[int]string{
-		0:         "0",
-		842:       "842",
-		1000:      "1k",
-		1234:      "1.2k",
-		56400:     "56.4k",
-		1_100_000: "1.1m",
-	} {
-		if got := formatTokensShort(n); got != want {
-			t.Errorf("formatTokensShort(%d) = %q, want %q", n, got, want)
-		}
 	}
 }
 

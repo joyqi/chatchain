@@ -35,22 +35,6 @@ func TestParseWindowSize(t *testing.T) {
 	}
 }
 
-func TestFormatTokens(t *testing.T) {
-	cases := map[int]string{
-		900:       "900",
-		1_000:     "1k",
-		12_400:    "12.4k",
-		128_000:   "128k",
-		1_000_000: "1m",
-		1_500_000: "1.5m",
-	}
-	for in, want := range cases {
-		if got := formatTokens(in); got != want {
-			t.Errorf("formatTokens(%d) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 func TestTokenCounter(t *testing.T) {
 	c := newTokenCounter()
 	if c.enc == nil {

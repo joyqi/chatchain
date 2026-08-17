@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"chatchain/internal/tokfmt"
 	"chatchain/provider"
 
 	"github.com/pkoukk/tiktoken-go"
@@ -40,22 +41,6 @@ func ParseWindowSize(s string) (int, error) {
 		return 0, fmt.Errorf("invalid context window size")
 	}
 	return n, nil
-}
-
-// formatTokens renders a token count compactly: 128000→"128k", 1500000→"1.5m".
-func formatTokens(n int) string {
-	switch {
-	case n >= 1_000_000:
-		return trimZero(float64(n)/1e6) + "m"
-	case n >= 1_000:
-		return trimZero(float64(n)/1e3) + "k"
-	default:
-		return strconv.Itoa(n)
-	}
-}
-
-func trimZero(f float64) string {
-	return strings.TrimSuffix(strconv.FormatFloat(f, 'f', 1, 64), ".0")
 }
 
 // tokenCounter is a local fallback tokenizer (tiktoken o200k_base, embedded
@@ -358,5 +343,5 @@ func (b *contextBudget) status() string {
 	if !b.haveUsage {
 		prefix = "≈"
 	}
-	return fmt.Sprintf("%s%s / %s (%d%%)", prefix, formatTokens(b.used), formatTokens(b.window), pct)
+	return fmt.Sprintf("%s%s / %s (%d%%)", prefix, tokfmt.Tokens(b.used), tokfmt.Tokens(b.window), pct)
 }

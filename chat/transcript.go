@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"chatchain/internal/timefmt"
+	"chatchain/internal/tokfmt"
 	"chatchain/tool"
 )
 
@@ -593,7 +594,7 @@ func (t *transcript) callDetailLocked() {
 		parts = append(parts, fmt.Sprintf("%d %s", t.grp.tools, pluralTools(t.grp.tools)))
 	}
 	if t.grp.thinkTokens > 0 {
-		parts = append(parts, formatTokensShort(t.grp.thinkTokens)+" tokens")
+		parts = append(parts, tokfmt.Tokens(t.grp.thinkTokens)+" tokens")
 	}
 	t.u.CallDetail(strings.Join(parts, " · "))
 }
@@ -746,21 +747,4 @@ func (m *thinkingMeter) add(s string) {
 	m.t.grp.thinkTokens = m.base + m.n
 	m.t.callDetailLocked()
 	m.t.mu.Unlock()
-}
-
-// formatTokensShort renders a token count the way the status line renders the
-// context figures: k/m units, one decimal, trailing .0 trimmed.
-func formatTokensShort(n int) string {
-	switch {
-	case n >= 1_000_000:
-		return trimTokenZero(float64(n)/1e6) + "m"
-	case n >= 1_000:
-		return trimTokenZero(float64(n)/1e3) + "k"
-	default:
-		return fmt.Sprintf("%d", n)
-	}
-}
-
-func trimTokenZero(f float64) string {
-	return strings.TrimSuffix(fmt.Sprintf("%.1f", f), ".0")
 }

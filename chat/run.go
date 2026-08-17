@@ -13,6 +13,7 @@ import (
 	"chatchain/internal/agents"
 	"chatchain/internal/host"
 	"chatchain/internal/markdown"
+	"chatchain/internal/textwidth"
 	"chatchain/internal/ui"
 	mcpmgr "chatchain/mcp"
 	"chatchain/provider"
@@ -154,6 +155,7 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 			sd.CtxUsed, sd.CtxWindow, sd.Estimated = budget.used, budget.window, !budget.haveUsage
 			total := ctxm.totals()
 			sd.InTokens, sd.OutTokens = total.Input, total.Output
+			sd.CacheHitPct = total.CacheHitRate()
 		}
 		u.SetStatus(sd)
 	}
@@ -884,9 +886,19 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 		}
 		if input == "/status" || strings.HasPrefix(input, "/status ") {
 			items := statusLines(p, budget, ctxm.totals(), history, len(pendingAttachments), dispatch, mgr, sw)
+			// The name column is sized to the widest label actually present:
+			// the rows vary by provider capability, and a fixed width breaks
+			// alignment the moment one of them outgrows it.
+			nameW := 0
+			for _, it := range items {
+				if n := textwidth.StringWidth(it.Name); n > nameW {
+					nameW = n
+				}
+			}
 			lines := make([]string, len(items))
 			for i, it := range items {
-				lines[i] = fmt.Sprintf("%s  %s", BoldStyle.Sprintf("%-12s", it.Name), it.Value)
+				pad := strings.Repeat(" ", nameW-textwidth.StringWidth(it.Name))
+				lines[i] = fmt.Sprintf("%s%s  %s", BoldStyle.Sprint(it.Name), pad, it.Value)
 			}
 			_ = u.View(ctx, ui.ViewSpec{Title: "Status", Lines: lines})
 			continue
