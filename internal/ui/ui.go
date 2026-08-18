@@ -56,6 +56,11 @@ type StatusData struct {
 	// there is no such thing as output cache), so a third parallel figure
 	// would misrepresent it. Zero hides it.
 	CacheHitPct float64
+	// Debug marks request recording as on. It earns a permanent slot
+	// because it silently changes how the transcript reads — activity
+	// groups stop folding — and a mode that rewrites the layout must not be
+	// invisible.
+	Debug bool
 }
 
 // ProgressState drives the terminal's NATIVE progress indicator (ConEmu

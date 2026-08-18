@@ -2011,3 +2011,30 @@ func TestStatusLineCacheShare(t *testing.T) {
 		t.Fatalf("cache share shown without any cache activity:\n%s", c)
 	}
 }
+
+// Request recording changes how the transcript reads — activity groups stop
+// folding — so it gets a permanent marker rather than being an invisible
+// mode. It survives truncation too: a narrow terminal is exactly where a
+// silently changed layout is hardest to account for.
+func TestStatusLineDebugMarker(t *testing.T) {
+	m := newTestModel(t)
+	m = step(t, m, statusMsg(StatusData{Model: "gpt-4o", CtxUsed: 1000, CtxWindow: 128000}))
+	if c := stripSGR(content(m)); strings.Contains(c, "debug") {
+		t.Fatalf("marker shown while recording is off:\n%s", c)
+	}
+
+	m = step(t, m, statusMsg(StatusData{Model: "gpt-4o", CtxUsed: 1000, CtxWindow: 128000, Debug: true}))
+	line := m.statusLine()
+	if !strings.Contains(line, yellow+faint+"debug"+sgrReset) {
+		t.Fatalf("marker missing or not yellow+faint:\n%q", line)
+	}
+
+	m = step(t, m, tea.WindowSizeMsg{Width: 28, Height: 24})
+	narrow := stripSGR(m.statusLine())
+	if !strings.Contains(narrow, "debug") {
+		t.Fatalf("marker lost to truncation: %q", narrow)
+	}
+	if w := textwidth.StringWidth(narrow); w > 28 {
+		t.Fatalf("status line overflows the width: %d > 28 (%q)", w, narrow)
+	}
+}

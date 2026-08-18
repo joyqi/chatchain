@@ -1144,8 +1144,17 @@ func (m *model) statusLine() string {
 		}
 	}
 
+	// Recording is a MODE, not a figure: it sits after the numbers and
+	// before the busy indicator, and it is the one segment that stays put
+	// when the line is truncated (see below) — a mode you cannot see is how
+	// an unfolded transcript gets blamed on the model.
+	dbg := ""
+	if m.status.Debug {
+		dbg = "debug"
+	}
+
 	plain := "  " + model
-	for _, seg := range []string{tokens, ctx} {
+	for _, seg := range []string{tokens, ctx, dbg} {
 		if seg != "" {
 			plain += " · " + seg
 		}
@@ -1154,7 +1163,16 @@ func (m *model) statusLine() string {
 		plain += " · " + frame + tail
 	}
 	if textwidth.StringWidth(plain) > m.width {
-		return faint + ansi.Truncate(plain, maxInt(4, m.width), "…") + sgrReset
+		// Truncation eats the tail, which is where the mode marker sits —
+		// so re-append it. A narrow terminal is exactly where a silently
+		// changed layout is hardest to explain.
+		line := ansi.Truncate(plain, maxInt(4, m.width), "…")
+		if dbg != "" {
+			if room := m.width - textwidth.StringWidth(" · "+dbg); room > 4 {
+				line = ansi.Truncate(plain, room, "…") + " · " + dbg
+			}
+		}
+		return faint + line + sgrReset
 	}
 	out := "  " + cyan + faint + model + sgrReset
 	if tokens != "" {
@@ -1162,6 +1180,9 @@ func (m *model) statusLine() string {
 	}
 	if ctx != "" {
 		out += faint + " · " + sgrReset + ctxHue + faint + ctx + sgrReset
+	}
+	if dbg != "" {
+		out += faint + " · " + sgrReset + yellow + faint + dbg + sgrReset
 	}
 	if m.busy != nil {
 		out += faint + " · " + sgrReset + cyan + frame + sgrReset + faint + tail + sgrReset

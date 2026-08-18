@@ -150,7 +150,10 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 	// (defined first, to be the meter's push callback) reads it lazily.
 	var ctxm *ctxMeter
 	pushStatus := func() {
-		sd := ui.StatusData{Model: statusModelLabel(p.Model(), p.Type())}
+		sd := ui.StatusData{
+			Model: statusModelLabel(p.Model(), p.Type()),
+			Debug: reqLog != nil && reqLog.Verbose(),
+		}
 		if tokenAware {
 			sd.CtxUsed, sd.CtxWindow, sd.Estimated = budget.used, budget.window, !budget.haveUsage
 			total := ctxm.totals()
@@ -837,11 +840,13 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 			switch arg {
 			case "on":
 				reqLog.SetVerbose(true)
-				printDim("Request recording ON")
+				printDim("Request recording ON — activity groups stay expanded")
+				pushStatus()
 				continue
 			case "off":
 				reqLog.SetVerbose(false)
 				printDim("Request recording OFF")
+				pushStatus()
 				continue
 			}
 			for {
@@ -861,7 +866,12 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 				// flip still lands).
 				if v := r.Panels[1].On; v != reqLog.Verbose() {
 					reqLog.SetVerbose(v)
-					printDim("Request recording %s", map[bool]string{true: "ON", false: "OFF"}[v])
+					if v {
+						printDim("Request recording ON — activity groups stay expanded")
+					} else {
+						printDim("Request recording OFF")
+					}
+					pushStatus()
 				}
 				if r.Focused == 1 {
 					break // nothing to drill into from the switch tab
