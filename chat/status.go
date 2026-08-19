@@ -46,7 +46,7 @@ func statusLines(p provider.Provider, b *contextBudget, total provider.Usage, hi
 	}
 	pct := 0
 	if b.window > 0 {
-		pct = b.used * 100 / b.window
+		pct = b.used() * 100 / b.window
 	}
 	source := "estimated (local tokenizer)"
 	if b.haveUsage {
@@ -102,7 +102,7 @@ func statusLines(p provider.Provider, b *contextBudget, total provider.Usage, hi
 	if _, ok := p.(provider.UsageReporter); ok {
 		items = append(items,
 			statusItem{"Context", fmt.Sprintf("%s / %s tokens (%d%%)",
-				tokfmt.Tokens(b.used), tokfmt.Tokens(b.window), pct)},
+				tokfmt.Tokens(b.used()), tokfmt.Tokens(b.window), pct)},
 			statusItem{"Token count", source},
 			statusItem{"Last turn", last},
 			statusItem{"Session input", tokfmt.Tokens(total.Input) + " tokens"},

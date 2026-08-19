@@ -48,36 +48,63 @@ func TestTokenCounter(t *testing.T) {
 	}
 }
 
-// The live meter moves the ctx figure DURING a turn: streamed deltas batch
-// into an ≈ estimate, appended messages land immediately, a settle replaces
-// everything with real usage, and a snapshot restore rolls a failed turn's
-// estimates back out.
+// The meter moves the figure DURING a turn: appended messages land in the
+// pending estimate immediately, a settle replaces the whole thing with the
+// provider's real usage, and a snapshot restore rolls a failed turn back out.
+//
+// pending is REPLACED on every note, never added to — the meter owns the set
+// of messages it stands for, so re-noting cannot inflate it.
 func TestCtxMeterLiveFlow(t *testing.T) {
-	b := &contextBudget{window: 100_000, counter: newTokenCounter(), used: 10_000, haveUsage: true}
+	b := &contextBudget{window: 100_000, counter: newTokenCounter(), settled: 10_000, haveUsage: true}
 	pushes := 0
-	m := newCtxMeter(b, usageStub{in: 12_000, out: 500}, func() { pushes++ })
-	m.every = 0 // no throttle in tests: every Write flushes and pushes
+	m := newCtxMeter(b, usageStub{in: 12_000, out: 500, total: 12_500}, func() { pushes++ })
 
 	snap := b.snap()
-	m.Write([]byte("some streamed output tokens"))
-	if b.used <= 10_000 || b.haveUsage {
-		t.Fatalf("after stream delta: used=%d haveUsage=%v, want a marked estimate above the base", b.used, b.haveUsage)
-	}
 	m.note(provider.Message{Role: "tool", Content: "a big tool result"})
+	if b.settled != 10_000 {
+		t.Fatalf("note moved the settled figure: %d", b.settled)
+	}
+	if b.pending <= 0 || b.used() <= 10_000 {
+		t.Fatalf("pending=%d used=%d, want an estimate above the settled base", b.pending, b.used())
+	}
 	if pushes == 0 {
 		t.Fatal("the status line was never pushed")
 	}
+	first := b.pending
 
-	m.settle(nil)
-	if b.used != 12_500 || !b.haveUsage {
-		t.Fatalf("after settle: used=%d haveUsage=%v, want the provider's real figure", b.used, b.haveUsage)
+	// A second note re-estimates the WHOLE pending set: two identical
+	// messages cost exactly twice one, never more.
+	m.note(provider.Message{Role: "tool", Content: "a big tool result"})
+	if b.pending != 2*first {
+		t.Fatalf("pending=%d, want 2x%d", b.pending, first)
 	}
 
-	// A failed turn: estimates roll back with the messages.
-	m.Write([]byte("estimates from a turn that will fail"))
+	m.settle(nil)
+	if b.used() != 12_500 || !b.haveUsage || b.pending != 0 {
+		t.Fatalf("after settle: used=%d haveUsage=%v pending=%d, want the provider figure alone",
+			b.used(), b.haveUsage, b.pending)
+	}
+
+	// A failed turn: the estimate rolls back with the messages.
+	m.note(provider.Message{Role: "user", Content: "a turn that will fail"})
 	b.restore(snap)
-	if b.used != 10_000 || !b.haveUsage {
-		t.Fatalf("after restore: used=%d haveUsage=%v, want the snapshot", b.used, b.haveUsage)
+	if b.used() != 10_000 || !b.haveUsage {
+		t.Fatalf("after restore: used=%d haveUsage=%v, want the snapshot", b.used(), b.haveUsage)
+	}
+}
+
+// reset drops the pending set at a turn boundary — residue there would be
+// charged to the next turn.
+func TestCtxMeterResetClearsPending(t *testing.T) {
+	b := &contextBudget{window: 100_000, counter: newTokenCounter(), settled: 5_000}
+	m := newCtxMeter(b, usageStub{}, func() {})
+	m.note(provider.Message{Role: "user", Content: "some pending content"})
+	if b.pending == 0 {
+		t.Fatal("note recorded nothing")
+	}
+	m.reset()
+	if b.pending != 0 || b.used() != 5_000 {
+		t.Fatalf("after reset: pending=%d used=%d, want the settled figure alone", b.pending, b.used())
 	}
 }
 
@@ -132,9 +159,6 @@ func TestCtxMeterRecord(t *testing.T) {
 // the call sites stay unconditional.
 func TestCtxMeterNilSafe(t *testing.T) {
 	var m *ctxMeter
-	if n, err := m.Write([]byte("abc")); n != 3 || err != nil {
-		t.Fatalf("nil Write = (%d, %v)", n, err)
-	}
 	m.note(provider.Message{Content: "x"})
 	m.settle(nil)
 	m.reset()
@@ -199,13 +223,13 @@ func TestShouldOfferCompact(t *testing.T) {
 	b := &contextBudget{window: 100_000}
 
 	// Below the threshold: never offered, declined or not.
-	b.used = 70_000
+	b.settled = 70_000
 	if b.shouldOfferCompact(0, 0) {
 		t.Error("below threshold: offered, want not")
 	}
 
 	// At the threshold, never declined: offered.
-	b.used = 84_000
+	b.settled = 84_000
 	if !b.shouldOfferCompact(0, 0) {
 		t.Error("at threshold, never declined: not offered, want offered")
 	}
@@ -214,17 +238,17 @@ func TestShouldOfferCompact(t *testing.T) {
 	if b.shouldOfferCompact(0, 84_000) {
 		t.Error("just declined: offered, want snoozed")
 	}
-	b.used = 88_000
+	b.settled = 88_000
 	if b.shouldOfferCompact(0, 84_000) {
 		t.Error("grown <5%: offered, want snoozed")
 	}
-	b.used = 89_000
+	b.settled = 89_000
 	if !b.shouldOfferCompact(0, 84_000) {
 		t.Error("grown 5%: not offered, want offered")
 	}
 
 	// extra counts toward the growth, matching shouldCompact's accounting.
-	b.used = 87_000
+	b.settled = 87_000
 	if !b.shouldOfferCompact(2_000, 84_000) {
 		t.Error("used+extra grown 5%: not offered, want offered")
 	}

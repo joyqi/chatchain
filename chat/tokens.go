@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"chatchain/internal/tokfmt"
 	"chatchain/provider"
@@ -87,14 +86,30 @@ func (c *tokenCounter) countMessages(msgs []provider.Message) int {
 // compaction threshold unnoticed.
 const attachmentTokens = 1200
 
-// contextBudget tracks the model context window and current usage. used prefers
-// the provider's real reported usage and falls back to the local tokenizer.
+// contextBudget tracks the model context window and current usage as TWO
+// quantities that must not be confused:
+//
+//   - settled: what the last API call actually carried (Usage.ContextTokens),
+//     or a local count when the provider reports none. Only a settle point
+//     writes it.
+//   - pending: an estimate of what has landed SINCE — the user's message, tool
+//     results. It is RECOMPUTED from those messages, never accumulated into,
+//     so an over-estimate cannot outlive the messages that caused it.
+//
+// The split is what pi does (real usage + an estimate of the trailing
+// messages, recomputed on every render). Folding both into one running total
+// meant a stale estimate could only be corrected by the next settle, and
+// nothing distinguished "measured" from "guessed" inside the figure.
 type contextBudget struct {
 	window    int
-	used      int
+	settled   int
+	pending   int
 	haveUsage bool
 	counter   *tokenCounter
 }
+
+// used is what the next request is projected to carry.
+func (b *contextBudget) used() int { return b.settled + b.pending }
 
 func newContextBudget(window int) *contextBudget {
 	if window <= 0 {
@@ -110,14 +125,15 @@ func newContextBudget(window int) *contextBudget {
 // which knows each dialect's cache/total contract) — that call carried the
 // whole conversation, so it is also what the next request starts from.
 func (b *contextBudget) update(p provider.Provider, history []provider.Message) {
+	b.pending = 0 // superseded: whatever it estimated is now measured
 	if ur, ok := p.(provider.UsageReporter); ok {
 		if u, ok := ur.LastUsageFull(); ok {
-			b.used = u.ContextTokens()
+			b.settled = u.ContextTokens()
 			b.haveUsage = true
 			return
 		}
 	}
-	b.used = b.counter.countMessages(history)
+	b.settled = b.counter.countMessages(history)
 	b.haveUsage = false
 }
 
@@ -126,22 +142,24 @@ func (b *contextBudget) setWindow(n int) { b.window = n }
 // budgetSnap captures usage at a turn boundary so a failed or retried turn
 // can roll its live estimates back along with its messages.
 type budgetSnap struct {
-	used      int
+	settled   int
+	pending   int
 	haveUsage bool
 }
 
-func (b *contextBudget) snap() budgetSnap     { return budgetSnap{b.used, b.haveUsage} }
-func (b *contextBudget) restore(s budgetSnap) { b.used, b.haveUsage = s.used, s.haveUsage }
+func (b *contextBudget) snap() budgetSnap { return budgetSnap{b.settled, b.pending, b.haveUsage} }
+func (b *contextBudget) restore(s budgetSnap) {
+	b.settled, b.pending, b.haveUsage = s.settled, s.pending, s.haveUsage
+}
 
-// liveAdd folds an in-flight estimate into used while a turn streams. The
-// figure is provisional — haveUsage drops so the status line shows ≈ — until
-// a settle point (round end, turn end) replaces it with real usage.
-func (b *contextBudget) liveAdd(n int) {
-	if n <= 0 {
-		return
+// setPending replaces the estimate of what has landed since the last settle.
+// A replacement, not an addition: the caller owns the whole set of pending
+// messages and hands over their total, so a recount corrects itself.
+func (b *contextBudget) setPending(n int) {
+	if n < 0 {
+		n = 0
 	}
-	b.used += n
-	b.haveUsage = false
+	b.pending = n
 }
 
 // reseed recomputes usage from history with the local tokenizer and drops any
@@ -149,7 +167,8 @@ func (b *contextBudget) liveAdd(n int) {
 // wholesale — compaction, or resuming a different session — so the provider's
 // last reported usage no longer describes what will be sent.
 func (b *contextBudget) reseed(history []provider.Message) {
-	b.used = b.counter.countMessages(history)
+	b.settled = b.counter.countMessages(history)
+	b.pending = 0
 	b.haveUsage = false
 }
 
@@ -179,7 +198,7 @@ func (b *contextBudget) shouldCompact(extra int) bool {
 	if b.window <= 0 {
 		return false
 	}
-	return b.used+extra >= b.threshold()
+	return b.used()+extra >= b.threshold()
 }
 
 // compactSnoozePercent is how much of the window usage must grow, after the
@@ -194,30 +213,30 @@ func (b *contextBudget) shouldOfferCompact(extra, declinedAt int) bool {
 	if !b.shouldCompact(extra) {
 		return false
 	}
-	return declinedAt == 0 || b.used+extra >= declinedAt+b.window*compactSnoozePercent/100
+	return declinedAt == 0 || b.used()+extra >= declinedAt+b.window*compactSnoozePercent/100
 }
 
-// ctxMeterPushEvery throttles mid-stream status pushes: the render sink
-// already sends one UI message per delta, so the meter must not double that.
-const ctxMeterPushEvery = 250 * time.Millisecond
-
-// ctxMeter moves the status line's context figure DURING a turn instead of
-// once at its end: streamed output ticks the estimate up, appended messages
-// (the user's send, tool results) land immediately, and each completed round
-// settles the figure with the provider's real usage. A nil meter (provider
-// without token accounting) is a no-op everywhere.
+// ctxMeter keeps the status line's context figure honest across a turn: the
+// user's message and every tool result move it the moment they land, and each
+// completed round settles it with the provider's real usage. A nil meter
+// (provider without token accounting) is a no-op everywhere.
 //
-// Every method runs on the chat-loop goroutine — the stream tees sit on the
-// READ side of the render pipes, not on the provider's writer — so the
-// budget needs no lock.
+// Streamed output is deliberately NOT counted. It was, and it was the least
+// trustworthy input the figure had: the reasoning text a provider streams is
+// a summary of thinking whose real cost the next request carries in a wholly
+// different form, so the meter would climb through a long stream and then
+// drop when the settle measured what had actually been sent. pi, Codex and
+// crush all move their figure only at message boundaries for the same reason.
+//
+// Every method runs on the chat-loop goroutine, so the budget needs no lock.
 type ctxMeter struct {
-	budget  *contextBudget
-	p       provider.Provider // bound at construction: the settle source
-	push    func()
-	every   time.Duration
-	last    time.Time
-	pending strings.Builder // deltas batched since the last flush: counting
-	// per SSE chunk would overcount (chunk boundaries split tokens)
+	budget *contextBudget
+	p      provider.Provider // bound at construction: the settle source
+	push   func()
+	// since is every message appended after the last settle. pending is
+	// recomputed from it rather than accumulated, so a re-estimate corrects
+	// itself and a reset cannot leave residue behind in the figure.
+	since []provider.Message
 	// session accumulates what every API call of this session cost — the
 	// status line's ↑/↓ figures. Unlike the budget (which measures what the
 	// NEXT request carries) it only grows, and it survives a resume: see
@@ -226,41 +245,18 @@ type ctxMeter struct {
 }
 
 func newCtxMeter(budget *contextBudget, p provider.Provider, push func()) *ctxMeter {
-	return &ctxMeter{budget: budget, p: p, push: push, every: ctxMeterPushEvery}
+	return &ctxMeter{budget: budget, p: p, push: push}
 }
 
-// Write is the stream tee: batch the delta, and on the throttle boundary
-// fold the batch into the estimate and push the status line.
-func (m *ctxMeter) Write(b []byte) (int, error) {
-	if m == nil {
-		return len(b), nil
-	}
-	m.pending.Write(b)
-	if time.Since(m.last) >= m.every {
-		m.last = time.Now()
-		m.flushPending()
-		m.push()
-	}
-	return len(b), nil
-}
-
-func (m *ctxMeter) flushPending() {
-	if m.pending.Len() == 0 {
-		return
-	}
-	m.budget.liveAdd(m.budget.counter.count(m.pending.String()))
-	m.pending.Reset()
-}
-
-// note folds freshly appended messages — the user's send, a tool result —
-// into the estimate right away: a 50k-token file read should move the meter
-// when it lands, not a round later.
+// note records messages appended since the last settle — the user's send, a
+// tool result — and re-estimates the pending total: a 50k-token file read
+// should move the meter when it lands, not a round later.
 func (m *ctxMeter) note(msgs ...provider.Message) {
 	if m == nil {
 		return
 	}
-	m.flushPending()
-	m.budget.liveAdd(m.budget.counter.countMessages(msgs))
+	m.since = append(m.since, msgs...)
+	m.budget.setPending(m.budget.counter.countMessages(m.since))
 	m.push()
 }
 
@@ -270,18 +266,19 @@ func (m *ctxMeter) settle(history []provider.Message) {
 	if m == nil {
 		return
 	}
-	m.pending.Reset() // superseded by the real figure
+	m.since = nil // superseded by the real figure
 	m.budget.update(m.p, history)
 	m.push()
 }
 
-// reset drops any unflushed batch at a turn boundary so it cannot leak into
-// the next turn's estimate. The budget itself is the caller's business.
+// reset drops the pending set at a turn boundary so it cannot leak into the
+// next turn's estimate. The budget itself is the caller's business.
 func (m *ctxMeter) reset() {
 	if m == nil {
 		return
 	}
-	m.pending.Reset()
+	m.since = nil
+	m.budget.setPending(0)
 }
 
 // record books the API call that just finished: it stamps msg (the assistant
@@ -337,11 +334,11 @@ func (m *ctxMeter) seedTotals(u provider.Usage) {
 func (b *contextBudget) status() string {
 	pct := 0
 	if b.window > 0 {
-		pct = b.used * 100 / b.window
+		pct = b.used() * 100 / b.window
 	}
 	prefix := ""
 	if !b.haveUsage {
 		prefix = "≈"
 	}
-	return fmt.Sprintf("%s%s / %s (%d%%)", prefix, tokfmt.Tokens(b.used), tokfmt.Tokens(b.window), pct)
+	return fmt.Sprintf("%s%s / %s (%d%%)", prefix, tokfmt.Tokens(b.used()), tokfmt.Tokens(b.window), pct)
 }

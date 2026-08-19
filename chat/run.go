@@ -155,7 +155,7 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 			Debug: reqLog != nil && reqLog.Verbose(),
 		}
 		if tokenAware {
-			sd.CtxUsed, sd.CtxWindow, sd.Estimated = budget.used, budget.window, !budget.haveUsage
+			sd.CtxUsed, sd.CtxWindow, sd.Estimated = budget.used(), budget.window, !budget.haveUsage
 			total := ctxm.totals()
 			sd.InTokens, sd.OutTokens = total.Input, total.Output
 			sd.CacheHitPct = total.CacheHitRate()
@@ -942,7 +942,7 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 			if cerr == nil && ok {
 				compactNow("", false)
 			} else {
-				compactDeclined = budget.used + extra
+				compactDeclined = budget.used() + extra
 			}
 		}
 
@@ -1308,8 +1308,7 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcrip
 		phases.end() // the thinking widget takes over from the status spinner
 		meter := tr.openThinking()
 		meter.add(string(firstChunk[:firstN]))
-		ctxm.Write(firstChunk[:firstN])
-		io.Copy(meter, io.TeeReader(reasonPr, ctxm)) // count only; the tee already keeps the text
+		io.Copy(meter, reasonPr)
 		tr.settleThinking(start)
 
 		firstN, readErr = contentPr.Read(firstChunk)
@@ -1333,8 +1332,7 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcrip
 	phases.end() // streaming output is its own progress from here
 	mdw, msink := newContent()
 	mdw.Write(firstChunk[:firstN])
-	ctxm.Write(firstChunk[:firstN])
-	io.Copy(mdw, io.TeeReader(contentPr, ctxm))
+	io.Copy(mdw, contentPr)
 	mdw.Flush()
 	msink.flush()
 	<-done
@@ -1679,8 +1677,7 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *tran
 		phases.end() // the thinking widget takes over from the status spinner
 		meter := tr.openThinking()
 		meter.add(string(firstChunk[:firstN]))
-		ctxm.Write(firstChunk[:firstN])
-		io.Copy(meter, io.TeeReader(reasonPr, ctxm)) // count only; the tee already keeps the text
+		io.Copy(meter, reasonPr)
 		tr.settleThinking(start)
 
 		firstN, readErr = contentPr.Read(firstChunk)
@@ -1711,8 +1708,7 @@ func streamToolRound(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *tran
 		phases.end() // streaming output is its own progress from here
 		mdw, msink := newContent()
 		mdw.Write(firstChunk[:firstN])
-		ctxm.Write(firstChunk[:firstN])
-		io.Copy(mdw, io.TeeReader(contentPr, ctxm))
+		io.Copy(mdw, contentPr)
 		mdw.Flush()
 		msink.flush()
 		tr.closeContent()

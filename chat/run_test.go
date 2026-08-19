@@ -64,7 +64,7 @@ func TestContextBudgetStatus(t *testing.T) {
 	if got := b.status(); got != "≈0 / 128k (0%)" {
 		t.Errorf("fresh status = %q, want ≈0 / 128k (0%%)", got)
 	}
-	b.used = 64000
+	b.settled = 64000
 	b.haveUsage = true
 	if got := b.status(); got != "64k / 128k (50%)" {
 		t.Errorf("exact status = %q, want 64k / 128k (50%%)", got)
