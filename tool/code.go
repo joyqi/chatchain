@@ -56,16 +56,8 @@ func newCodeSet(env Env, node yaml.Node) ([]Tool, error) {
 			return nil, fmt.Errorf("config must be a mapping (auto_write): %w", err)
 		}
 	}
-	root := env.ProjectRoot
-	if root == "" {
-		if cwd, err := os.Getwd(); err == nil {
-			root = cwd
-		}
-	}
-	if abs, err := filepath.Abs(root); err == nil {
-		root = abs
-	}
-	cs := &codeSet{root: root, autoWrite: cfg.AutoWrite, reads: make(map[string]time.Time)}
+	cwd, _ := os.Getwd()
+	cs := &codeSet{root: env.Root(), cwd: cwd, autoWrite: cfg.AutoWrite, reads: make(map[string]time.Time)}
 	return []Tool{
 		&codeGlob{cs},
 		&codeGrep{cs},
@@ -79,7 +71,12 @@ func newCodeSet(env Env, node yaml.Node) ([]Tool, error) {
 // codeSet is the state shared by the set's tools for one session: the jail
 // root and the read ledger backing the read-before-edit rule.
 type codeSet struct {
-	root      string
+	root string
+	// cwd is where the process was started, captured once: the display
+	// anchor for header paths. It is NOT the jail (root is) — a run started
+	// in a subdirectory of the project shows paths the way the user would
+	// type them, while still reaching the whole project.
+	cwd       string
 	autoWrite bool
 
 	mu    sync.Mutex
@@ -609,6 +606,23 @@ func numberedWindow(content string, args map[string]any, display string) (string
 // ---- edit_file ----
 
 type codeEditFile struct{ cs *codeSet }
+
+// HeaderSummary: the path IS the call for the file tools — the header reads
+// "[edit_file internal/ui/model.go]". edit_file and write_file especially
+// must own this: their new_string / content arguments are whole files, and
+// the generic digest would paste one into the header.
+func (t *codeReadFile) HeaderSummary(args map[string]any) string  { return t.cs.headerArg(args) }
+func (t *codeEditFile) HeaderSummary(args map[string]any) string  { return t.cs.headerArg(args) }
+func (t *codeWriteFile) HeaderSummary(args map[string]any) string { return t.cs.headerArg(args) }
+func (t *codeListDir) HeaderSummary(args map[string]any) string   { return t.cs.headerArg(args) }
+
+// headerArg renders the "path" argument for a header. A missing path (a
+// malformed call) yields "" — a bare "[read_file]" — rather than falling
+// back to a digest of whatever else the model sent.
+func (cs *codeSet) headerArg(args map[string]any) string {
+	p, _ := args["path"].(string)
+	return headerPath(p, cs.cwd, cs.root)
+}
 
 func (t *codeEditFile) RequiresApproval() bool { return !t.cs.autoWrite }
 

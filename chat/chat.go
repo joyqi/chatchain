@@ -321,6 +321,17 @@ func presentationOf(dispatch tool.Dispatcher, name string) tool.Presentation {
 	return pr.Presentation(name)
 }
 
+// headerSummaryOf asks the dispatcher for the named tool's own call summary
+// (the optional tool.HeaderReporter capability). ok=false — no capability, or
+// a tool that declares none — means the generic argument digest applies.
+func headerSummaryOf(dispatch tool.Dispatcher, name string, args map[string]any) (string, bool) {
+	hr, ok := dispatch.(tool.HeaderReporter)
+	if !ok {
+		return "", false
+	}
+	return hr.HeaderSummary(name, args)
+}
+
 // isInteractive reports whether the named tool runs its own user surface:
 // its calls route to the attention channels instead of the activity panel.
 func isInteractive(dispatch tool.Dispatcher, name string) bool {
@@ -342,7 +353,17 @@ const toolHeaderMaxValue = 15
 // a tool call starts. Keys are sorted for stable output; each value is collapsed
 // to one line and truncated, and arguments past toolHeaderMaxArgs collapse to a
 // "… +N args" tail.
-func toolCallHeader(tc provider.ToolCall) string {
+func toolCallHeader(dispatch tool.Dispatcher, tc provider.ToolCall) string {
+	// A tool that writes its own summary takes over completely — an empty
+	// one renders as a bare "[name]", never as the argument digest below
+	// (see tool.headliner: edit_file's new_string must not reach a header).
+	if summary, ok := headerSummaryOf(dispatch, tc.Name, tc.Arguments); ok {
+		name := displayToolName(tc.Name)
+		if summary == "" {
+			return "[" + name + "]"
+		}
+		return "[" + name + " " + summary + "]"
+	}
 	keys := make([]string, 0, len(tc.Arguments))
 	for k := range tc.Arguments {
 		keys = append(keys, k)

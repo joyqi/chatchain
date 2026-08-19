@@ -59,27 +59,42 @@ func newShellSet(env Env, node yaml.Node) ([]Tool, error) {
 		return nil, fmt.Errorf("sandbox must be \"auto\" or \"off\", got %q", cfg.Sandbox)
 	}
 
-	root := env.ProjectRoot
-	if root == "" {
-		if cwd, err := os.Getwd(); err == nil {
-			root = cwd
-		}
-	}
-	if abs, err := filepath.Abs(root); err == nil {
-		root = abs
-	}
+	cwd, _ := os.Getwd()
 	return []Tool{&bashTool{
 		cfg:       cfg,
-		root:      root,
+		root:      env.Root(),
+		cwd:       cwd,
 		sandboxed: cfg.Sandbox == "auto" && shell.Available(),
 	}}, nil
 }
 
 // bashTool runs shell command lines, sandboxed when the platform allows.
 type bashTool struct {
-	cfg       shellConfig
-	root      string
+	cfg  shellConfig
+	root string
+	// cwd is the process working directory, the display anchor for the
+	// optional cwd argument (see HeaderSummary). Not the execution dir —
+	// that defaults to root.
+	cwd       string
 	sandboxed bool
+}
+
+// HeaderSummary renders the call as the command itself: "[bash git status]".
+// The argument name is noise (a bash call has one thing to say), and an
+// explicit cwd folds into the shell idiom for it rather than eating a
+// separate slot.
+func (b *bashTool) HeaderSummary(args map[string]any) string {
+	cmd := headerCommand(str(args, "command"))
+	if dir := strings.TrimSpace(str(args, "cwd")); dir != "" {
+		return "cd " + headerPath(dir, b.cwd, b.root) + " && " + cmd
+	}
+	return cmd
+}
+
+// str reads a string argument, tolerating absent or wrongly-typed values.
+func str(args map[string]any, key string) string {
+	s, _ := args[key].(string)
+	return s
 }
 
 // RequiresApproval gates unsandboxed execution behind user consent; a

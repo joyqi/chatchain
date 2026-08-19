@@ -28,7 +28,7 @@ const loadSkillMaxOutput = 64 * 1024 // 64KB
 // takes no configuration yet: the shared node is tolerated and ignored so a
 // `tools: {agent: ...}` entry has room to grow settings.
 func newAgentSet(env Env, _ yaml.Node) ([]Tool, error) {
-	return []Tool{&loadSkill{root: env.ProjectRoot}}, nil
+	return []Tool{&loadSkill{root: env.Root()}}, nil
 }
 
 // loadSkill activates agent-mode skills: it resolves a catalog name back to
@@ -94,11 +94,6 @@ func (l *loadSkill) Call(_ context.Context, args map[string]any) (string, bool, 
 // consistent with the catalog the model just saw) and finds name.
 func (l *loadSkill) resolve(name string) (agents.Skill, string) {
 	root := l.root
-	if root == "" {
-		if cwd, err := os.Getwd(); err == nil {
-			root = cwd
-		}
-	}
 	sks, _ := agents.DiscoverSkills(agents.SkillRoots(root))
 	for _, sk := range sks {
 		if sk.Name == name {

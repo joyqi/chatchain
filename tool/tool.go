@@ -14,6 +14,8 @@ package tool
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"sync"
@@ -85,6 +87,27 @@ type PresentationReporter interface {
 	Presentation(name string) Presentation
 }
 
+// headliner is an optional Tool interface: the tool writes the summary that
+// follows its name in the call header, instead of the generic argument
+// digest. The brackets, the name, and the styling stay with the chat layer —
+// a tool only says what is worth showing about THIS call.
+//
+// Implementing it takes over completely: an empty summary renders as a bare
+// "[name]", it does NOT fall back. That matters for tools whose arguments
+// must never reach the header — edit_file's new_string is a whole file's
+// worth of code.
+type headliner interface {
+	HeaderSummary(args map[string]any) string
+}
+
+// HeaderReporter is the Dispatcher-side mirror of headliner (as
+// PresentationReporter mirrors approver). The bool separates the three states
+// a bare string cannot: a summary, a deliberately empty summary, and "this
+// tool has none — use the default digest".
+type HeaderReporter interface {
+	HeaderSummary(name string, args map[string]any) (string, bool)
+}
+
 // Owner is an optional Dispatcher capability: name ownership beyond the
 // currently ADVERTISED tools. A deferring wrapper hides tools from Tools()
 // but still owns their names — Merge routes calls (and capability queries)
@@ -144,6 +167,22 @@ type Env struct {
 	// (the ask set). nil in non-interactive runs — a set that needs it
 	// returns no tools, so the model never sees what it cannot use.
 	Interact Interactor
+}
+
+// Root is the toolsets' anchor directory: the configured project root, else
+// the working directory, always absolute. Three toolsets had byte-identical
+// copies of this before — and one of them had drifted, skipping the Abs step.
+func (e Env) Root() string {
+	root := e.ProjectRoot
+	if root == "" {
+		if cwd, err := os.Getwd(); err == nil {
+			root = cwd
+		}
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
+	return root
 }
 
 // Interactor is the host-side seam for model-initiated user interaction: one
@@ -347,6 +386,24 @@ func (r *Registry) Presentation(name string) Presentation {
 	return PresentGroup
 }
 
+// HeaderSummary reports the named built-in tool's own call summary (via the
+// optional headliner interface). ok=false means the tool has none and the
+// caller should fall back to the generic argument digest.
+func (r *Registry) HeaderSummary(name string, args map[string]any) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	t, ok := r.index[name]
+	if !ok {
+		return "", false
+	}
+	h, ok := t.(headliner)
+	if !ok {
+		return "", false
+	}
+	return h.HeaderSummary(args), true
+}
+
 // CallTool dispatches a call to the matching built-in tool.
 func (r *Registry) CallTool(ctx context.Context, name string, args map[string]any) (string, bool, error) {
 	if r == nil {
@@ -445,6 +502,18 @@ func (m *multiDispatcher) Presentation(name string) Presentation {
 		}
 	}
 	return PresentGroup
+}
+
+// HeaderSummary routes the question to the part owning the tool name; parts
+// without the HeaderReporter capability (the MCP manager) report none, and
+// their calls keep the default argument digest.
+func (m *multiDispatcher) HeaderSummary(name string, args map[string]any) (string, bool) {
+	if p := m.owner(name); p != nil {
+		if hr, ok := p.(HeaderReporter); ok {
+			return hr.HeaderSummary(name, args)
+		}
+	}
+	return "", false
 }
 
 // SearchTools forwards the client-executed search to the first part with

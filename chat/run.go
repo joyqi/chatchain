@@ -1385,7 +1385,7 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 		ctxm.settle(*history)
 
 		for _, tc := range toolCalls {
-			header := CodeStyle.Sprint(toolCallHeader(tc))
+			header := CodeStyle.Sprint(toolCallHeader(dispatch, tc))
 			mode := presentationOf(dispatch, tc.Name)
 
 			// Interactive tools (the ask set) bring their own surface — the
