@@ -277,6 +277,11 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 	}
 	fnCalls := make(map[string]*fnCallAcc)           // keyed by call_id
 	pendingArgs := make(map[string]*strings.Builder) // item_id → accumulated args, flushed on output_item.done
+	// itemNames maps item_id → function name, learned from output_item.added.
+	// The argument-delta events carry no name of their own, and the composing
+	// observer needs one: an unnamed delta cannot be classified, so it raises
+	// nothing and a long argument stream reads as the session hanging.
+	itemNames := make(map[string]string)
 	var fnCallOrder []string
 	var rawOutputItems []json.RawMessage
 
@@ -331,10 +336,22 @@ func (p *OpenResponsesProvider) streamChatInternal(ctx context.Context, messages
 						p.imagePartial(data)
 					}
 				}
+			case "response.output_item.added":
+				// The name arrives HERE, once, before any argument delta.
+				var added llm.RespOutputItem
+				if json.Unmarshal(evt.Item, &added) == nil && added.Type == "function_call" && added.Name != "" {
+					itemNames[added.ID] = added.Name
+					// Raise the widget on the announcement itself: a call
+					// whose arguments are still empty is already work in
+					// progress, and waiting for the first delta leaves the
+					// gap this event exists to close.
+					closeReasoning()
+					p.notifyToolDelta(added.Name, "…")
+				}
 			case "response.function_call_arguments.delta":
 				closeReasoning() // thinking is over once tool args stream
 				getPendingArgs(evt.ItemID).WriteString(evt.Delta)
-				p.notifyToolDelta("", evt.Delta)
+				p.notifyToolDelta(itemNames[evt.ItemID], evt.Delta)
 			case "response.function_call_arguments.done":
 				b := getPendingArgs(evt.ItemID)
 				b.Reset()

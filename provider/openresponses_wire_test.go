@@ -504,3 +504,57 @@ func TestOpenResponsesImagePartials(t *testing.T) {
 		t.Fatalf("final image missing")
 	}
 }
+
+// The composing observer must learn the function's NAME, which in this
+// dialect appears exactly once — in response.output_item.added — and never on
+// the argument deltas themselves. An unnamed delta cannot be classified, so
+// the chat layer drops it and raises nothing: a write_file whose arguments
+// stream for half a minute used to read as the session having hung.
+//
+// The widget goes up on the announcement, before the first argument byte: a
+// call that has been announced is already work in progress.
+func TestOpenResponsesComposingObserverLearnsName(t *testing.T) {
+	transcript := strings.Join([]string{
+		`data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"Writing."}`,
+		``,
+		`data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","call_id":"c1","name":"write_file","arguments":""}}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"path\":"}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"\"a.txt\"}"}`,
+		``,
+		`data: {"type":"response.output_item.done","item":{"id":"fc_1","type":"function_call","call_id":"c1","name":"write_file","arguments":"{\"path\":\"a.txt\"}"}}`,
+		``,
+		`data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}`,
+		``,
+	}, "\n")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(transcript))
+	}))
+	defer srv.Close()
+
+	p := NewOpenResponses("k", srv.URL, "m", nil, srv.Client())
+	var names []string
+	p.SetToolCallObserver(func(name, delta string) { names = append(names, name) })
+
+	var content, reasoning strings.Builder
+	if _, _, _, err := p.StreamChatWithTools(context.Background(),
+		[]Message{{Role: "user", Content: "q"}}, []ToolDef{{Name: "write_file"}},
+		&content, nopCloser{&reasoning}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(names) == 0 {
+		t.Fatal("the observer was never notified — nothing would raise the widget")
+	}
+	for i, n := range names {
+		if n != "write_file" {
+			t.Fatalf("notification %d carried name %q; an unnamed delta raises nothing", i, n)
+		}
+	}
+	// The announcement itself notifies, ahead of the two argument deltas.
+	if len(names) != 3 {
+		t.Fatalf("got %d notifications, want 3 (the added event + two deltas)", len(names))
+	}
+}
