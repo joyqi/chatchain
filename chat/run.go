@@ -1395,7 +1395,27 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 		// run for minutes.
 		ctxm.settle(*history)
 
-		for _, tc := range toolCalls {
+		for i := 0; i < len(toolCalls); {
+			// A run of consecutive parallel-capable calls executes as one
+			// batch. Batching a RUN rather than partitioning the round keeps
+			// the effect identical to Codex's read/write gate — a writer
+			// still separates the readers before it from the readers after
+			// — while leaving the serial path below untouched, which is
+			// where approval, surfaces and file mutation all live.
+			if j := parallelRun(dispatch, toolCalls, i); j-i >= 2 {
+				results, ierr := runParallelBatch(ctx, u.PushCancelScope, tr, dispatch, toolCalls[i:j])
+				*history = append(*history, results...)
+				// One estimate for the batch: the figure moves when the
+				// whole run lands rather than per call.
+				ctxm.note(results...)
+				if ierr != nil {
+					return "", "", ierr
+				}
+				i = j
+				continue
+			}
+			tc := toolCalls[i]
+			i++
 			header := CodeStyle.Sprint(toolCallHeader(dispatch, tc))
 			mode := presentationOf(dispatch, tc.Name)
 

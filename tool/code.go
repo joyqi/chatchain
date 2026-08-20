@@ -607,6 +607,15 @@ func numberedWindow(content string, args map[string]any, display string) (string
 
 type codeEditFile struct{ cs *codeSet }
 
+// SupportsParallel: the read-only file tools touch nothing and ask nothing,
+// so a round that reads four files can read them at once. edit_file and
+// write_file are deliberately absent — they write — and so is glob's and
+// grep's mutating sibling set, which does not exist.
+func (t *codeReadFile) SupportsParallel() bool { return true }
+func (t *codeGlob) SupportsParallel() bool     { return true }
+func (t *codeGrep) SupportsParallel() bool     { return true }
+func (t *codeListDir) SupportsParallel() bool  { return true }
+
 // HeaderSummary: the path IS the call for the file tools — the header reads
 // "[edit_file internal/ui/model.go]". edit_file and write_file especially
 // must own this: their new_string / content arguments are whole files, and

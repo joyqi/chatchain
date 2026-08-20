@@ -87,6 +87,33 @@ type PresentationReporter interface {
 	Presentation(name string) Presentation
 }
 
+// parallelizer is an optional Tool interface: the tool declares that its
+// calls may run CONCURRENTLY with other calls in the same round.
+//
+// The default is no, and the default is what almost every tool wants. A tool
+// may opt in only if all three hold:
+//
+//   - it does not write — two concurrent writers to one file is a race whose
+//     symptoms are intermittent and whose cause is invisible in a transcript;
+//   - it needs no approval — the gate is a modal prompt, and two of them at
+//     once have one screen to share;
+//   - it opens no surface (PresentSurface), for the same reason.
+//
+// Today that is exactly the read-only file tools. Codex arrived at the same
+// default (supports_parallel_tool_calls = false) and, notably, does not opt
+// its own shell in: a shell command's effects cannot be known from its
+// declaration, so the only honest answer for it is "no".
+type parallelizer interface {
+	SupportsParallel() bool
+}
+
+// ParallelReporter is the Dispatcher-side mirror of parallelizer (as
+// PresentationReporter mirrors presenter). Parts without the capability
+// report false, which keeps their calls serialized.
+type ParallelReporter interface {
+	SupportsParallel(name string) bool
+}
+
 // headliner is an optional Tool interface: the tool writes the summary that
 // follows its name in the call header, instead of the generic argument
 // digest. The brackets, the name, and the styling stay with the chat layer —
@@ -386,6 +413,21 @@ func (r *Registry) Presentation(name string) Presentation {
 	return PresentGroup
 }
 
+// SupportsParallel reports whether the named built-in tool's calls may run
+// concurrently with others in the same round (the optional parallelizer
+// interface; absent means no).
+func (r *Registry) SupportsParallel(name string) bool {
+	if r == nil {
+		return false
+	}
+	t, ok := r.index[name]
+	if !ok {
+		return false
+	}
+	p, ok := t.(parallelizer)
+	return ok && p.SupportsParallel()
+}
+
 // HeaderSummary reports the named built-in tool's own call summary (via the
 // optional headliner interface). ok=false means the tool has none and the
 // caller should fall back to the generic argument digest.
@@ -502,6 +544,18 @@ func (m *multiDispatcher) Presentation(name string) Presentation {
 		}
 	}
 	return PresentGroup
+}
+
+// SupportsParallel routes the question to the part owning the tool name.
+// Parts without the capability — the MCP manager, whose servers make no such
+// promise — report false, so their calls stay serialized.
+func (m *multiDispatcher) SupportsParallel(name string) bool {
+	if p := m.owner(name); p != nil {
+		if pr, ok := p.(ParallelReporter); ok {
+			return pr.SupportsParallel(name)
+		}
+	}
+	return false
 }
 
 // HeaderSummary routes the question to the part owning the tool name; parts
