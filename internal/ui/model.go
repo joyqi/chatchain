@@ -76,8 +76,8 @@ type model struct {
 	histDraft string // draft saved when navigation starts
 
 	// Slash completion: commands installed via SetSlashCommands; Tab cycles
-	// the matches of the prefix captured at the first Tab press.
-	commands []string
+	// the matches of the prefix captured at the first Tab press (suggest.go).
+	commands []Suggestion
 	sugBase  string // "" = not cycling
 	sugIdx   int
 
@@ -414,19 +414,22 @@ func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Tab cycles slash-command completions for the prefix captured at the
-	// first press; any other key ends the cycle.
+	// first press, writing each candidate straight into the composer; any
+	// other key ends the cycle. Enter is never touched — completing and
+	// sending stay separate keys, which is what keeps an ordinary send
+	// working exactly as it does with no list on screen.
 	if k.Code == tea.KeyTab {
 		base := m.sugBase
 		if base == "" {
 			base = m.ta.Value()
 		}
-		if ms := matchCommands(m.commands, base); len(ms) > 0 {
+		if ms := matchSuggestions(m.commands, base); len(ms) > 0 {
 			if m.sugBase == "" {
 				m.sugBase = base
 				m.sugIdx = -1
 			}
 			m.sugIdx = (m.sugIdx + 1) % len(ms)
-			m.setDraft(ms[m.sugIdx])
+			m.setDraft(ms[m.sugIdx].Value)
 		}
 		return m, nil
 	}
@@ -1017,10 +1020,16 @@ func (m *model) View() tea.View {
 	}
 
 	// The composer is wrapped by TWO separators; the bottom zone (below the
-	// lower separator) holds exactly one of: an open interaction surface, the
-	// slash-suggestion row, or the status line (surface > suggestions >
+	// lower separator) holds exactly one of: an open interaction surface, a
+	// suggestion's description, or the status line (surface > suggestion >
 	// status). Swapping them is a content change on existing rows plus
 	// below-composer growth/shrink — never a composer move.
+	//
+	// Completion candidates are the exception that proves the rule: they sit
+	// INSIDE the composer block, above the lower separator, because they
+	// belong to the line being typed rather than to the frame's status. The
+	// separator moves down to enclose them, and the description — commentary
+	// on a candidate, not part of the input — stays below it.
 	w := m.width
 	if w < 1 {
 		w = 80
@@ -1030,6 +1039,10 @@ func (m *model) View() tea.View {
 
 	b.WriteString(m.ta.View())
 
+	candidates, desc := m.suggestRows()
+	if candidates != "" {
+		b.WriteString("\n" + candidates)
+	}
 	b.WriteString("\n" + faint + strings.Repeat("─", w) + sgrReset)
 
 	m.surfCur = nil
@@ -1038,8 +1051,8 @@ func (m *model) View() tea.View {
 		// Interaction surface: replaces the status row; its vacated rows on
 		// close die at the screen bottom where output self-heals them.
 		m.renderSurface(&b)
-	case m.suggestionRow() != "":
-		b.WriteString("\n" + m.suggestionRow())
+	case desc != "":
+		b.WriteString("\n" + desc)
 	default:
 		b.WriteString("\n" + m.statusLine())
 	}
@@ -1060,31 +1073,6 @@ func (m *model) View() tea.View {
 		}
 	}
 	return view
-}
-
-// suggestionRow renders the slash-completion candidates while a bare "/"
-// prefix is typed ("" when inactive). It occupies the status row's slot.
-func (m *model) suggestionRow() string {
-	base := m.sugBase
-	if base == "" {
-		base = m.ta.Value()
-	}
-	ms := matchCommands(m.commands, base)
-	if len(ms) == 0 {
-		return ""
-	}
-	var row strings.Builder
-	for i, c := range ms {
-		if i > 0 {
-			row.WriteString("  ")
-		}
-		if m.sugBase != "" && i == m.sugIdx {
-			row.WriteString(cyan + c + sgrReset)
-		} else {
-			row.WriteString(faint + c + sgrReset)
-		}
-	}
-	return ansi.Truncate(row.String(), maxInt(4, m.width), "…")
 }
 
 // statusLine renders " model · ↑ in ↓ out · pct% / window", with the busy
@@ -1213,19 +1201,6 @@ func maxInt(a, b int) int {
 
 // matchCommands returns the commands matching a "/" prefix being typed (no
 // arguments yet); nil when the line isn't a bare command prefix.
-func matchCommands(commands []string, line string) []string {
-	if !strings.HasPrefix(line, "/") || strings.ContainsAny(line, " \n") {
-		return nil
-	}
-	var ms []string
-	for _, c := range commands {
-		if strings.HasPrefix(c, line) {
-			ms = append(ms, c)
-		}
-	}
-	return ms
-}
-
 // pasteTag renders the composer stand-in for a stored multi-line paste.
 func pasteTag(id int, content string) string {
 	lines := strings.Count(content, "\n") + 1

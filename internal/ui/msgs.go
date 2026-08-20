@@ -18,7 +18,7 @@ type (
 
 	statusMsg      StatusData
 	titleMsg       string
-	setCommandsMsg []string // slash command table for suggestions/completion
+	setCommandsMsg []Suggestion // slash command table for suggestions/completion
 
 	progressMsg ProgressState
 	notifyMsg   string // attention ping: reaches the terminal only while unfocused

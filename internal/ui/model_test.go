@@ -671,11 +671,22 @@ func TestHistoryNavigation(t *testing.T) {
 
 // TestSlashTabCompletion: a "/" prefix shows suggestions; Tab cycles the
 // matches of the prefix captured at the first press.
+// cmdTable builds a suggestion table from plain values.
+func cmdTable(vals ...string) []Suggestion {
+	out := make([]Suggestion, 0, len(vals))
+	for _, v := range vals {
+		out = append(out, Suggestion{Value: v})
+	}
+	return out
+}
+
+// Tab writes the candidate straight into the composer and cycles the
+// ORIGINAL prefix's matches — completing is one key, and Enter is left alone.
 func TestSlashTabCompletion(t *testing.T) {
 	m := newTestModel(t)
-	m = step(t, m, setCommandsMsg([]string{"/file", "/session", "/status", "/model"}))
+	m = step(t, m, setCommandsMsg(cmdTable("/file", "/session", "/status", "/model")))
 	m = typeText(t, m, "/s")
-	if c := content(m); !strings.Contains(c, "/session") || !strings.Contains(c, "/status") {
+	if c := stripSGR(content(m)); !strings.Contains(c, "session") || !strings.Contains(c, "status") {
 		t.Fatalf("suggestion row missing:\n%s", c)
 	}
 	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
@@ -1076,12 +1087,34 @@ func TestWrappedComposerLayout(t *testing.T) {
 		t.Fatal("status not restored after the surface closed")
 	}
 
-	// The slash-suggestion row replaces the status row too.
-	m = step(t, m, setCommandsMsg([]string{"/model"}))
+	// Completion candidates land INSIDE the composer block — above the lower
+	// separator, because they belong to the line being typed. The status row
+	// keeps its slot until a candidate is selected and has something to say.
+	m = step(t, m, setCommandsMsg([]Suggestion{{Value: "/model", Desc: "Pick a model"}}))
 	m = typeText(t, m, "/m")
+	lines = strings.Split(stripSGR(content(m)), "\n")
+	sepIdx = nil
+	candIdx, statusIdx := -1, -1
+	for i, l := range lines {
+		switch {
+		case strings.HasPrefix(l, "───"):
+			sepIdx = append(sepIdx, i)
+		case strings.Contains(l, "⎿ model"):
+			candIdx = i
+		case strings.Contains(l, "gpt-4o · "):
+			statusIdx = i
+		}
+	}
+	if len(sepIdx) != 2 || !(candIdx < sepIdx[1] && sepIdx[1] < statusIdx) {
+		t.Fatalf("candidates not enclosed by the composer block (cand=%d sep=%v status=%d):\n%s",
+			candIdx, sepIdx, statusIdx, stripSGR(content(m)))
+	}
+
+	// Selecting one moves its description into the status row's slot.
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
 	c = stripSGR(content(m))
-	if strings.Contains(c, "gpt-4o · ") || !strings.Contains(c, "/model") {
-		t.Fatalf("suggestions should replace the status row:\n%s", c)
+	if strings.Contains(c, "gpt-4o · ") || !strings.Contains(c, "Pick a model") {
+		t.Fatalf("the description should take the status row while cycling:\n%s", c)
 	}
 }
 
@@ -2036,5 +2069,140 @@ func TestStatusLineDebugMarker(t *testing.T) {
 	}
 	if w := textwidth.StringWidth(narrow); w > 28 {
 		t.Fatalf("status line overflows the width: %d > 28 (%q)", w, narrow)
+	}
+}
+
+// A command that carries an argument ("/skills brain-page") stays out of the
+// list until the user types the space: "/skills" should offer the command
+// itself, not its whole catalog. Once the space is there, the catalog is
+// exactly what the list is for.
+func TestMatchSuggestionsArgumentEntries(t *testing.T) {
+	cmds := cmdTable("/file", "/skills", "/skills brain-page", "/skills code-review")
+	vals := func(ms []Suggestion) []string {
+		out := make([]string, len(ms))
+		for i, m := range ms {
+			out[i] = m.Value
+		}
+		return out
+	}
+
+	if got := vals(matchSuggestions(cmds, "/skill")); len(got) != 1 || got[0] != "/skills" {
+		t.Fatalf("before the space: %v, want just /skills", got)
+	}
+	if got := vals(matchSuggestions(cmds, "/skills")); len(got) != 1 || got[0] != "/skills" {
+		t.Fatalf("on the bare command: %v, want just /skills", got)
+	}
+	if got := matchSuggestions(cmds, "/skills "); len(got) != 2 {
+		t.Fatalf("after the space: %v, want both skills", vals(got))
+	}
+	if got := vals(matchSuggestions(cmds, "/skills br")); len(got) != 1 || got[0] != "/skills brain-page" {
+		t.Fatalf("narrowing: %v", got)
+	}
+	// An ordinary command's arguments still silence the list — nothing
+	// registered begins with that text.
+	if got := matchSuggestions(cmds, "/file some/path"); got != nil {
+		t.Fatalf("ordinary arguments suggested %v", vals(got))
+	}
+}
+
+// The row window follows the highlight. Without it, cycling past what fits
+// changes the composer while the row sits still — the user is choosing blind,
+// which is what a flat truncate used to do past the width.
+func TestSuggestRowWindowFollowsHighlight(t *testing.T) {
+	var vals []string
+	for i := 0; i < 12; i++ {
+		vals = append(vals, fmt.Sprintf("/skills s%02d", i))
+	}
+	m := newTestModel(t)
+	m = step(t, m, tea.WindowSizeMsg{Width: 40, Height: 24})
+	tbl := []Suggestion{{Value: "/skills"}}
+	for i, v := range vals {
+		tbl = append(tbl, Suggestion{Value: v, Label: fmt.Sprintf("s%02d", i)})
+	}
+	m = step(t, m, setCommandsMsg(tbl))
+	m = typeText(t, m, "/skills ")
+
+	for i := 0; i < len(vals); i++ {
+		m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+		cand, _ := m.suggestRows()
+		rows := stripSGR(cand)
+		if want := fmt.Sprintf("s%02d", i); !strings.Contains(rows, want) {
+			t.Fatalf("highlight %d (%s) scrolled out of view:\n%s", i, want, rows)
+		}
+		if got := m.ta.Value(); got != vals[i] {
+			t.Fatalf("step %d put %q in the composer, want %q", i, got, vals[i])
+		}
+	}
+	// Whatever the window hides is counted, never silently dropped.
+	cand, desc := m.suggestRows()
+	if !strings.Contains(stripSGR(cand), "+") {
+		t.Fatalf("no overflow count with 12 candidates in 40 columns:\n%s", stripSGR(cand))
+	}
+	for _, r := range []string{cand, desc} {
+		if w := textwidth.StringWidth(stripSGR(r)); w > 40 {
+			t.Fatalf("row overflows the width (%d): %q", w, stripSGR(r))
+		}
+	}
+}
+
+// A candidate's row shows its bare label, never the already-typed command
+// prefix; the description appears only once something is selected, because a
+// description under an unselected row reads as if that row were chosen.
+func TestSuggestRowsShowLabelAndDescription(t *testing.T) {
+	m := newTestModel(t)
+	m = step(t, m, setCommandsMsg([]Suggestion{
+		{Value: "/skills brain-page", Label: "brain-page", Desc: "Read and write brain pages"},
+	}))
+	m = typeText(t, m, "/skills ")
+
+	cand, desc := m.suggestRows()
+	if desc != "" {
+		t.Fatalf("description shown before anything was selected: %q", desc)
+	}
+	if got := stripSGR(cand); strings.Contains(got, "/skills brain-page") {
+		t.Fatalf("row repeated the typed prefix:\n%s", got)
+	} else if !strings.Contains(got, "brain-page") {
+		t.Fatalf("row missing the label:\n%s", got)
+	}
+
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	if _, desc = m.suggestRows(); !strings.Contains(stripSGR(desc), "Read and write brain pages") {
+		t.Fatalf("description missing after selecting:\n%s", stripSGR(desc))
+	}
+}
+
+// The two rows must not read as one list: the candidates carry the default
+// foreground because they are what the user acts on, the description stays
+// faint because it explains.
+func TestSuggestRowHues(t *testing.T) {
+	m := newTestModel(t)
+	m = step(t, m, setCommandsMsg([]Suggestion{
+		{Value: "/status", Desc: "Provider, tokens, tools"},
+		{Value: "/session", Desc: "Resume or delete"},
+	}))
+	m = typeText(t, m, "/s")
+	m = step(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+
+	cand, desc := m.suggestRows()
+	if cand == "" || desc == "" {
+		t.Fatalf("want both halves, got cand=%q desc=%q", cand, desc)
+	}
+	// The row is chrome under the composer: faint throughout, with only the
+	// selection lifted out of it.
+	if !strings.Contains(cand, cyan+"status"+sgrReset) {
+		t.Fatalf("selected candidate not cyan:\n%q", cand)
+	}
+	if !strings.Contains(cand, faint+"session"+sgrReset) {
+		t.Fatalf("unselected candidate not faint:\n%q", cand)
+	}
+	// A command shows without the slash the composer already carries.
+	if strings.Contains(stripSGR(cand), "/status") {
+		t.Fatalf("candidate repeated the leading slash:\n%q", stripSGR(cand))
+	}
+	if !strings.HasPrefix(stripSGR(cand), "  ⎿ ") {
+		t.Fatalf("row missing the continuation marker:\n%q", stripSGR(cand))
+	}
+	if !strings.Contains(desc, faint) {
+		t.Fatalf("description not faint:\n%q", desc)
 	}
 }

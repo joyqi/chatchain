@@ -312,9 +312,23 @@ func sanitizeWindowTitle(s string) string {
 	return s
 }
 
+// Suggestion is one entry in the composer's completion list. Value is what
+// completing it puts in the composer; Label is what the row shows (a skill
+// entry's value is "/skills brain-page" but its label is just the name — the
+// prefix is already typed and repeating it on every row wastes the width the
+// description needs); Desc is the dim right column, "" for entries that
+// explain themselves.
+type Suggestion struct {
+	Value string
+	Label string
+	Desc  string
+}
+
 // SetSlashCommands installs the slash-command table backing the composer's
 // suggestion row and Tab completion.
-func (u *UI) SetSlashCommands(cmds []string) { u.p.Send(setCommandsMsg(append([]string{}, cmds...))) }
+func (u *UI) SetSlashCommands(cmds []Suggestion) {
+	u.p.Send(setCommandsMsg(append([]Suggestion{}, cmds...)))
+}
 
 // Tabbed opens a multi-tab surface below the composer (Tab switches panels,
 // Enter commits ALL tabs, ESC/q cancels) and blocks until it resolves.

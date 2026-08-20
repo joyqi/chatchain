@@ -82,19 +82,10 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 	}
 
 	DimStyle.Println("Chat started. Press Ctrl+C to exit.")
-	saveHint := ""
-	if newSession != nil {
-		saveHint = ", /save"
-	}
-	compactHint := ", /compact"
-	if !tokenAware {
-		compactHint = ""
-	}
-	editHint := ""
-	if imageProvider {
-		editHint = ", /edit, /redo"
-	}
-	DimStyle.Println("Commands: /file [path]" + editHint + ", /session, /model" + compactHint + ", /export, /status, /tools, /debug" + saveHint + agentCommandHint(overlay))
+	// The banner reads the SAME table the completion row and the dispatch
+	// loop read, so a conditional command can never be advertised without
+	// existing (or exist without being advertised).
+	DimStyle.Println("Commands: " + strings.Join(commandNames(), ", "))
 	if id := sw.ID(); id != "" {
 		DimStyle.Printf("Session: %s\n", id)
 	} else if newSession != nil {
@@ -135,6 +126,9 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 	}
 	defer func() { sw.Close() }() // sw may be swapped by /session
 	u.SetTitle(windowTitle(sw.Title()))
+	if overlay != nil {
+		setSkillCommands(skillEntries(overlay.Skills()))
+	}
 	u.SetSlashCommands(activeSlashCommands)
 
 	// The presenter fans lifecycle state and attention pings out to the
@@ -889,10 +883,27 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 			}
 			continue
 		}
+		// /skills is one command with two jobs: bare it opens the catalog,
+		// named it RUNS a skill. Running is an input expansion, not a
+		// dispatch — the skill's instructions become the message being sent,
+		// so the turn below carries them like any other typed line (and
+		// mid-turn steering carries them too). The transcript still echoes
+		// what the user typed: a whole SKILL.md in the ❯ block would bury
+		// the screen.
 		if overlay != nil && (input == "/skills" || strings.HasPrefix(input, "/skills ")) {
 			overlay.Refresh()
-			_ = u.View(ctx, ui.ViewSpec{Title: "Skills", Lines: skillsStatusLines(overlay.Skills(), overlay.Warnings(), agent.Root)})
-			continue
+			arg := strings.TrimSpace(strings.TrimPrefix(input, "/skills"))
+			if arg == "" {
+				_ = u.View(ctx, ui.ViewSpec{Title: "Skills", Lines: skillsStatusLines(overlay.Skills(), overlay.Warnings(), agent.Root)})
+				continue
+			}
+			expanded, name, serr := expandSkill(overlay.Skills(), arg)
+			if serr != nil {
+				printErr("%v", serr)
+				continue
+			}
+			printDim("Skill %s loaded (%s).", name, byteSize(len(expanded)))
+			input = expanded
 		}
 		if input == "/status" || strings.HasPrefix(input, "/status ") {
 			items := statusLines(p, budget, ctxm.totals(), history, len(pendingAttachments), dispatch, mgr, sw)
@@ -926,6 +937,8 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 			printDim("AGENTS.md reloaded (%d files)", overlay.FileCount())
 		}
 		if skillsChanged {
+			setSkillCommands(skillEntries(overlay.Skills()))
+			u.SetSlashCommands(activeSlashCommands)
 			printDim("Skills reloaded (%d skill(s))", overlay.SkillCount())
 			for _, warn := range overlay.Warnings() {
 				printDim("⚠ %s", warn)
