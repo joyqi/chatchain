@@ -170,3 +170,19 @@ func TestMerge(t *testing.T) {
 		t.Fatalf("expected error for unknown tool")
 	}
 }
+
+// Every bash call is its own `bash -c`, so a helper defined in one call is
+// gone by the next. The description must SAY so: skill and README instructions
+// routinely tell a model to define a function first and use it afterwards
+// ("brain() { node …/brain.mjs \"$@\"; }"), which fails a turn later with
+// "command not found" — far from the call that appeared to work.
+func TestBashDescriptionStatesShellStateContract(t *testing.T) {
+	for _, b := range []*bashTool{{root: "/proj"}, {root: "/proj", sandboxed: true}} {
+		desc := b.Def().Description
+		for _, want := range []string{"FRESH shell", "functions", "do not carry over"} {
+			if !strings.Contains(desc, want) {
+				t.Fatalf("sandboxed=%v: description missing %q:\n%s", b.sandboxed, want, desc)
+			}
+		}
+	}
+}

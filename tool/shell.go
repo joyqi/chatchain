@@ -105,7 +105,15 @@ func (b *bashTool) RequiresApproval() bool { return !b.sandboxed && !b.cfg.AutoR
 func (b *bashTool) Def() provider.ToolDef {
 	desc := "Run a bash command line on the user's machine and return its combined stdout/stderr. " +
 		"The full shell is available: pipes, redirects, globbing, && chaining, heredocs. " +
-		"The working directory defaults to the project root (override with \"cwd\"). "
+		"The working directory defaults to the project root (override with \"cwd\"). " +
+		// Every call is its own `bash -c`. Saying so is what stops a model
+		// from following the widespread instruction style of defining a
+		// helper function (or exporting a variable) in one call and using it
+		// in the next — which fails with \"command not found\" a turn later,
+		// far from the call that looked like it worked.
+		"Each call runs in a FRESH shell: environment variables, shell functions, aliases and " +
+		"`cd` do not carry over to the next call. Anything a later command depends on must be " +
+		"repeated in it — write the full path or command instead of defining a helper first. "
 	if b.sandboxed {
 		net := "network access is BLOCKED"
 		if b.cfg.Network {
