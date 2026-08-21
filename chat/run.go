@@ -32,7 +32,7 @@ type SessionFactory func() (*SessionWriter, error)
 //
 // Invariant: after ui.New() nothing may write to the terminal except through
 // the facade — no spinner, no raw OSC/ANSI escapes, no direct stdout.
-func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive bool, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, newSession SessionFactory, interact *Interactor, contextWindow int, agent AgentOptions, notify bool, reqLog *RequestLog) error {
+func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive bool, importedHistory []provider.Message, dispatch tool.Dispatcher, mgr *mcpmgr.Manager, sw *SessionWriter, newSession SessionFactory, interact *Interactor, delegator *Delegator, contextWindow int, agent AgentOptions, notify bool, reqLog *RequestLog) error {
 	// ---- pre-Program phase: plain stdout, the Program hasn't claimed the
 	// terminal yet. The OSC background query MUST happen here (during the
 	// Program it would race the event loop's stdin ownership).
@@ -59,7 +59,9 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 	}
 
 	// Tools the user approved with "allow for this session" — consulted by the
-	// approval gate before every call of an approval-requiring tool.
+	// approval gate before every call of an approval-requiring tool. Shared
+	// with delegated children: the grant is "this session may edit files",
+	// and the child is part of this session.
 	approved := make(map[string]bool)
 
 	var history []provider.Message
@@ -166,6 +168,22 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 	// block (input, thinking, content, tool calls, notices, echoes) declares
 	// itself and the transcript alone spaces them (transcript.go).
 	tr := newTranscript(u, budget.counter)
+	gate := &approvalGate{u: u, tr: tr, pres: pres, approved: approved}
+	if delegator != nil {
+		// A child has no terminal of its own. Rather than inventing a second
+		// gate for it — two prompts with two memories for one person — its
+		// questions arrive at this one, labelled with the agent that asked.
+		delegator.SetApprover(func(ctx context.Context, agent string, tc provider.ToolCall) (bool, string) {
+			ok, err := gate.ask(ctx, tc.Name, agent)
+			switch {
+			case err != nil:
+				return false, fmt.Sprintf("%s was not executed: %v", tc.Name, err)
+			case !ok:
+				return false, "The user declined this call."
+			}
+			return true, ""
+		})
+	}
 	if reqLog != nil {
 		// /debug on doubles as the no-collapse switch: with recording on, the
 		// activity group settles after every event (classic per-call blocks).
@@ -1008,7 +1026,7 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 			}
 			var err error
 			if isToolProvider && len(tools) > 0 {
-				reply, thinking, err = toolLoop(turnCtx, u, sink, tr, tp, dispatch, &history, tools, sendOverlay, approved, sw.ImagesDir, ctxm, pres, steer)
+				reply, thinking, err = toolLoop(turnCtx, u, sink, tr, tp, dispatch, &history, tools, sendOverlay, gate, sw.ImagesDir, ctxm, pres, steer)
 			} else {
 				reply, thinking, err = streamTurn(turnCtx, u, sink, tr, p, ctxm, func(w io.Writer, r io.WriteCloser) (string, string, error) {
 					return p.StreamChat(turnCtx, agents.ComposeSendHistory(history, sendOverlay), w, r)
@@ -1362,7 +1380,7 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcrip
 // steer (nil-safe) drains mid-turn type-ahead at each round boundary — the
 // only place a user message can legally enter the conversation (a round's
 // tool results must directly follow its calls).
-func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, approved map[string]bool, imgDir func() string, ctxm *ctxMeter, pres *host.Presenter, steer func() []provider.Message) (string, string, error) {
+func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, gate *approvalGate, imgDir func() string, ctxm *ctxMeter, pres *host.Presenter, steer func() []provider.Message) (string, string, error) {
 	// No round cap: the user is the brake (ESC cancels the turn; approval
 	// gates cover mutating tools) — industry parity with the major CLIs.
 	interactive := func(name string) bool { return isInteractive(dispatch, name) }
@@ -1472,23 +1490,12 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 			// only with the user's consent — once, or for the whole session.
 			// The widget header above shows what is being approved; the group
 			// clock pauses while the user deliberates.
-			if needsApproval(dispatch, tc.Name) && !approved[tc.Name] {
-				// The turn is now blocked on the user: needs-input state on
-				// every host, and a ping if they wandered off.
-				pres.SetState(host.StateNeedsInput)
-				pres.Notify(host.Event{Kind: host.KindNeedsInput,
-					Text: fmt.Sprintf("%s wants to modify files", displayToolName(tc.Name))})
-				tr.pauseForInput("waiting for approval")
-				choice, aerr := u.Select(ctx, ui.SelectSpec{
-					Title: fmt.Sprintf("%s wants to modify files — allow?", displayToolName(tc.Name)),
-					Items: []string{"Allow once", "Allow for this session", "Deny"},
-				})
-				tr.resumeFromInput()
-				pres.SetState(host.StateBusy) // resolved either way; end states override
+			if needsApproval(dispatch, tc.Name) {
+				allowed, aerr := gate.ask(ctx, tc.Name, "")
 				if aerr != nil {
 					return "", "", aerr
 				}
-				if choice.Cancelled || choice.Index == 2 {
+				if !allowed {
 					const declined = "The user declined this call."
 					if expanded {
 						tr.settleShowcase(header, nil, declined, true)
@@ -1503,9 +1510,6 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 						IsError:      true,
 					})
 					continue
-				}
-				if choice.Index == 1 {
-					approved[tc.Name] = true
 				}
 			}
 

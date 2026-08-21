@@ -318,7 +318,7 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 			// runs inside a parent that owns a terminal — or, with nobody to
 			// ask, refuses and says how to enable the call.
 			if needsApproval(dispatch, tc.Name) {
-				allowed, why := host.askApproval(tc)
+				allowed, why := host.askApproval(ctx, tc)
 				if !allowed {
 					*history = append(*history, provider.Message{
 						Role:         "tool",

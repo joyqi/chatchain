@@ -221,6 +221,7 @@ var rootCmd = &cobra.Command{
 		// binds the live UI); -m runs leave it nil, so the ask set
 		// contributes no tools and the model never sees them.
 		var interact *chat.Interactor
+		var delegator *chat.Delegator
 		if chatMessage == "" {
 			interact = chat.NewInteractor()
 			toolEnv.Interact = interact
@@ -241,6 +242,7 @@ var rootCmd = &cobra.Command{
 				return fmt.Errorf("tools.delegate: %w", derr)
 			}
 			toolEnv.Delegate = del
+			delegator = del
 		}
 
 		// --output-format describes a single -m run; the REPL has no such run
@@ -412,7 +414,7 @@ var rootCmd = &cobra.Command{
 				return err
 			}
 		}
-		return chat.Run(p, titleP, systemPrompt, systemInteractive, importedHistory, dispatch, mgr, sw, newSession, interact, contextWindow, agentOpts, pc.Notify == nil || *pc.Notify, reqLog)
+		return chat.Run(p, titleP, systemPrompt, systemInteractive, importedHistory, dispatch, mgr, sw, newSession, interact, delegator, contextWindow, agentOpts, pc.Notify == nil || *pc.Notify, reqLog)
 	},
 }
 
