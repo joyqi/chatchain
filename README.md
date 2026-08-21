@@ -105,6 +105,7 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 | `--resume` | | Resume a saved session (`--resume` to pick interactively, `--resume=<id>` for a specific one) |
 | `--no-save` | | Start ephemeral — nothing touches disk unless `/save` is run |
 | `--max-turns` | | Limit agentic tool turns in non-interactive mode (`-m` only; 0 = unlimited) |
+| `--output-format` | | `-m` output: `text` (default, the reply alone) or `json` (one result object with per-round token usage) |
 | `--context-window` | | Context window size for compaction accounting (e.g. `200k`, `1m`; default 128k) |
 | `--agent` | | Enable agent mode (AGENTS.md overlay, skills, `load_skill`, project-scoped sessions) |
 | `--config` | `-c` | Path to config file (default: `~/.chatchain.yaml`) |

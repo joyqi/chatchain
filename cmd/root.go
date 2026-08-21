@@ -35,6 +35,7 @@ var (
 	contextWindowFlag string
 	agentFlag         bool
 	maxTurns          int
+	outputFormat      string
 )
 
 var rootCmd = &cobra.Command{
@@ -228,6 +229,18 @@ var rootCmd = &cobra.Command{
 			toolEnv.ProjectRoot = agents.ProjectRoot(cwd)
 		}
 
+		// --output-format describes a single -m run; the REPL has no such run
+		// to report on. Both an unknown value and a misplaced flag are errors
+		// rather than a quiet fall back to text: a caller that asked for JSON
+		// and got prose would read the prose as data.
+		outFmt, fmtErr := chat.ParseOutputFormat(outputFormat)
+		if fmtErr != nil {
+			return fmtErr
+		}
+		if cmd.Flags().Changed("output-format") && chatMessage == "" {
+			return fmt.Errorf("--output-format applies to -m runs only")
+		}
+
 		// Non-interactive mode: connect MCP synchronously (the single request needs
 		// the full tool set before it is sent), quietly, then respond.
 		if chatMessage != "" {
@@ -238,7 +251,7 @@ var rootCmd = &cobra.Command{
 				defer mgr.Close()
 			}
 			dispatch := buildDispatcher(pc, mgr, mcpDefers, agentMode, toolEnv)
-			return chat.Once(context.Background(), p, chatMessage, systemPrompt, dispatch, agentOpts, maxTurns, os.Stdout)
+			return chat.Once(context.Background(), p, chatMessage, systemPrompt, dispatch, agentOpts, maxTurns, outFmt, os.Stdout)
 		}
 
 		// Interactive: start connecting MCP servers NOW, in the background, so the
@@ -404,6 +417,7 @@ func init() {
 	rootCmd.Flags().Lookup("resume").NoOptDefVal = " " // allow bare --resume (interactive picker)
 	rootCmd.Flags().BoolVar(&noSave, "no-save", false, "Start ephemeral: nothing persists unless you run /save in the chat")
 	rootCmd.Flags().IntVar(&maxTurns, "max-turns", 0, "Limit agentic tool turns in non-interactive mode (-m only; 0 = unlimited)")
+	rootCmd.Flags().StringVar(&outputFormat, "output-format", "", "Non-interactive output: text (default, the reply alone) or json (one result object with token usage)")
 	rootCmd.Flags().StringVar(&contextWindowFlag, "context-window", "", "Context window size for compaction accounting (e.g. 200k, 1m); default 128k")
 	rootCmd.Flags().BoolVar(&agentFlag, "agent", false, "Enable agent mode (AGENTS.md system-prompt overlay)")
 }

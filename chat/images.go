@@ -2,7 +2,6 @@ package chat
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -147,23 +146,26 @@ func collectImages(p any, tr *transcript, width func() int, dir func() string, m
 	}
 }
 
-// SaveImagesQuiet is the non-interactive (-m) tail: generated images are
-// saved and their paths printed as plain lines — no ANSI rasterizing into a
-// pipe. Mid-round images in a tool loop are out of scope; the final response
-// (the image-model shape) is what single-shot runs care about.
-func SaveImagesQuiet(p any, w io.Writer) {
+// saveImagesQuiet is the non-interactive (-m) tail: generated images are
+// saved and their paths RETURNED rather than printed — no ANSI rasterizing
+// into a pipe, and no writing either, because the two output formats spend
+// them differently (text prints lines, JSON files them under images /
+// image_errors). Mid-round images in a tool loop are out of scope; the final
+// response (the image-model shape) is what single-shot runs care about.
+func saveImagesQuiet(p any) (paths, failures []string) {
 	ip, ok := p.(provider.ImageOutputProvider)
 	if !ok {
-		return
+		return nil, nil
 	}
 	for i, att := range ip.LastImages() {
 		path, err := saveImage(att, "", i)
 		if err != nil {
-			fmt.Fprintf(w, "saving image failed: %v\n", err)
+			failures = append(failures, fmt.Sprintf("saving image failed: %v", err))
 			continue
 		}
-		fmt.Fprintf(w, "🖼 saved: %s\n", path)
+		paths = append(paths, path)
 	}
+	return paths, failures
 }
 
 // imagePartialObserver is the optional provider seam for progressive

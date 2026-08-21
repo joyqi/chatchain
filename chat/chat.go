@@ -22,7 +22,44 @@ func FetchModels(ctx context.Context, p provider.Provider) ([]string, error) {
 	return p.ListModels(ctx)
 }
 
-func Once(ctx context.Context, p provider.Provider, message string, systemPrompt string, dispatch tool.Dispatcher, agent AgentOptions, maxTurns int, w io.Writer) error {
+// Once is the -m path: one send, no REPL, no session. format selects what
+// lands on w — the reply alone, or the whole run as a result object.
+//
+// The two formats differ in what an ERROR means, and that is the reason for
+// the split below. In text mode a failure prints nothing and travels out as
+// the return value. In JSON mode the report IS the output whether or not the
+// run succeeded — the rounds that completed were billed, and suppressing them
+// would leave exactly the runs worth investigating with no numbers. The error
+// still travels either way, so the exit status keeps meaning what it did.
+func Once(ctx context.Context, p provider.Provider, message string, systemPrompt string, dispatch tool.Dispatcher, agent AgentOptions, maxTurns int, format OutputFormat, w io.Writer) error {
+	rec := newRunRecorder()
+	reply, images, imageErrs, err := runOnce(ctx, p, message, systemPrompt, dispatch, agent, maxTurns, rec)
+
+	if format == OutputJSON {
+		if werr := writeReport(w, rec.report(p, reply, images, imageErrs, err)); werr != nil {
+			return werr
+		}
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if reply != "" {
+		fmt.Fprintln(w, reply)
+	}
+	for _, path := range images {
+		fmt.Fprintf(w, "🖼 saved: %s\n", path)
+	}
+	for _, msg := range imageErrs {
+		fmt.Fprintln(w, msg)
+	}
+	return nil
+}
+
+// runOnce performs the send and reports what came back, writing nothing. Once
+// owns the formatting; keeping this half output-free is what lets a failed
+// run still be described.
+func runOnce(ctx context.Context, p provider.Provider, message string, systemPrompt string, dispatch tool.Dispatcher, agent AgentOptions, maxTurns int, rec *runRecorder) (reply string, images, imageErrs []string, err error) {
 	var messages []provider.Message
 	if systemPrompt != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
@@ -57,26 +94,22 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 	}
 
 	if isToolProvider && len(tools) > 0 {
-		reply, _, err := executeWithTools(ctx, tp, dispatch, &messages, tools, sendOverlay, maxTurns)
+		reply, _, err = executeWithTools(ctx, tp, dispatch, &messages, tools, sendOverlay, maxTurns, rec)
 		if err != nil {
-			return err
+			return "", nil, nil, err
 		}
-		if reply != "" {
-			fmt.Fprintln(w, reply)
-		}
-		SaveImagesQuiet(tp, w)
-		return nil
+		images, imageErrs = saveImagesQuiet(tp)
+		return reply, images, imageErrs, nil
 	}
 
-	reply, err := p.Chat(ctx, agents.ComposeSendHistory(messages, sendOverlay))
+	reply, err = p.Chat(ctx, agents.ComposeSendHistory(messages, sendOverlay))
 	if err != nil {
-		return err
+		return "", nil, nil, err
 	}
-	if reply != "" {
-		fmt.Fprintln(w, reply)
-	}
-	SaveImagesQuiet(p, w)
-	return nil
+	// The tool loop records each of its rounds; this path has exactly one.
+	rec.observe(p, nil)
+	images, imageErrs = saveImagesQuiet(p)
+	return reply, images, imageErrs, nil
 }
 
 const maxRetries = 10
@@ -232,7 +265,12 @@ var errToolRoundsExceeded = errors.New("tool loop reached the --max-turns limit 
 // send-time copy of *history with it applied (see agents.ComposeSendHistory), while
 // the appended assistant/tool messages land in the clean *history. Empty
 // means none — every round then sends *history itself, exactly as before.
-func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, maxTurns int) (string, string, error) {
+//
+// rec observes each completed round for the run report. It is filled whatever
+// the output format, because the cost of a few ints per round is not worth a
+// conditional, and because a run that fails mid-loop still owes an account of
+// the rounds it did pay for.
+func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, maxTurns int, rec *runRecorder) (string, string, error) {
 	for rounds := 0; ; rounds++ {
 		if maxTurns > 0 && rounds == maxTurns {
 			return "", "", fmt.Errorf("%w (%d turns)", errToolRoundsExceeded, maxTurns)
@@ -255,6 +293,10 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 		if err != nil {
 			return "", "", err
 		}
+		// Read the accounting NOW: LastUsageFull reports the provider's most
+		// recent call, so anything between here and the next round would
+		// silently reassign this round's cost.
+		rec.observe(tp, toolNames(toolCalls))
 		if len(toolCalls) == 0 {
 			if content == "" && reasoning != "" {
 				// Reasoning-only response: the reasoning IS the answer.

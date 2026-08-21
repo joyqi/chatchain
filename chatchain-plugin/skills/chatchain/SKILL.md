@@ -73,6 +73,7 @@ chatchain <provider> -M <model> -m "<message>"
 | `-u, --url <url>` | Custom API base URL |
 | `-c, --config <path>` | Path to config file (default: `~/.chatchain.yaml`) |
 | `--max-turns <n>` | Limit agentic tool turns in non-interactive mode (default: unlimited) |
+| `--output-format <fmt>` | `-m` output: `text` (default) or `json` — one result object carrying the reply, per-round token usage and timing |
 
 ## Providers and Environment Variables
 

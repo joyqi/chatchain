@@ -43,7 +43,7 @@ func TestToolLoopCap(t *testing.T) {
 	tp := &loopingToolProvider{}
 	history := []provider.Message{{Role: "user", Content: "go"}}
 
-	_, _, err := executeWithTools(context.Background(), tp, noopDispatcher{}, &history, noopDispatcher{}.Tools(), "", limit)
+	_, _, err := executeWithTools(context.Background(), tp, noopDispatcher{}, &history, noopDispatcher{}.Tools(), "", limit, newRunRecorder())
 	if !errors.Is(err, errToolRoundsExceeded) {
 		t.Fatalf("err = %v, want errToolRoundsExceeded", err)
 	}
@@ -79,7 +79,7 @@ func TestToolLoopCap(t *testing.T) {
 func TestToolLoopUnlimitedByDefault(t *testing.T) {
 	tp := &loopingToolProvider{stopAfter: 75}
 	history := []provider.Message{{Role: "user", Content: "go"}}
-	reply, _, err := executeWithTools(context.Background(), tp, noopDispatcher{}, &history, noopDispatcher{}.Tools(), "", 0)
+	reply, _, err := executeWithTools(context.Background(), tp, noopDispatcher{}, &history, noopDispatcher{}.Tools(), "", 0, newRunRecorder())
 	if err != nil {
 		t.Fatalf("unlimited loop errored: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestExecuteWithToolsRefreshesPerRound(t *testing.T) {
 	dispatch := &growingDispatcher{}
 	history := []provider.Message{{Role: "user", Content: "go"}}
 
-	reply, _, err := executeWithTools(context.Background(), tp, dispatch, &history, dispatch.Tools(), "", 0)
+	reply, _, err := executeWithTools(context.Background(), tp, dispatch, &history, dispatch.Tools(), "", 0, newRunRecorder())
 	if err != nil || reply != "done" {
 		t.Fatalf("loop failed: %q %v", reply, err)
 	}
