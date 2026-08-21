@@ -87,11 +87,11 @@ type PresentationReporter interface {
 	Presentation(name string) Presentation
 }
 
-// parallelizer is an optional Tool interface: the tool declares that its
-// calls may run CONCURRENTLY with other calls in the same round.
+// parallelizer is an optional Tool interface: the tool declares that a CALL
+// may run concurrently with other calls in the same round.
 //
-// The default is no, and the default is what almost every tool wants. A tool
-// may opt in only if all three hold:
+// The default is no, and the default is what almost every tool wants. A call
+// may be opted in only if all three hold:
 //
 //   - it does not write — two concurrent writers to one file is a race whose
 //     symptoms are intermittent and whose cause is invisible in a transcript;
@@ -99,19 +99,30 @@ type PresentationReporter interface {
 //     once have one screen to share;
 //   - it opens no surface (PresentSurface), for the same reason.
 //
-// Today that is exactly the read-only file tools. Codex arrived at the same
-// default (supports_parallel_tool_calls = false) and, notably, does not opt
-// its own shell in: a shell command's effects cannot be known from its
-// declaration, so the only honest answer for it is "no".
+// The question takes the call's ARGUMENTS because for some tools it cannot be
+// answered from the name. A delegation tool is the case that forces it: every
+// call is named the same and differs only in which configured agent it names,
+// and those differ in exactly the three properties above. One answer per name
+// would have to lie in one direction — serializing a read-only fan-out, or
+// letting a write-capable call into a batch.
+//
+// The arguments must be LOOKED UP, never interpreted. A key into a table the
+// user wrote resolves to a static fact they already authorized; a free-form
+// string does not. That is the line bash falls on the wrong side of, and why
+// it stays out even though the gate now exists: a shell command's effects
+// cannot be known from its declaration, and a model-supplied "this one only
+// reads" is the constrained party signing its own certificate. Codex settled
+// the same way — supports_parallel_tool_calls defaults false, and it does not
+// opt its own shell in either.
 type parallelizer interface {
-	SupportsParallel() bool
+	SupportsParallel(args map[string]any) bool
 }
 
 // ParallelReporter is the Dispatcher-side mirror of parallelizer (as
 // PresentationReporter mirrors presenter). Parts without the capability
 // report false, which keeps their calls serialized.
 type ParallelReporter interface {
-	SupportsParallel(name string) bool
+	SupportsParallel(name string, args map[string]any) bool
 }
 
 // headliner is an optional Tool interface: the tool writes the summary that
@@ -413,10 +424,11 @@ func (r *Registry) Presentation(name string) Presentation {
 	return PresentGroup
 }
 
-// SupportsParallel reports whether the named built-in tool's calls may run
-// concurrently with others in the same round (the optional parallelizer
-// interface; absent means no).
-func (r *Registry) SupportsParallel(name string) bool {
+// SupportsParallel reports whether THIS call to the named built-in tool may
+// run concurrently with others in the same round (the optional parallelizer
+// interface; absent means no). args reaches the tool because the answer can
+// depend on the call — see parallelizer.
+func (r *Registry) SupportsParallel(name string, args map[string]any) bool {
 	if r == nil {
 		return false
 	}
@@ -425,7 +437,7 @@ func (r *Registry) SupportsParallel(name string) bool {
 		return false
 	}
 	p, ok := t.(parallelizer)
-	return ok && p.SupportsParallel()
+	return ok && p.SupportsParallel(args)
 }
 
 // HeaderSummary reports the named built-in tool's own call summary (via the
@@ -549,10 +561,10 @@ func (m *multiDispatcher) Presentation(name string) Presentation {
 // SupportsParallel routes the question to the part owning the tool name.
 // Parts without the capability — the MCP manager, whose servers make no such
 // promise — report false, so their calls stay serialized.
-func (m *multiDispatcher) SupportsParallel(name string) bool {
+func (m *multiDispatcher) SupportsParallel(name string, args map[string]any) bool {
 	if p := m.owner(name); p != nil {
 		if pr, ok := p.(ParallelReporter); ok {
-			return pr.SupportsParallel(name)
+			return pr.SupportsParallel(name, args)
 		}
 	}
 	return false

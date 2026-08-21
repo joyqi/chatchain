@@ -611,10 +611,14 @@ type codeEditFile struct{ cs *codeSet }
 // so a round that reads four files can read them at once. edit_file and
 // write_file are deliberately absent — they write — and so is glob's and
 // grep's mutating sibling set, which does not exist.
-func (t *codeReadFile) SupportsParallel() bool { return true }
-func (t *codeGlob) SupportsParallel() bool     { return true }
-func (t *codeGrep) SupportsParallel() bool     { return true }
-func (t *codeListDir) SupportsParallel() bool  { return true }
+//
+// These four answer the same for every call, so the arguments go unread. The
+// parameter exists for tools whose calls differ in kind (see parallelizer);
+// reading it here would only invite a per-call exception none of them wants.
+func (t *codeReadFile) SupportsParallel(map[string]any) bool { return true }
+func (t *codeGlob) SupportsParallel(map[string]any) bool     { return true }
+func (t *codeGrep) SupportsParallel(map[string]any) bool     { return true }
+func (t *codeListDir) SupportsParallel(map[string]any) bool  { return true }
 
 // HeaderSummary: the path IS the call for the file tools — the header reads
 // "[edit_file internal/ui/model.go]". edit_file and write_file especially

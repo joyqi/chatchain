@@ -12,18 +12,33 @@ import (
 )
 
 // parallelDispatch is a Dispatcher whose named tools are parallel-capable and
-// whose calls block until released, so a test can prove they overlap.
+// whose calls block until released, so a test can prove they overlap. When
+// byAgent is set the answer comes from the call's "agent" argument instead of
+// its name — the delegation shape, where one name covers calls that differ.
 type parallelDispatch struct {
 	parallel map[string]bool
+	byAgent  map[string]bool
 	enter    chan struct{} // one token per started call
 	release  chan struct{} // closed to let every call finish
 	peak     int64
 	live     int64
 }
 
+// ParallelReporter is an OPTIONAL interface, so a signature that drifts out of
+// step here would not fail to compile — it would silently stop being detected
+// and serialize everything, passing most of this file while proving nothing.
+// The assertion turns that into a build error.
+var _ tool.ParallelReporter = (*parallelDispatch)(nil)
+
 func (d *parallelDispatch) Tools() []provider.ToolDef { return nil }
 
-func (d *parallelDispatch) SupportsParallel(name string) bool { return d.parallel[name] }
+func (d *parallelDispatch) SupportsParallel(name string, args map[string]any) bool {
+	if d.byAgent != nil {
+		agent, _ := args["agent"].(string)
+		return d.byAgent[agent]
+	}
+	return d.parallel[name]
+}
 
 func (d *parallelDispatch) CallTool(ctx context.Context, name string, args map[string]any) (string, bool, error) {
 	n := atomic.AddInt64(&d.live, 1)
@@ -62,6 +77,31 @@ func TestParallelRunBoundaries(t *testing.T) {
 		{2, 2}, // edit_file batches nothing
 		{3, 6}, // the trailing run
 		{5, 6},
+	} {
+		if got := parallelRun(d, calls, tc.from); got != tc.want {
+			t.Errorf("parallelRun(from=%d) = %d, want %d", tc.from, got, tc.want)
+		}
+	}
+}
+
+// The same boundaries hold when the calls share a NAME and differ only in
+// their arguments — the delegation shape. A per-name answer could not split
+// this sequence at all: it would either serialize the fan-out or let the
+// write-capable call join a batch.
+func TestParallelRunSplitsCallsToOneTool(t *testing.T) {
+	d := &parallelDispatch{byAgent: map[string]bool{"search": true, "implement": false}}
+	delegate := func(id, agent string) provider.ToolCall {
+		return provider.ToolCall{ID: id, Name: "delegate", Arguments: map[string]any{"agent": agent}}
+	}
+	calls := []provider.ToolCall{
+		delegate("1", "search"), delegate("2", "search"),
+		delegate("3", "implement"),
+		delegate("4", "search"),
+	}
+	for _, tc := range []struct{ from, want int }{
+		{0, 2}, // the two searches batch
+		{2, 2}, // the write-capable one runs alone
+		{3, 4}, // and the search after it batches again
 	} {
 		if got := parallelRun(d, calls, tc.from); got != tc.want {
 			t.Errorf("parallelRun(from=%d) = %d, want %d", tc.from, got, tc.want)

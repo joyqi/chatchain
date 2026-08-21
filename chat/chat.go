@@ -374,12 +374,14 @@ func headerSummaryOf(dispatch tool.Dispatcher, name string, args map[string]any)
 	return hr.HeaderSummary(name, args)
 }
 
-// supportsParallel reports whether the named tool's calls may run
-// concurrently (the optional tool.ParallelReporter capability; dispatchers
-// without it serialize everything, which is the safe answer).
-func supportsParallel(dispatch tool.Dispatcher, name string) bool {
+// supportsParallel reports whether THIS call may run concurrently with the
+// round's others (the optional tool.ParallelReporter capability; dispatchers
+// without it serialize everything, which is the safe answer). The arguments
+// travel because the answer can differ between two calls to one tool — see
+// tool.parallelizer.
+func supportsParallel(dispatch tool.Dispatcher, call provider.ToolCall) bool {
 	pr, ok := dispatch.(tool.ParallelReporter)
-	return ok && pr.SupportsParallel(name)
+	return ok && pr.SupportsParallel(call.Name, call.Arguments)
 }
 
 // isInteractive reports whether the named tool runs its own user surface:

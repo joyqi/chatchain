@@ -10,9 +10,12 @@ import (
 	"chatchain/tool"
 )
 
-// Parallel tool execution. A round's calls arrive as a list, and the ones a
-// tool declares safe to run concurrently (tool.ParallelReporter — today the
-// read-only file tools) execute together instead of one after another.
+// Parallel tool execution. A round's calls arrive as a list, and the ones
+// declared safe to run concurrently (tool.ParallelReporter — today the
+// read-only file tools) execute together instead of one after another. The
+// declaration is per CALL: a tool whose calls differ in kind answers per
+// call, so the batches follow what is actually safe rather than what a tool
+// name can promise.
 //
 // Two orderings are kept regardless of who finishes first:
 //
@@ -28,9 +31,17 @@ import (
 
 // parallelRun returns the end of the run of consecutive parallel-capable
 // calls starting at i (i itself when the call at i is not one).
+//
+// Capability is asked per CALL, not per tool name, so a round that mixes
+// concurrent-safe and serial calls to the SAME tool splits at the boundaries
+// without any special handling: [a a b a] batches [a a], runs b alone, then
+// [a]. That falls out of scanning for consecutive runs — and it drops the
+// serial one into the path that already has approval gates, surfaces and
+// expanded rendering, which is exactly where a call needing any of them
+// belongs.
 func parallelRun(dispatch tool.Dispatcher, calls []provider.ToolCall, i int) int {
 	j := i
-	for j < len(calls) && supportsParallel(dispatch, calls[j].Name) {
+	for j < len(calls) && supportsParallel(dispatch, calls[j]) {
 		j++
 	}
 	return j
