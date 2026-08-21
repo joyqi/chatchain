@@ -86,6 +86,7 @@ type activityGroup struct {
 	firstHeader string        // the lone call's classic form, valid while tools == 1
 	firstResult string
 	firstErr    bool
+	firstNote   string // the lone call's user-only trailing detail
 	failLines   []string // red breakout rows appended under the summary
 }
 
@@ -411,7 +412,16 @@ func (t *transcript) openCall(label string) {
 // row scrolling through the widget, the failure breakout, and — while it is
 // the group's only call — the material for the classic degenerate form. In
 // verbose mode the group settles immediately, reproducing the classic block.
-func (t *transcript) finishCall(header, result string, isError bool, dur time.Duration) {
+// note is an optional trailing detail for the event row — a delegated call's
+// round and token count, which the user should see and the model should not
+// be billed for. It is variadic so the sixteen call sites that have nothing
+// to add stay as they are: appending "" to each of them would be noise that
+// says nothing.
+func (t *transcript) finishCall(header, result string, isError bool, dur time.Duration, note ...string) {
+	var extra string
+	if len(note) > 0 {
+		extra = note[0]
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !t.grp.up {
@@ -422,6 +432,7 @@ func (t *transcript) finishCall(header, result string, isError bool, dur time.Du
 	t.grp.toolsDur += dur
 	if t.grp.tools == 1 {
 		t.grp.firstHeader, t.grp.firstResult, t.grp.firstErr = header, result, isError
+		t.grp.firstNote = extra
 	}
 	if isError {
 		t.grp.fails++
@@ -431,7 +442,7 @@ func (t *transcript) finishCall(header, result string, isError bool, dur time.Du
 		t.settleGroupLocked()
 		return
 	}
-	t.u.CallLine(eventLine(header, result, isError))
+	t.u.CallLine(eventLine(header, result, isError, extra))
 	t.ensureWidgetLocked(dim("Working…"))
 	t.callDetailLocked()
 }
@@ -527,7 +538,14 @@ func (t *transcript) groupLinesLocked() []string {
 		return []string{dim(fmt.Sprintf("%s thought for %s", reasoningSymbol, timefmt.Elapsed(g.thinkDur)))}
 	}
 	if g.tools == 1 && g.thinks == 0 {
-		lines := []string{g.firstHeader}
+		// The classic block keeps the note too: a lone call that folds away
+		// would otherwise be the one case where what a delegation cost is
+		// visible while it runs and gone once it finishes.
+		head := g.firstHeader
+		if g.firstNote != "" {
+			head += dim(" · " + g.firstNote)
+		}
+		lines := []string{head}
 		lc := &lineCommitter{commit: func(ls ...string) { lines = append(lines, ls...) }}
 		printToolResult(lc, g.firstResult, g.firstErr)
 		lc.flush()
@@ -548,7 +566,7 @@ func (t *transcript) groupLinesLocked() []string {
 
 // eventLine is a completed call's body row inside the widget: a glyph, the
 // header, and a snippet of the first result line.
-func eventLine(header, result string, isError bool) string {
+func eventLine(header, result string, isError bool, note string) string {
 	glyph := DimStyle.Sprint("✓")
 	if isError {
 		glyph = ErrorStyle.Sprint("✗")
@@ -556,6 +574,9 @@ func eventLine(header, result string, isError bool) string {
 	line := glyph + " " + header
 	if first := firstResultLine(result); first != "" {
 		line += dim(" · " + truncateRunes(first, 48))
+	}
+	if note != "" {
+		line += dim(" · " + note)
 	}
 	return line
 }

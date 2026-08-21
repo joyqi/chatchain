@@ -53,6 +53,7 @@ type batchOutcome struct {
 	text    string
 	isError bool
 	dur     time.Duration
+	note    string // user-only detail from the artifact side channel
 }
 
 // runParallelBatch executes calls concurrently and returns their results in
@@ -90,11 +91,15 @@ func runParallelBatch(ctx context.Context, pushScope func(context.CancelFunc) fu
 		go func(i int, tc provider.ToolCall) {
 			defer wg.Done()
 			started := time.Now()
-			text, isError, err := dispatch.CallTool(batchCtx, tc.Name, tc.Arguments)
+			// One artifact slot per call: the batch runs concurrently, so a
+			// shared slot would be a race with a last-writer-wins result.
+			callCtx, artifact := tool.WithArtifact(batchCtx)
+			text, isError, err := dispatch.CallTool(callCtx, tc.Name, tc.Arguments)
 			if err != nil {
 				text, isError = fmt.Sprintf("Error calling tool: %v", err), true
 			}
-			outcomes[i] = batchOutcome{text: text, isError: isError, dur: time.Since(started)}
+			outcomes[i] = batchOutcome{text: text, isError: isError,
+				dur: time.Since(started), note: artifactNote(artifact())}
 		}(i, tc)
 	}
 	wg.Wait()
@@ -103,7 +108,7 @@ func runParallelBatch(ctx context.Context, pushScope func(context.CancelFunc) fu
 
 	msgs := make([]provider.Message, 0, len(calls))
 	for i, tc := range calls {
-		tr.finishCall(headers[i], outcomes[i].text, outcomes[i].isError, outcomes[i].dur)
+		tr.finishCall(headers[i], outcomes[i].text, outcomes[i].isError, outcomes[i].dur, outcomes[i].note)
 		msgs = append(msgs, provider.Message{
 			Role:         "tool",
 			Content:      outcomes[i].text,

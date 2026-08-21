@@ -74,11 +74,11 @@ func TestActivityGroupAggregates(t *testing.T) {
 		"call:" + working,
 		"detail:" + tokens,
 		"call:[a …]", "call:[a full]",
-		"line:" + eventLine("[a full]", "ok", false),
+		"line:" + eventLine("[a full]", "ok", false, ""),
 		"call:" + working,
 		"detail:1 tool · " + tokens,
 		"call:[b]",
-		"line:" + eventLine("[b]", "out", false),
+		"line:" + eventLine("[b]", "out", false, ""),
 		"call:" + working,
 		"detail:2 tools · " + tokens,
 		"settle",
@@ -110,7 +110,7 @@ func TestActivityGroupLoneToolClassic(t *testing.T) {
 	want := []string{
 		"user:x",
 		"print:", "call:[read_file path:a]",
-		"line:" + eventLine("[read_file path:a]", "line1\nline2", false),
+		"line:" + eventLine("[read_file path:a]", "line1\nline2", false, ""),
 		"call:" + working,
 		"detail:1 tool",
 		"settle",
@@ -163,11 +163,11 @@ func TestActivityGroupFailBreakout(t *testing.T) {
 	summary := dim("◇ ran 2 tools in 2s") + ErrorStyle.Sprintf(" · %d failed", 1)
 	want := []string{
 		"call:[a]",
-		"line:" + eventLine("[a]", "fine", false),
+		"line:" + eventLine("[a]", "fine", false, ""),
 		"call:" + working,
 		"detail:1 tool",
 		"call:[bash cmd:x]",
-		"line:" + eventLine("[bash cmd:x]", "exit 1\ndetail", true),
+		"line:" + eventLine("[bash cmd:x]", "exit 1\ndetail", true, ""),
 		"call:" + working,
 		"detail:2 tools",
 		"settle",
@@ -290,7 +290,7 @@ func TestThinkingComposingInterleave(t *testing.T) {
 		"detail:",
 		"call:[bash …]", // the pending call raised at settle, same widget
 		"call:[bash cmd:ls]",
-		"line:" + eventLine("[bash cmd:ls]", "ok", false),
+		"line:" + eventLine("[bash cmd:ls]", "ok", false, ""),
 		"call:" + working,
 		"detail:1 tool",
 		"settle",
@@ -441,11 +441,11 @@ func TestResetTurnSettlesPartialGroup(t *testing.T) {
 	want := []string{
 		"user:x",
 		"print:", "call:[a]",
-		"line:" + eventLine("[a]", "ok", false),
+		"line:" + eventLine("[a]", "ok", false, ""),
 		"call:" + working,
 		"detail:1 tool",
 		"call:[b]",
-		"line:" + eventLine("[b]", "ok", false),
+		"line:" + eventLine("[b]", "ok", false, ""),
 		"call:" + working,
 		"detail:2 tools",
 		"settle",
@@ -473,7 +473,7 @@ func TestSettleReopensAfterInterleave(t *testing.T) {
 	want := []string{
 		"call:[bash …]",
 		"print:", "print:" + ErrorStyle.Sprint("⚠ MCP srv failed: boom"),
-		"line:" + eventLine("[bash cmd:ls]", "ok", false),
+		"line:" + eventLine("[bash cmd:ls]", "ok", false, ""),
 		"call:" + working,
 		"detail:1 tool",
 		"print:", "settle",
@@ -677,7 +677,7 @@ func TestImageWidgetSettlesActivityFirst(t *testing.T) {
 	want := []string{
 		"user:draw with tools",
 		"print:", "call:[a]",
-		"line:" + eventLine("[a]", "ok", false),
+		"line:" + eventLine("[a]", "ok", false, ""),
 		"call:" + working,
 		"detail:1 tool",
 		"settle", "print:" + strings.Join(classic, "|"), // the lone call settles classic
@@ -713,7 +713,7 @@ func TestShowcaseSettlesGroupAndExpandsDiff(t *testing.T) {
 	want := []string{
 		"user:edit it",
 		"print:", "call:[read_file path:a]",
-		"line:" + eventLine("[read_file path:a]", "ok", false),
+		"line:" + eventLine("[read_file path:a]", "ok", false, ""),
 		"call:" + working,
 		"detail:1 tool",
 		"settle", "print:" + strings.Join(classic, "|"), // the group settles first
@@ -873,7 +873,7 @@ func TestUserSettlesOpenGroup(t *testing.T) {
 	classic := append([]string{"[a]"}, classicResult("ok", false)...)
 	want := []string{
 		"call:[a]",
-		"line:" + eventLine("[a]", "ok", false),
+		"line:" + eventLine("[a]", "ok", false, ""),
 		"call:" + working,
 		"detail:1 tool",
 		"settle", "print:" + strings.Join(classic, "|"),

@@ -1517,10 +1517,11 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 			// Expanded calls report their display payload (the diff) through
 			// the artifact side channel — user-facing only, never billed to
 			// the model.
-			artifact := func() *tool.Artifact { return nil }
-			if expanded {
-				toolCtx, artifact = tool.WithArtifact(toolCtx)
-			}
+			// The artifact side channel carries a call's user-facing payload —
+			// an expanded call's diff, a delegated call's accounting — kept
+			// out of the result text so it is never billed to the model.
+			// Every call gets a slot; only some post to one.
+			toolCtx, artifact := tool.WithArtifact(toolCtx)
 			pop := u.PushCancelScope(cancel)
 			started := time.Now()
 			resultText, isError, callErr := dispatch.CallTool(toolCtx, tc.Name, tc.Arguments)
@@ -1539,7 +1540,7 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 			if expanded {
 				tr.settleShowcase(header, artifact(), resultText, isError)
 			} else {
-				tr.finishCall(header, resultText, isError, dur)
+				tr.finishCall(header, resultText, isError, dur, artifactNote(artifact()))
 			}
 
 			result := provider.Message{

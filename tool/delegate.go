@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"chatchain/internal/timefmt"
+	"chatchain/internal/tokfmt"
 	"chatchain/provider"
 
 	"gopkg.in/yaml.v3"
@@ -159,6 +161,15 @@ func (t *delegateTool) Call(ctx context.Context, args map[string]any) (string, b
 		// lets the model try something else.
 		return fmt.Sprintf("delegation to %q failed: %v", agent, err), true, nil
 	}
+	// What the child cost goes to the USER through the artifact channel, not
+	// into the result. Reporting a delegation's price by spending tokens on
+	// the number would be its own small joke; this way the parent's
+	// transcript shows it and the parent's context never carries it.
+	PostArtifact(ctx, Artifact{Kind: "note", Lines: []string{
+		fmt.Sprintf("%d round%s", res.Rounds, plural(res.Rounds)),
+		tokfmt.Tokens(res.Usage.ContextTokens()) + " tokens",
+		timefmt.Elapsed(res.Duration),
+	}})
 	if strings.TrimSpace(res.Reply) == "" {
 		return fmt.Sprintf("agent %q finished without an answer after %d round(s)", agent, res.Rounds), true, nil
 	}
@@ -177,4 +188,13 @@ func toAny(ss []string) []any {
 		out = append(out, s)
 	}
 	return out
+}
+
+// plural is the "s" a count needs; a header that says "1 rounds" reads as a
+// bug in the thing that printed it.
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }

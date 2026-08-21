@@ -3,9 +3,11 @@ package chat
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"chatchain/internal/host"
 	"chatchain/internal/ui"
+	"chatchain/tool"
 )
 
 // approvalGate is the one place a state-changing call is put to the user.
@@ -64,4 +66,15 @@ func (g *approvalGate) ask(ctx context.Context, name, subject string) (bool, err
 		g.approved[name] = true
 	}
 	return true, nil
+}
+
+// artifactNote renders a "note" artifact into the event row's trailing
+// detail: a short fact about the call meant for the user and withheld from
+// the model. The "diff" kind belongs to the expanded path and is ignored
+// here — one side channel, read differently by the two renderers.
+func artifactNote(art *tool.Artifact) string {
+	if art == nil || art.Kind != "note" || len(art.Lines) == 0 {
+		return ""
+	}
+	return strings.Join(art.Lines, " · ")
 }
