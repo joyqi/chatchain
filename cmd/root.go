@@ -229,6 +229,20 @@ var rootCmd = &cobra.Command{
 			toolEnv.ProjectRoot = agents.ProjectRoot(cwd)
 		}
 
+		// The delegate seam, when configured. Every agent resolves here so a
+		// bad provider name fails at startup rather than three tool calls
+		// into a conversation; without the seam the set contributes no tools.
+		if node, ok := pc.Tools["delegate"]; ok && !tool.SetDisabled(pc.Tools, "delegate") {
+			warnf := func(format string, a ...any) {
+				chat.ErrorStyle.Fprintf(os.Stderr, "⚠ "+format+"\n", a...)
+			}
+			del, derr := buildDelegator(cfg, node, reqLog, toolEnv.ProjectRoot, warnf)
+			if derr != nil {
+				return fmt.Errorf("tools.delegate: %w", derr)
+			}
+			toolEnv.Delegate = del
+		}
+
 		// --output-format describes a single -m run; the REPL has no such run
 		// to report on. Both an unknown value and a misplaced flag are errors
 		// rather than a quiet fall back to text: a caller that asked for JSON

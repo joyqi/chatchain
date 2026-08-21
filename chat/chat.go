@@ -33,7 +33,7 @@ func FetchModels(ctx context.Context, p provider.Provider) ([]string, error) {
 // still travels either way, so the exit status keeps meaning what it did.
 func Once(ctx context.Context, p provider.Provider, message string, systemPrompt string, dispatch tool.Dispatcher, agent AgentOptions, maxTurns int, format OutputFormat, w io.Writer) error {
 	rec := newRunRecorder()
-	reply, images, imageErrs, err := runOnce(ctx, p, message, systemPrompt, dispatch, agent, maxTurns, rec)
+	reply, images, imageErrs, err := runOnce(ctx, p, message, systemPrompt, dispatch, agent, maxTurns, quietHost{rec: rec})
 
 	if format == OutputJSON {
 		if werr := writeReport(w, rec.report(p, reply, images, imageErrs, err)); werr != nil {
@@ -59,7 +59,7 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 // runOnce performs the send and reports what came back, writing nothing. Once
 // owns the formatting; keeping this half output-free is what lets a failed
 // run still be described.
-func runOnce(ctx context.Context, p provider.Provider, message string, systemPrompt string, dispatch tool.Dispatcher, agent AgentOptions, maxTurns int, rec *runRecorder) (reply string, images, imageErrs []string, err error) {
+func runOnce(ctx context.Context, p provider.Provider, message string, systemPrompt string, dispatch tool.Dispatcher, agent AgentOptions, maxTurns int, host quietHost) (reply string, images, imageErrs []string, err error) {
 	var messages []provider.Message
 	if systemPrompt != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
@@ -94,7 +94,7 @@ func runOnce(ctx context.Context, p provider.Provider, message string, systemPro
 	}
 
 	if isToolProvider && len(tools) > 0 {
-		reply, _, err = executeWithTools(ctx, tp, dispatch, &messages, tools, sendOverlay, maxTurns, rec)
+		reply, _, err = executeWithTools(ctx, tp, dispatch, &messages, tools, sendOverlay, maxTurns, host)
 		if err != nil {
 			return "", nil, nil, err
 		}
@@ -107,7 +107,7 @@ func runOnce(ctx context.Context, p provider.Provider, message string, systemPro
 		return "", nil, nil, err
 	}
 	// The tool loop records each of its rounds; this path has exactly one.
-	rec.observe(p, nil)
+	host.rec.observe(p, nil)
 	images, imageErrs = saveImagesQuiet(p)
 	return reply, images, imageErrs, nil
 }
@@ -270,7 +270,7 @@ var errToolRoundsExceeded = errors.New("tool loop reached the --max-turns limit 
 // the output format, because the cost of a few ints per round is not worth a
 // conditional, and because a run that fails mid-loop still owes an account of
 // the rounds it did pay for.
-func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, maxTurns int, rec *runRecorder) (string, string, error) {
+func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, maxTurns int, host quietHost) (string, string, error) {
 	for rounds := 0; ; rounds++ {
 		if maxTurns > 0 && rounds == maxTurns {
 			return "", "", fmt.Errorf("%w (%d turns)", errToolRoundsExceeded, maxTurns)
@@ -296,7 +296,7 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 		// Read the accounting NOW: LastUsageFull reports the provider's most
 		// recent call, so anything between here and the next round would
 		// silently reassign this round's cost.
-		rec.observe(tp, toolNames(toolCalls))
+		host.rec.observe(tp, toolNames(toolCalls))
 		if len(toolCalls) == 0 {
 			if content == "" && reasoning != "" {
 				// Reasoning-only response: the reasoning IS the answer.
@@ -313,20 +313,22 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 		*history = append(*history, msg)
 
 		for _, tc := range toolCalls {
-			// Approval-requiring tools cannot ask anyone here: reject the call
-			// with a result that tells the model (and the user reading the
-			// transcript) how to enable it.
+			// Approval gate. This loop has no user of its own, so it either
+			// forwards the question to one who exists — a delegated child
+			// runs inside a parent that owns a terminal — or, with nobody to
+			// ask, refuses and says how to enable the call.
 			if needsApproval(dispatch, tc.Name) {
-				*history = append(*history, provider.Message{
-					Role: "tool",
-					Content: fmt.Sprintf("%s was not executed: it requires interactive approval, "+
-						"which is unavailable in this non-interactive run. Set the toolset's auto-approve option "+
-						"(tools.code.auto_write / tools.shell.auto_run) to permit it here.", tc.Name),
-					ToolCallID:   tc.ID,
-					ToolCallName: tc.Name,
-					IsError:      true,
-				})
-				continue
+				allowed, why := host.askApproval(tc)
+				if !allowed {
+					*history = append(*history, provider.Message{
+						Role:         "tool",
+						Content:      why,
+						ToolCallID:   tc.ID,
+						ToolCallName: tc.Name,
+						IsError:      true,
+					})
+					continue
+				}
 			}
 			resultText, isError, callErr := dispatch.CallTool(ctx, tc.Name, tc.Arguments)
 			if callErr != nil {

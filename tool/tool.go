@@ -6,7 +6,8 @@
 // config maps a set name to the set's shared raw config; the set factory
 // decodes that one config instance and hands it to every tool it constructs
 // (an empty value means defaults). Current sets: "shell" (bash), "code"
-// (file tools), and "agent" (load_skill). The Registry aggregates the enabled
+// (file tools), "agent" (load_skill), "ask" (choose/confirm) and "delegate"
+// (run a child agent). The Registry aggregates the enabled
 // tools behind the Dispatcher surface, and Merge combines several dispatchers
 // (e.g. built-ins + an MCP manager) into one.
 package tool
@@ -19,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"time"
 
 	"chatchain/provider"
 
@@ -205,6 +207,10 @@ type Env struct {
 	// (the ask set). nil in non-interactive runs — a set that needs it
 	// returns no tools, so the model never sees what it cannot use.
 	Interact Interactor
+	// Delegate runs a child agent (the delegate set). nil where delegation
+	// is not configured — same contract as Interact: the set returns no
+	// tools, so the model never sees what it cannot use.
+	Delegate Delegator
 }
 
 // Root is the toolsets' anchor directory: the configured project root, else
@@ -229,6 +235,56 @@ func (e Env) Root() string {
 // surface engine; tools stay ignorant of the terminal stack.
 type Interactor interface {
 	Ask(ctx context.Context, spec AskSpec) (AskResult, error)
+}
+
+// Delegator is the host-side seam for running a child agent, as Interactor is
+// for asking the user something. A tool decides whether a delegation is
+// allowed and what to call it; building a provider, assembling a toolset and
+// driving a round loop is the chat layer's job, and none of it belongs in a
+// tool.
+type Delegator interface {
+	// AgentNames lists the configured agents in a stable order. The set is
+	// resolved by the host rather than decoded from this set's own config
+	// (the usual convention) because the config's values are provider names,
+	// and only the host can say what a provider name resolves to.
+	AgentNames() []string
+	// Agent resolves a configured agent by name. ok=false means the name is
+	// not configured, which the tool reports as an error rather than
+	// silently substituting a default.
+	Agent(name string) (AgentInfo, bool)
+	// Run executes the child to completion and returns its final answer.
+	Run(ctx context.Context, spec DelegateSpec) (DelegateResult, error)
+}
+
+// AgentInfo is what the tool needs to know about a configured agent without
+// being able to read provider configs itself.
+type AgentInfo struct {
+	// Description tells the model what this agent is for; it is the only
+	// basis on which the model can choose between them.
+	Description string
+	// ReadOnly reports that the agent's toolset grants nothing that changes
+	// state. It is the whole basis for letting a delegation run in parallel,
+	// and it is derived from the user's configuration — never from anything
+	// the model says about the task.
+	ReadOnly bool
+}
+
+// DelegateSpec is one delegation request.
+type DelegateSpec struct {
+	Agent  string // the configured agent name
+	Task   string // the entire brief; the child receives nothing else
+	Effort string // "" leaves the agent's configured default in place
+}
+
+// DelegateResult is what a finished child hands back. Reply is the only part
+// that reaches the model — no tool calls, no reasoning, which is the point of
+// delegating. The rest is accounting for the transcript, and travels as an
+// Artifact so that showing what a child cost does not itself cost tokens.
+type DelegateResult struct {
+	Reply    string
+	Rounds   int
+	Usage    provider.Usage
+	Duration time.Duration
 }
 
 // AskSpec is one interaction: 1–4 questions answered on one surface (Tab
@@ -277,10 +333,11 @@ type SetFactory func(env Env, node yaml.Node) ([]Tool, error)
 // its factory and one line here; growing a set = its factory returns one more
 // Tool. Future candidate: "web" (browse/search).
 var sets = map[string]SetFactory{
-	"shell": newShellSet,
-	"agent": newAgentSet,
-	"code":  newCodeSet,
-	"ask":   newAskSet,
+	"shell":    newShellSet,
+	"agent":    newAgentSet,
+	"code":     newCodeSet,
+	"ask":      newAskSet,
+	"delegate": newDelegateSet,
 }
 
 // SetDisabled reports an explicit boolean-false config value for a set —

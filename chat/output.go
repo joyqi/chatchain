@@ -16,7 +16,7 @@ import (
 // human at a terminal and the wrong one for everything else: what the run
 // cost, how many round trips it took and why it stopped were recoverable only
 // by reading prose. Anything driving this binary as a subprocess — CI, a
-// pipeline, a parent agent treating it as a sub-agent — needs those as data.
+// pipeline, a parent agent running it as a child — needs those as data.
 //
 // The shape follows the two CLIs that already settled this. Usage rides on
 // the round that incurred it (Codex's turn.completed.usage) and the run ends
@@ -30,9 +30,9 @@ type OutputFormat string
 
 const (
 	// OutputText prints the reply alone — the historical -m behaviour, and
-	// still the default. It is also the right choice for a sub-agent: the
-	// point of delegating is that the answer reaches the caller's context
-	// without the transcript that produced it.
+	// still the default. It is also what a delegated child reports: the point
+	// of delegating is that the answer reaches the caller's context without
+	// the transcript that produced it.
 	OutputText OutputFormat = "text"
 	// OutputJSON replaces that with a single result object.
 	OutputJSON OutputFormat = "json"
@@ -138,6 +138,18 @@ func (r *runRecorder) observe(p any, tools []string) {
 		}
 	}
 	r.rounds = append(r.rounds, rr)
+}
+
+// usage is the run's aggregate in provider terms, for callers that report it
+// as accounting rather than as JSON (a delegated child's cost).
+func (r *runRecorder) usage() provider.Usage {
+	return provider.Usage{
+		Input:      r.total.InputTokens,
+		Output:     r.total.OutputTokens,
+		CacheRead:  r.total.CacheReadTokens,
+		CacheWrite: r.total.CacheWriteTokens,
+		Total:      r.total.TotalTokens,
+	}
 }
 
 // report closes the run. A failed run still reports: the rounds that did
