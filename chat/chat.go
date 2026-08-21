@@ -312,7 +312,21 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 		}
 		*history = append(*history, msg)
 
-		for _, tc := range toolCalls {
+		for i := 0; i < len(toolCalls); {
+			// A run of concurrent-safe calls goes out together. Nothing here
+			// needs the terminal the interactive path wraps this in: a call
+			// may only opt into parallel execution if it needs no approval
+			// and opens no surface, so a batch can never want either.
+			if j := parallelRun(dispatch, toolCalls, i); j-i >= 2 {
+				batch := toolCalls[i:j]
+				for k, o := range runBatch(ctx, dispatch, batch) {
+					*history = append(*history, batchMessage(batch[k], o))
+				}
+				i = j
+				continue
+			}
+			tc := toolCalls[i]
+			i++
 			// Approval gate. This loop has no user of its own, so it either
 			// forwards the question to one who exists — a delegated child
 			// runs inside a parent that owns a terminal — or, with nobody to

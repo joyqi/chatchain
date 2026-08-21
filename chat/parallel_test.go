@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -217,4 +218,64 @@ type noCapDispatch struct{}
 func (noCapDispatch) Tools() []provider.ToolDef { return nil }
 func (noCapDispatch) CallTool(context.Context, string, map[string]any) (string, bool, error) {
 	return "", false, nil
+}
+
+// The quiet (-m) loop batches too. It had no parallelism at all: the
+// machinery took a transcript, so only the interactive path could reach it,
+// and a scripted run — CI, a pipeline, a parent treating this binary as a
+// child — read four files one at a time for no reason.
+func TestQuietLoopBatchesParallelCalls(t *testing.T) {
+	d := &parallelDispatch{
+		parallel: map[string]bool{"read_file": true},
+		enter:    make(chan struct{}, 4),
+		release:  make(chan struct{}),
+	}
+	tp := &batchingProvider{calls: []provider.ToolCall{
+		call("1", "read_file"), call("2", "read_file"), call("3", "read_file"),
+	}}
+	// Release only once every call has started: if the loop were serial the
+	// second would never start and this would deadlock into the test timeout.
+	go func() {
+		for i := 0; i < 3; i++ {
+			<-d.enter
+		}
+		close(d.release)
+	}()
+	history := []provider.Message{{Role: "user", Content: "go"}}
+	reply, _, err := executeWithTools(context.Background(), tp, d, &history,
+		nil, "", 0, quietHost{rec: newRunRecorder()})
+	if err != nil {
+		t.Fatalf("quiet loop failed: %v", err)
+	}
+	if reply != "done" {
+		t.Fatalf("reply = %q", reply)
+	}
+	if d.peak < 3 {
+		t.Errorf("peak concurrency = %d, want 3 — the calls did not overlap", d.peak)
+	}
+	// Results still answer their calls in call order, batch or not.
+	var ids []string
+	for _, m := range history {
+		if m.Role == "tool" {
+			ids = append(ids, m.ToolCallID)
+		}
+	}
+	if strings.Join(ids, ",") != "1,2,3" {
+		t.Errorf("tool results in %v, want call order", ids)
+	}
+}
+
+// batchingProvider asks for a fixed set of calls once, then answers.
+type batchingProvider struct {
+	calls []provider.ToolCall
+	round int
+}
+
+func (p *batchingProvider) StreamChatWithTools(ctx context.Context, msgs []provider.Message, tools []provider.ToolDef, w io.Writer, reasoning io.WriteCloser) (string, string, []provider.ToolCall, error) {
+	reasoning.Close()
+	p.round++
+	if p.round == 1 {
+		return "", "", p.calls, nil
+	}
+	return "done", "", nil, nil
 }
