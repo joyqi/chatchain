@@ -373,3 +373,49 @@ func TestMutationsPostDiffArtifact(t *testing.T) {
 		t.Fatalf("overwrite diff wrong:\n%s", joined)
 	}
 }
+
+// read_only withholds the writers rather than refusing them, which is also
+// what makes the set answer yes to the parallel opt-in: a delegated agent can
+// then search a codebase AND fan out. Before it, granting search granted
+// writes, and granting writes cost concurrency.
+func TestCodeSetReadOnly(t *testing.T) {
+	var node yaml.Node
+	if err := yaml.Unmarshal([]byte("read_only: true\n"), &node); err != nil {
+		t.Fatal(err)
+	}
+	tools, err := newCodeSet(Env{ProjectRoot: t.TempDir()}, *node.Content[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, tl := range tools {
+		name := tl.Def().Name
+		got[name] = true
+		p, ok := tl.(parallelizer)
+		if !ok || !p.SupportsParallel(nil) {
+			t.Errorf("%s survives read_only but is not parallel-safe", name)
+		}
+	}
+	for _, want := range []string{"glob", "grep", "list_dir", "read_file"} {
+		if !got[want] {
+			t.Errorf("read_only dropped %s, which only looks", want)
+		}
+	}
+	for _, gone := range []string{"edit_file", "write_file"} {
+		if got[gone] {
+			t.Errorf("read_only kept %s", gone)
+		}
+	}
+}
+
+// The two flags describe incompatible intents; saying both is a mistake worth
+// hearing about rather than one silently winning.
+func TestCodeSetReadOnlyRejectsAutoWrite(t *testing.T) {
+	var node yaml.Node
+	if err := yaml.Unmarshal([]byte("read_only: true\nauto_write: true\n"), &node); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newCodeSet(Env{ProjectRoot: t.TempDir()}, *node.Content[0]); err == nil {
+		t.Fatal("read_only + auto_write must be rejected")
+	}
+}

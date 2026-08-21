@@ -46,6 +46,16 @@ type codeConfig struct {
 	// AutoWrite skips the interactive approval for edit_file/write_file (and
 	// permits them in non-interactive -m runs).
 	AutoWrite bool `yaml:"auto_write"`
+	// ReadOnly withholds edit_file and write_file entirely, leaving the four
+	// tools that only look.
+	//
+	// Withholding beats forbidding: a tool the model cannot see is never
+	// attempted, never refused, and never argued with. It also makes the set
+	// answer yes to the parallel opt-in, since what is left neither writes
+	// nor prompts — which is what lets a delegated agent search a codebase
+	// and still fan out. Without it, granting search meant granting writes,
+	// and granting writes meant giving up concurrency.
+	ReadOnly bool `yaml:"read_only"`
 }
 
 // newCodeSet builds the "code" toolset.
@@ -53,19 +63,24 @@ func newCodeSet(env Env, node yaml.Node) ([]Tool, error) {
 	var cfg codeConfig
 	if !node.IsZero() {
 		if err := node.Decode(&cfg); err != nil {
-			return nil, fmt.Errorf("config must be a mapping (auto_write): %w", err)
+			return nil, fmt.Errorf("config must be a mapping (auto_write, read_only): %w", err)
 		}
+	}
+	if cfg.ReadOnly && cfg.AutoWrite {
+		return nil, fmt.Errorf("read_only and auto_write contradict each other: auto_write approves writes the set does not offer")
 	}
 	cwd, _ := os.Getwd()
 	cs := &codeSet{root: env.Root(), cwd: cwd, autoWrite: cfg.AutoWrite, reads: make(map[string]time.Time)}
-	return []Tool{
+	tools := []Tool{
 		&codeGlob{cs},
 		&codeGrep{cs},
 		&codeListDir{cs},
 		&codeReadFile{cs},
-		&codeEditFile{cs},
-		&codeWriteFile{cs},
-	}, nil
+	}
+	if cfg.ReadOnly {
+		return tools, nil
+	}
+	return append(tools, &codeEditFile{cs}, &codeWriteFile{cs}), nil
 }
 
 // codeSet is the state shared by the set's tools for one session: the jail
