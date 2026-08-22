@@ -65,9 +65,16 @@ type delegateTool struct {
 // concurrently could otherwise get one by describing its task as read-only.
 // An unconfigured or missing agent resolves to false: unknown means serial.
 func (t *delegateTool) SupportsParallel(args map[string]any) bool {
-	name, _ := args["agent"].(string)
-	info, ok := t.d.Agent(name)
+	info, ok := t.d.Agent(agentArg(args))
 	return ok && info.ReadOnly
+}
+
+// agentArg reads the agent name the way BOTH the parallel classification and
+// the execution must read it. They resolved it differently once — one raw,
+// one trimmed — which let a call be admitted to a batch as one agent and then
+// run as another. Whatever the rule is, the two have to share it.
+func agentArg(args map[string]any) string {
+	return strings.TrimSpace(stringArg(args, "agent"))
 }
 
 // HeaderSummary puts the agent and the head of its brief in the call header —
@@ -137,7 +144,7 @@ func (t *delegateTool) Def() provider.ToolDef {
 }
 
 func (t *delegateTool) Call(ctx context.Context, args map[string]any) (string, bool, error) {
-	agent := strings.TrimSpace(stringArg(args, "agent"))
+	agent := agentArg(args)
 	if agent == "" {
 		return "missing required argument: agent", true, nil
 	}
@@ -155,21 +162,27 @@ func (t *delegateTool) Call(ctx context.Context, args map[string]any) (string, b
 	}
 
 	res, err := t.d.Run(ctx, DelegateSpec{Agent: agent, Task: task, Effort: effort})
+	// What the child cost goes to the USER through the artifact channel, not
+	// into the result. Reporting a delegation's price by spending tokens on
+	// the number would be its own small joke; this way the parent's
+	// transcript shows it and the parent's context never carries it.
+	//
+	// A FAILED child is billed for the rounds it completed, and it is the run
+	// worth investigating — reporting the cost only on success would hide it
+	// exactly where it is surprising.
+	if res.Rounds > 0 {
+		PostArtifact(ctx, Artifact{Kind: "note", Lines: []string{
+			fmt.Sprintf("%d round%s", res.Rounds, plural(res.Rounds)),
+			tokfmt.Tokens(res.Usage.ContextTokens()) + " tokens",
+			timefmt.Elapsed(res.Duration),
+		}})
+	}
 	if err != nil {
 		// The child's failure is the parent's result, not the parent's crash:
 		// a returned error would abort the whole round, while a tool error
 		// lets the model try something else.
 		return fmt.Sprintf("delegation to %q failed: %v", agent, err), true, nil
 	}
-	// What the child cost goes to the USER through the artifact channel, not
-	// into the result. Reporting a delegation's price by spending tokens on
-	// the number would be its own small joke; this way the parent's
-	// transcript shows it and the parent's context never carries it.
-	PostArtifact(ctx, Artifact{Kind: "note", Lines: []string{
-		fmt.Sprintf("%d round%s", res.Rounds, plural(res.Rounds)),
-		tokfmt.Tokens(res.Usage.ContextTokens()) + " tokens",
-		timefmt.Elapsed(res.Duration),
-	}})
 	if strings.TrimSpace(res.Reply) == "" {
 		return fmt.Sprintf("agent %q finished without an answer after %d round(s)", agent, res.Rounds), true, nil
 	}

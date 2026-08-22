@@ -332,7 +332,7 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 			// runs inside a parent that owns a terminal — or, with nobody to
 			// ask, refuses and says how to enable the call.
 			if needsApproval(dispatch, tc.Name) {
-				allowed, why := host.askApproval(ctx, tc)
+				allowed, why := host.askApproval(ctx, tc, toolCallDetail(dispatch, tc))
 				if !allowed {
 					*history = append(*history, provider.Message{
 						Role:         "tool",
@@ -422,15 +422,23 @@ const toolHeaderMaxValue = 15
 // to one line and truncated, and arguments past toolHeaderMaxArgs collapse to a
 // "… +N args" tail.
 func toolCallHeader(dispatch tool.Dispatcher, tc provider.ToolCall) string {
+	name := displayToolName(tc.Name)
+	if detail := toolCallDetail(dispatch, tc); detail != "" {
+		return "[" + name + " " + detail + "]"
+	}
+	return "[" + name + "]"
+}
+
+// toolCallDetail is what a header says about a call BESIDES its name: the
+// tool's own summary, else the argument digest. The approval prompt shows it
+// too — a gate that names only the tool asks the user to authorize
+// "edit_file" without saying which file.
+func toolCallDetail(dispatch tool.Dispatcher, tc provider.ToolCall) string {
 	// A tool that writes its own summary takes over completely — an empty
 	// one renders as a bare "[name]", never as the argument digest below
 	// (see tool.headliner: edit_file's new_string must not reach a header).
 	if summary, ok := headerSummaryOf(dispatch, tc.Name, tc.Arguments); ok {
-		name := displayToolName(tc.Name)
-		if summary == "" {
-			return "[" + name + "]"
-		}
-		return "[" + name + " " + summary + "]"
+		return summary
 	}
 	keys := make([]string, 0, len(tc.Arguments))
 	for k := range tc.Arguments {
@@ -443,8 +451,7 @@ func toolCallHeader(dispatch tool.Dispatcher, tc provider.ToolCall) string {
 		shown = shown[:toolHeaderMaxArgs]
 	}
 
-	parts := make([]string, 0, len(shown)+2)
-	parts = append(parts, displayToolName(tc.Name))
+	parts := make([]string, 0, len(shown)+1)
 	for _, k := range shown {
 		v := strings.ReplaceAll(fmt.Sprintf("%v", tc.Arguments[k]), "\n", " ")
 		parts = append(parts, k+":"+truncateRunes(v, toolHeaderMaxValue))
@@ -452,7 +459,7 @@ func toolCallHeader(dispatch tool.Dispatcher, tc provider.ToolCall) string {
 	if extra := len(keys) - len(shown); extra > 0 {
 		parts = append(parts, fmt.Sprintf("… +%d args", extra))
 	}
-	return "[" + strings.Join(parts, " ") + "]"
+	return strings.Join(parts, " ")
 }
 
 // toolResultMaxLines is how many lines of a tool result are shown inline; extra

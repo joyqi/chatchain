@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 
 	"chatchain/chat"
 	"chatchain/config"
@@ -58,7 +59,7 @@ func (a *agentRef) UnmarshalYAML(n *yaml.Node) error {
 // buildDelegator resolves every configured agent up front — a name that does
 // not resolve is a startup error, not a surprise three tool calls into a
 // conversation.
-func buildDelegator(cfg *config.Config, node yaml.Node, hc httpClientSource, root string, warnf func(string, ...any)) (*chat.Delegator, error) {
+func buildDelegator(cfg *config.Config, node yaml.Node, hc httpClientSource, root string) (*chat.Delegator, error) {
 	var sc delegateConfig
 	if !node.IsZero() {
 		if err := node.Decode(&sc); err != nil {
@@ -99,10 +100,19 @@ func buildDelegator(cfg *config.Config, node yaml.Node, hc httpClientSource, roo
 			return nil, fmt.Errorf("agent %q: provider %q has no `model:` (a delegated agent cannot be asked to pick one)", name, ref.Provider)
 		}
 		tools := childTools(pc.Tools)
-		// A child's toolset is built once here so its access can be reported
-		// to the model and, more importantly, so the parallel decision rests
-		// on what the user configured rather than on what a task claims.
-		reg := tool.Build(tool.Env{ProjectRoot: root}, tools, func(string, ...any) {})
+		// The toolset is built here so its access can be reported to the
+		// model and, more importantly, so the parallel decision rests on what
+		// the user configured rather than on what a task claims.
+		//
+		// Complaints are collected rather than printed, and a complaint here
+		// IS the startup error this function promises. The alternative was
+		// what shipped: validate with a silent warnf, then rebuild per
+		// delegation with a loud one — so a malformed toolset passed startup
+		// and later wrote ANSI to stderr while bubbletea owned the screen.
+		reg, warnings := buildChildTools(root, tools, pc.Agent)
+		if len(warnings) > 0 {
+			return nil, fmt.Errorf("agent %q: %s", name, strings.Join(warnings, "; "))
+		}
 		agents[name] = tool.AgentInfo{Description: ref.Description, ReadOnly: readOnlyRegistry(reg)}
 		byName[name] = resolved{ptype: ptype, pc: pc, tools: tools}
 	}
@@ -137,19 +147,42 @@ func buildDelegator(cfg *config.Config, node yaml.Node, hc httpClientSource, roo
 		if err != nil {
 			return chat.Child{}, fmt.Errorf("agent %q: %w", name, err)
 		}
-		// The child's own toolset: no ask seam (nobody to question but the
-		// parent's user, and the child is not the conversation they are in)
-		// and no Delegate, which is what stops the recursion.
-		env := tool.Env{ProjectRoot: root}
+		// The child's own toolset, built the same way it was validated. Its
+		// complaints are dropped, not printed: startup already refused
+		// anything that would produce one, and there is no second thing left
+		// to say from inside a running turn.
+		dispatch, _ := buildChildTools(root, r.tools, r.pc.Agent)
 		return chat.Child{
 			Provider:  p,
-			Dispatch:  tool.Build(env, r.tools, warnf),
+			Dispatch:  dispatch,
 			System:    sys,
 			AgentMode: chat.AgentOptions{Enabled: r.pc.Agent, Root: root},
 			MaxTurns:  maxTurns,
 		}, nil
 	}
 	return chat.NewDelegator(agents, build), nil
+}
+
+// buildChildTools assembles one child's toolset and returns whatever the
+// build had to complain about, rather than printing it.
+//
+// Agent mode is applied HERE, not left to the overlay. AgentMode only injects
+// the AGENTS.md/skills text; load_skill comes from the agent SET, which the
+// main session enables separately (buildDispatcher). Without this an agent
+// configured `agent: true` was told which skills exist and given no way to
+// open one — and the promise that a provider entry decides a child's tools
+// was quietly untrue.
+func buildChildTools(root string, tools map[string]yaml.Node, agentMode bool) (tool.Dispatcher, []string) {
+	var warnings []string
+	warn := func(format string, a ...any) {
+		warnings = append(warnings, fmt.Sprintf(format, a...))
+	}
+	env := tool.Env{ProjectRoot: root} // no Interact: a child is not the conversation the user is in
+	reg := tool.Build(env, tools, warn)
+	if agentMode {
+		reg.EnableSet(env, "agent", warn)
+	}
+	return reg, warnings
 }
 
 // httpClientSource is the recording transport, narrowed to the one method a
@@ -176,9 +209,13 @@ func childTools(raw map[string]yaml.Node) map[string]yaml.Node {
 // anything: the parallel opt-in already means "does not write, needs no
 // approval, opens no surface". Reusing it keeps one definition of harmless
 // instead of two that could disagree — and an empty set is trivially read-only.
-func readOnlyRegistry(reg *tool.Registry) bool {
-	for _, def := range reg.Tools() {
-		if !reg.SupportsParallel(def.Name, nil) {
+func readOnlyRegistry(d tool.Dispatcher) bool {
+	pr, ok := d.(tool.ParallelReporter)
+	if !ok {
+		return false // cannot say it is harmless, so do not say it
+	}
+	for _, def := range d.Tools() {
+		if !pr.SupportsParallel(def.Name, nil) {
 			return false
 		}
 	}

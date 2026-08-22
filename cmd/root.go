@@ -234,10 +234,7 @@ var rootCmd = &cobra.Command{
 		// bad provider name fails at startup rather than three tool calls
 		// into a conversation; without the seam the set contributes no tools.
 		if node, ok := pc.Tools["delegate"]; ok && !tool.SetDisabled(pc.Tools, "delegate") {
-			warnf := func(format string, a ...any) {
-				chat.ErrorStyle.Fprintf(os.Stderr, "⚠ "+format+"\n", a...)
-			}
-			del, derr := buildDelegator(cfg, node, reqLog, toolEnv.ProjectRoot, warnf)
+			del, derr := buildDelegator(cfg, node, reqLog, toolEnv.ProjectRoot)
 			if derr != nil {
 				return fmt.Errorf("tools.delegate: %w", derr)
 			}

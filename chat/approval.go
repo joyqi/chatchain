@@ -29,18 +29,29 @@ type approvalGate struct {
 	approved map[string]bool // "allow for this session", keyed by tool name
 }
 
-// ask resolves one gated call. subject names where the request came from when
-// it was not this conversation ("search" for a delegation); empty for the
-// conversation's own calls, whose origin needs no saying.
+// ask resolves one gated call.
+//
+// detail is what the call is about — the path it writes, the command it runs.
+// Without it the prompt named only the tool, which for a delegated call left
+// nothing on screen to identify the operation: the widget above describes the
+// DELEGATION, not what the child is asking to do. Approving "edit_file" with
+// no idea which file is not consent.
+//
+// subject names where the request came from when it was not this conversation
+// ("search" for a delegation); empty for the conversation's own calls, whose
+// origin needs no saying.
 //
 // The error is reserved for the prompt itself failing. A refusal is (false,
 // nil): the caller turns it into a result the model can read, and a turn that
 // continues after a denial is the point of asking.
-func (g *approvalGate) ask(ctx context.Context, name, subject string) (bool, error) {
+func (g *approvalGate) ask(ctx context.Context, name, detail, subject string) (bool, error) {
 	if g.approved[name] {
 		return true, nil
 	}
 	label := displayToolName(name)
+	if detail != "" {
+		label += " " + detail
+	}
 	if subject != "" {
 		label = subject + " › " + label
 	}

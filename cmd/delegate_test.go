@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"chatchain/config"
@@ -51,7 +52,7 @@ agents:
   scout: {provider: scout, description: searches but cannot write}
   slow: {provider: codeboy, description: can edit files}
 `)
-	del, err := buildDelegator(cfg, node, nopHTTP{}, t.TempDir(), func(string, ...any) {})
+	del, err := buildDelegator(cfg, node, nopHTTP{}, t.TempDir())
 	if err != nil {
 		t.Fatalf("buildDelegator: %v", err)
 	}
@@ -92,7 +93,7 @@ agents:
 func TestDelegateRequiresAModel(t *testing.T) {
 	cfg := loadConfig(t, "providers:\n  worker: {type: openai, key: k}\n")
 	node := agentsNode(t, "agents:\n  fast: worker\n")
-	if _, err := buildDelegator(cfg, node, nopHTTP{}, t.TempDir(), func(string, ...any) {}); err == nil {
+	if _, err := buildDelegator(cfg, node, nopHTTP{}, t.TempDir()); err == nil {
 		t.Fatal("an agent whose provider has no model: must be a startup error")
 	}
 }
@@ -124,5 +125,59 @@ func TestChildToolsDropDelegate(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Errorf("childTools dropped more than delegate: %v", got)
+	}
+}
+
+// AgentMode only injects the AGENTS.md/skills text; load_skill comes from the
+// agent SET, which the main session enables separately. A child configured
+// `agent: true` was told which skills exist and given no way to open one.
+func TestDelegateChildGetsAgentModeTools(t *testing.T) {
+	has := func(d tool.Dispatcher, name string) bool {
+		for _, def := range d.Tools() {
+			if def.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+	on, warn := buildChildTools(t.TempDir(), nil, true)
+	if len(warn) > 0 {
+		t.Fatalf("unexpected warnings: %v", warn)
+	}
+	if !has(on, "load_skill") {
+		t.Error("an agent-mode child must be able to open the skills it is told about")
+	}
+	off, _ := buildChildTools(t.TempDir(), nil, false)
+	if has(off, "load_skill") {
+		t.Error("a child without agent mode gained load_skill")
+	}
+
+	// And the flag reaches the builder from the provider entry: load_skill is
+	// not parallel-safe, so an agent-mode child cannot be classified read-only.
+	cfg := loadConfig(t, "providers:\n  skilled: {type: openai, key: k, model: m, agent: true}\n")
+	del, err := buildDelegator(cfg, agentsNode(t, "agents:\n  a: skilled\n"), nopHTTP{}, t.TempDir())
+	if err != nil {
+		t.Fatalf("buildDelegator: %v", err)
+	}
+	if info, _ := del.Agent("a"); info.ReadOnly {
+		t.Error("an agent-mode child holds load_skill and cannot be read-only")
+	}
+}
+
+// A malformed toolset in an agent's provider entry has to be a startup error.
+// It was validated with a silent warnf and then rebuilt with a loud one per
+// delegation, so it passed startup and later wrote to stderr mid-turn.
+func TestDelegateRejectsAMalformedChildToolset(t *testing.T) {
+	cfg := loadConfig(t, `
+providers:
+  broken: {type: openai, key: k, model: m, tools: {code: [not, a, mapping]}}
+`)
+	node := agentsNode(t, "agents:\n  a: broken\n")
+	_, err := buildDelegator(cfg, node, nopHTTP{}, t.TempDir())
+	if err == nil {
+		t.Fatal("a malformed child toolset must fail at startup")
+	}
+	if !strings.Contains(err.Error(), "a") {
+		t.Errorf("the error should name the agent: %v", err)
 	}
 }

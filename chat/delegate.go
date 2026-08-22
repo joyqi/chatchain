@@ -28,18 +28,22 @@ type quietHost struct {
 	// terminal. A -m run leaves it nil because there is nobody to ask; a
 	// delegated child sets it because it has no user of its own but runs
 	// inside a parent that does.
-	approve func(ctx context.Context, tc provider.ToolCall) (bool, string)
+	approve func(ctx context.Context, tc provider.ToolCall, detail string) (bool, string)
 }
 
 // askApproval resolves one gated call: allowed, or the refusal to hand back
 // as the call's result.
-func (h quietHost) askApproval(ctx context.Context, tc provider.ToolCall) (bool, string) {
+//
+// detail is what the call is ABOUT — the path, the command — rendered by the
+// caller, because only it holds the dispatcher that owns the tool. A child's
+// tools are its own, and the parent asking on its behalf cannot describe them.
+func (h quietHost) askApproval(ctx context.Context, tc provider.ToolCall, detail string) (bool, string) {
 	if h.approve == nil {
 		return false, fmt.Sprintf("%s was not executed: it requires interactive approval, "+
 			"which is unavailable in this non-interactive run. Set the toolset's auto-approve option "+
 			"(tools.code.auto_write / tools.shell.auto_run) to permit it here.", tc.Name)
 	}
-	return h.approve(ctx, tc)
+	return h.approve(ctx, tc, detail)
 }
 
 // Child is everything a delegated run needs, assembled by the host.
@@ -68,7 +72,7 @@ type Delegator struct {
 	build  ChildFactory
 
 	mu      sync.Mutex
-	approve func(ctx context.Context, agent string, tc provider.ToolCall) (bool, string)
+	approve func(ctx context.Context, agent string, tc provider.ToolCall, detail string) (bool, string)
 }
 
 // NewDelegator prepares the seam. Names are sorted once: the agent list
@@ -93,13 +97,13 @@ func (d *Delegator) Agent(name string) (tool.AgentInfo, bool) {
 // SetApprover binds the parent's approval gate, which only exists once there
 // is a live UI. Until then a child's state-changing calls are refused, which
 // is the same answer any other non-interactive run gives.
-func (d *Delegator) SetApprover(fn func(ctx context.Context, agent string, tc provider.ToolCall) (bool, string)) {
+func (d *Delegator) SetApprover(fn func(ctx context.Context, agent string, tc provider.ToolCall, detail string) (bool, string)) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.approve = fn
 }
 
-func (d *Delegator) approver() func(context.Context, string, provider.ToolCall) (bool, string) {
+func (d *Delegator) approver() func(context.Context, string, provider.ToolCall, string) (bool, string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.approve
@@ -130,10 +134,10 @@ func (d *Delegator) Run(ctx context.Context, spec tool.DelegateSpec) (tool.Deleg
 		// only run in parallel when its agent grants no state-changing tool
 		// (tool.delegateTool.SupportsParallel); the lock is what keeps that
 		// from being load-bearing.
-		host.approve = func(ctx context.Context, tc provider.ToolCall) (bool, string) {
+		host.approve = func(ctx context.Context, tc provider.ToolCall, detail string) (bool, string) {
 			d.mu.Lock()
 			defer d.mu.Unlock()
-			return fn(ctx, spec.Agent, tc)
+			return fn(ctx, spec.Agent, tc, detail)
 		}
 	}
 

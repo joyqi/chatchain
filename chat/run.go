@@ -173,8 +173,8 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 		// A child has no terminal of its own. Rather than inventing a second
 		// gate for it — two prompts with two memories for one person — its
 		// questions arrive at this one, labelled with the agent that asked.
-		delegator.SetApprover(func(ctx context.Context, agent string, tc provider.ToolCall) (bool, string) {
-			ok, err := gate.ask(ctx, tc.Name, agent)
+		delegator.SetApprover(func(ctx context.Context, agent string, tc provider.ToolCall, detail string) (bool, string) {
+			ok, err := gate.ask(ctx, tc.Name, detail, agent)
 			switch {
 			case err != nil:
 				return false, fmt.Sprintf("%s was not executed: %v", tc.Name, err)
@@ -1491,7 +1491,7 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 			// The widget header above shows what is being approved; the group
 			// clock pauses while the user deliberates.
 			if needsApproval(dispatch, tc.Name) {
-				allowed, aerr := gate.ask(ctx, tc.Name, "")
+				allowed, aerr := gate.ask(ctx, tc.Name, toolCallDetail(dispatch, tc), "")
 				if aerr != nil {
 					return "", "", aerr
 				}
