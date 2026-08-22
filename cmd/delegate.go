@@ -42,10 +42,18 @@ func (a *agentRef) UnmarshalYAML(n *yaml.Node) error {
 	return n.Decode((*raw)(a))
 }
 
-// delegateDefaultMaxTurns bounds a child that will not stop. The parent's own
-// cap is the user pressing ESC; a child has nobody watching it round by
-// round, so it gets a number instead.
-const delegateDefaultMaxTurns = 30
+// max_turns defaults to unlimited, like --max-turns and like the interactive
+// loop, which states the reason at chat/run.go: the user is the brake.
+//
+// A child is no exception to that. ESC cancels the turn, and the context it
+// cancels reaches the child's every round — so the brake works on a
+// delegation exactly as it does on anything else. The earlier default of 30
+// rested on the child having nobody watching it, which is not true.
+//
+// The key stays, because a cap the user chooses is different from one they
+// were given. What it is NOT is a guard against a wedged child: that failure
+// is measured in wall-clock, the way bash and pi's delegate extension measure
+// it, and thirty cheap rounds cost nothing like three expensive ones.
 
 // buildDelegator resolves every configured agent up front — a name that does
 // not resolve is a startup error, not a surprise three tool calls into a
@@ -61,8 +69,8 @@ func buildDelegator(cfg *config.Config, node yaml.Node, hc httpClientSource, roo
 		return nil, fmt.Errorf("no agents configured (add `agents:` mapping agent names to provider names)")
 	}
 	maxTurns := sc.MaxTurns
-	if maxTurns <= 0 {
-		maxTurns = delegateDefaultMaxTurns
+	if maxTurns < 0 {
+		maxTurns = 0
 	}
 
 	type resolved struct {

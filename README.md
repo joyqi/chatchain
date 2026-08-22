@@ -369,7 +369,7 @@ prompt and sampling all come from the entry it names:
 ```yaml
 tools:
   delegate:
-    max_turns: 30            # per child; default 30
+    max_turns: 30            # optional; default unlimited, as ESC stops a child too
     agents:
       search: fast-provider
       review:
