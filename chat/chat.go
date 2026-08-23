@@ -33,7 +33,12 @@ func FetchModels(ctx context.Context, p provider.Provider) ([]string, error) {
 // still travels either way, so the exit status keeps meaning what it did.
 func Once(ctx context.Context, p provider.Provider, message string, systemPrompt string, dispatch tool.Dispatcher, agent AgentOptions, maxTurns int, format OutputFormat, w io.Writer) error {
 	rec := newRunRecorder()
-	reply, images, imageErrs, err := runOnce(ctx, p, message, systemPrompt, dispatch, agent, maxTurns, quietHost{rec: rec})
+	// --max-turns is the RUN's budget, not the parent loop's: it is published
+	// to the context so a delegated child draws on the same pool, and the
+	// local per-loop cap is left off so the two cannot double-count.
+	budget := newTurnBudget(maxTurns)
+	ctx = withTurnBudget(ctx, budget)
+	reply, images, imageErrs, err := runOnce(ctx, p, message, systemPrompt, dispatch, agent, 0, quietHost{rec: rec, turns: budget})
 
 	if format == OutputJSON {
 		if werr := writeReport(w, rec.report(p, reply, images, imageErrs, err)); werr != nil {
@@ -272,8 +277,15 @@ var errToolRoundsExceeded = errors.New("tool loop reached the --max-turns limit 
 // the rounds it did pay for.
 func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, maxTurns int, host quietHost) (string, string, error) {
 	for rounds := 0; ; rounds++ {
+		// Two caps, and they are different things: maxTurns bounds THIS loop
+		// (a delegated agent's own tools.delegate.max_turns), while the
+		// budget is the run's, shared with every child.
 		if maxTurns > 0 && rounds == maxTurns {
 			return "", "", fmt.Errorf("%w (%d turns)", errToolRoundsExceeded, maxTurns)
+		}
+		if !host.turns.take() {
+			return "", "", fmt.Errorf("%w (%d turns, shared by this run and everything it delegated)",
+				errToolRoundsExceeded, host.turns.cap())
 		}
 		if dispatch != nil && rounds > 0 {
 			// The advertised set is LIVE: tools a search_tools round loaded

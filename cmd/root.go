@@ -429,7 +429,7 @@ func init() {
 	rootCmd.Flags().StringVar(&resumeID, "resume", "", "Resume a saved session: --resume to pick interactively, or --resume=<id>")
 	rootCmd.Flags().Lookup("resume").NoOptDefVal = " " // allow bare --resume (interactive picker)
 	rootCmd.Flags().BoolVar(&noSave, "no-save", false, "Start ephemeral: nothing persists unless you run /save in the chat")
-	rootCmd.Flags().IntVar(&maxTurns, "max-turns", 0, "Limit agentic tool turns in non-interactive mode (-m only; 0 = unlimited)")
+	rootCmd.Flags().IntVar(&maxTurns, "max-turns", 0, "Limit agentic tool turns for the whole run, delegated children included (-m only; 0 = unlimited)")
 	rootCmd.Flags().StringVar(&outputFormat, "output-format", "", "Non-interactive output: text (default, the reply alone) or json (one result object with token usage)")
 	rootCmd.Flags().StringVar(&contextWindowFlag, "context-window", "", "Context window size for compaction accounting (e.g. 200k, 1m); default 128k")
 	rootCmd.Flags().BoolVar(&agentFlag, "agent", false, "Enable agent mode (AGENTS.md system-prompt overlay)")

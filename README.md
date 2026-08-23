@@ -104,7 +104,7 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 | `--mcp` | | MCP server (command string or URL, repeatable) |
 | `--resume` | | Resume a saved session (`--resume` to pick interactively, `--resume=<id>` for a specific one) |
 | `--no-save` | | Start ephemeral — nothing touches disk unless `/save` is run |
-| `--max-turns` | | Limit agentic tool turns in non-interactive mode (`-m` only; 0 = unlimited) |
+| `--max-turns` | | Limit agentic tool turns for the whole run, delegated children included (`-m` only; 0 = unlimited) |
 | `--output-format` | | `-m` output: `text` (default, the reply alone) or `json` (one result object with per-round token usage) |
 | `--context-window` | | Context window size for compaction accounting (e.g. `200k`, `1m`; default 128k) |
 | `--agent` | | Enable agent mode (AGENTS.md overlay, skills, `load_skill`, project-scoped sessions) |
@@ -369,7 +369,7 @@ prompt and sampling all come from the entry it names:
 ```yaml
 tools:
   delegate:
-    max_turns: 30            # optional; default unlimited, as ESC stops a child too
+    max_turns: 30            # optional per-child cap; default unlimited
     agents:
       search: fast-provider
       review:
@@ -379,6 +379,11 @@ tools:
 
 `description` is the only field that is not already over there, and it is
 what the model chooses between agents on.
+
+In `-m` runs `--max-turns` is a budget for the whole run: the parent and every
+child it delegates to draw on one pool, so the number bounds what the run can
+cost rather than what each agent can. Interactive runs have no cap — ESC
+cancels a delegation the same as anything else.
 
 Delegations to an agent whose tools cannot change state run **concurrently**;
 anything else runs one at a time. A child's write requests surface as an

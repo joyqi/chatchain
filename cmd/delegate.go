@@ -43,18 +43,20 @@ func (a *agentRef) UnmarshalYAML(n *yaml.Node) error {
 	return n.Decode((*raw)(a))
 }
 
-// max_turns defaults to unlimited, like --max-turns and like the interactive
-// loop, which states the reason at chat/run.go: the user is the brake.
+// max_turns is an optional PER-CHILD cap and defaults to unlimited, like
+// --max-turns and like the interactive loop, which states the reason at
+// chat/run.go: the user is the brake. Interactively that holds for a child
+// too — ESC cancels the turn and the context it cancels reaches the child's
+// every round.
 //
-// A child is no exception to that. ESC cancels the turn, and the context it
-// cancels reaches the child's every round — so the brake works on a
-// delegation exactly as it does on anything else. The earlier default of 30
-// rested on the child having nobody watching it, which is not true.
+// What bounds an unattended run is --max-turns, which is a budget for the RUN
+// (chat/turns.go): the parent and every child draw on one pool. This key sits
+// beside it as "this particular agent should never need more than N", which
+// is the user's own estimate rather than a number invented for them.
 //
-// The key stays, because a cap the user chooses is different from one they
-// were given. What it is NOT is a guard against a wedged child: that failure
-// is measured in wall-clock, the way bash and pi's delegate extension measure
-// it, and thirty cheap rounds cost nothing like three expensive ones.
+// Neither is a guard against a WEDGED child. That failure is measured in
+// wall-clock, and no turn count describes it — thirty cheap rounds cost
+// nothing like three expensive ones.
 
 // buildDelegator resolves every configured agent up front — a name that does
 // not resolve is a startup error, not a surprise three tool calls into a

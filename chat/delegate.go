@@ -24,6 +24,10 @@ import (
 // somewhere up the stack — a way to put an approval question to them.
 type quietHost struct {
 	rec *runRecorder
+	// turns is the RUN's budget, shared with every delegated child. The
+	// recorder beside it is deliberately NOT shared: what a child cost is
+	// reported per child, while what the run may spend is one pool.
+	turns *turnBudget
 	// approve, when set, forwards a state-changing call to whoever owns the
 	// terminal. A -m run leaves it nil because there is nobody to ask; a
 	// delegated child sets it because it has no user of its own but runs
@@ -126,7 +130,7 @@ func (d *Delegator) Run(ctx context.Context, spec tool.DelegateSpec) (tool.Deleg
 		}
 	}
 
-	host := quietHost{rec: newRunRecorder()}
+	host := quietHost{rec: newRunRecorder(), turns: turnBudgetFrom(ctx)}
 	if fn := d.approver(); fn != nil {
 		// Only one child can be waiting on the user at a time — the terminal
 		// is single-threaded even when the delegations are not. In practice
