@@ -378,12 +378,19 @@ tools:
 ```
 
 `description` is the only field that is not already over there, and it is
-what the model chooses between agents on.
+what the model chooses between agents on. Image settings (`image`,
+`json_edits`, `aspect_ratio`, `image_size`, `negative_prompt`) are the one
+part a child does not adopt — a delegation returns text, and an image a child
+generated would land on disk where the parent never learns of it.
 
 In `-m` runs `--max-turns` is a budget for the whole run: the parent and every
 child it delegates to draw on one pool, so the number bounds what the run can
 cost rather than what each agent can. Interactive runs have no cap — ESC
 cancels a delegation the same as anything else.
+
+`--output-format json` reports what the children cost under `delegated`,
+beside the parent's own `usage` rather than inside it: one figure says what
+this agent spent, the other what it spent by delegating.
 
 Delegations to an agent whose tools cannot change state run **concurrently**;
 anything else runs one at a time. A child's write requests surface as an

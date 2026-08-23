@@ -101,6 +101,20 @@ func buildDelegator(cfg *config.Config, node yaml.Node, hc httpClientSource, roo
 		if pc.Model == "" {
 			return nil, fmt.Errorf("agent %q: provider %q has no `model:` (a delegated agent cannot be asked to pick one)", name, ref.Provider)
 		}
+		// The same reasoning covers every other value that only the API can
+		// reject. The main session validates these at startup; a child's
+		// entry reached the wire unchecked, so `effort: turbo` was a config
+		// typo that surfaced as a 400 partway through a conversation — the
+		// exact failure the check above exists to prevent.
+		if pc.Effort != "" && !provider.ValidEffort(pc.Effort) {
+			return nil, fmt.Errorf("agent %q: provider %q has effort %q: want low|medium|high|xhigh|max", name, ref.Provider, pc.Effort)
+		}
+		if pc.Temperature != nil && (*pc.Temperature < 0 || *pc.Temperature > 2) {
+			return nil, fmt.Errorf("agent %q: provider %q has temperature %v: want 0.0-2.0", name, ref.Provider, *pc.Temperature)
+		}
+		if pc.TopP != nil && (*pc.TopP < 0 || *pc.TopP > 1) {
+			return nil, fmt.Errorf("agent %q: provider %q has top_p %v: want 0.0-1.0", name, ref.Provider, *pc.TopP)
+		}
 		tools := childTools(pc.Tools)
 		// The toolset is built here so its access can be reported to the
 		// model and, more importantly, so the parallel decision rests on what
@@ -145,6 +159,13 @@ func buildDelegator(cfg *config.Config, node yaml.Node, hc httpClientSource, roo
 				tun.SetTopP(r.pc.TopP)
 			}
 		}
+		// Image settings (image, json_edits, aspect_ratio, image_size,
+		// negative_prompt) are deliberately NOT applied: a delegation returns
+		// text, and a child that generated an image would write it to disk
+		// where the parent never learns of it. This is the one part of a
+		// provider entry a child does not adopt, and it is documented rather
+		// than rejected — a provider used for images elsewhere should not have
+		// to be duplicated to be delegated to.
 		sys, err := r.pc.ResolveSystem()
 		if err != nil {
 			return chat.Child{}, fmt.Errorf("agent %q: %w", name, err)

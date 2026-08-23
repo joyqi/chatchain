@@ -100,17 +100,29 @@ type RoundReport struct {
 // reading a mixed stream can branch on it the same way it will when the
 // streaming format arrives.
 type RunReport struct {
-	Type        string        `json:"type"` // always "result"
-	Provider    string        `json:"provider"`
-	Model       string        `json:"model"`
-	Reply       string        `json:"reply"`
-	Error       string        `json:"error,omitempty"`
-	Rounds      int           `json:"rounds"`
-	DurationMS  int64         `json:"duration_ms"`
-	Usage       TokenUsage    `json:"usage"`
-	RoundUsage  []RoundReport `json:"round_usage,omitempty"`
-	Images      []string      `json:"images,omitempty"`
-	ImageErrors []string      `json:"image_errors,omitempty"`
+	Type       string     `json:"type"` // always "result"
+	Provider   string     `json:"provider"`
+	Model      string     `json:"model"`
+	Reply      string     `json:"reply"`
+	Error      string     `json:"error,omitempty"`
+	Rounds     int        `json:"rounds"`
+	DurationMS int64      `json:"duration_ms"`
+	Usage      TokenUsage `json:"usage"`
+	// Delegated is what this run's child agents cost, kept beside Usage
+	// rather than inside it: one says what this agent spent, the other what
+	// it spent by delegating. Absent when nothing was delegated.
+	Delegated   *DelegatedReport `json:"delegated,omitempty"`
+	RoundUsage  []RoundReport    `json:"round_usage,omitempty"`
+	Images      []string         `json:"images,omitempty"`
+	ImageErrors []string         `json:"image_errors,omitempty"`
+}
+
+// DelegatedReport is the run's delegation total: how many rounds its children
+// ran, and what they cost. The per-child figures reach the terminal through
+// the artifact channel; this is the machine-readable aggregate.
+type DelegatedReport struct {
+	Rounds int        `json:"rounds"`
+	Usage  TokenUsage `json:"usage"`
 }
 
 // runRecorder accumulates what the tool loop learns as it runs. The loop
@@ -120,6 +132,9 @@ type runRecorder struct {
 	started time.Time
 	rounds  []RoundReport
 	total   TokenUsage
+	// delegated is the run's shared ledger, filled by children rather than
+	// by this loop. nil where delegation cannot happen.
+	delegated *delegationLedger
 }
 
 func newRunRecorder() *runRecorder { return &runRecorder{started: time.Now()} }
@@ -164,6 +179,7 @@ func (r *runRecorder) report(p provider.Provider, reply string, images, imageErr
 		Rounds:      len(r.rounds),
 		DurationMS:  time.Since(r.started).Milliseconds(),
 		Usage:       r.total,
+		Delegated:   r.delegated.report(),
 		RoundUsage:  r.rounds,
 		Images:      images,
 		ImageErrors: imageErrs,

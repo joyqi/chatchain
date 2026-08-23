@@ -69,10 +69,11 @@ func (t *delegateTool) SupportsParallel(args map[string]any) bool {
 	return ok && info.ReadOnly
 }
 
-// agentArg reads the agent name the way BOTH the parallel classification and
-// the execution must read it. They resolved it differently once — one raw,
-// one trimmed — which let a call be admitted to a batch as one agent and then
-// run as another. Whatever the rule is, the two have to share it.
+// agentArg reads the agent name the way every reader of it must. There are
+// three — the parallel classification, the execution, and the call header —
+// and they resolved it differently once, which let a call be admitted to a
+// batch as one agent and then run as another. Whatever the rule is, all of
+// them have to share it.
 func agentArg(args map[string]any) string {
 	return strings.TrimSpace(stringArg(args, "agent"))
 }
@@ -82,7 +83,7 @@ func agentArg(args map[string]any) string {
 // thing that distinguishes two delegations to one agent, and the agent name
 // is what says how much the call is about to cost.
 func (t *delegateTool) HeaderSummary(args map[string]any) string {
-	agent, _ := args["agent"].(string)
+	agent := agentArg(args) // the same reading the classifier and the run use
 	task, _ := args["task"].(string)
 	task = headerCommand(strings.TrimSpace(task))
 	switch {

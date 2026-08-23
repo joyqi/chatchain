@@ -181,3 +181,31 @@ providers:
 		t.Errorf("the error should name the agent: %v", err)
 	}
 }
+
+// A child's provider entry reaches the wire unchecked unless it is checked
+// here. The main session validates these at startup; without the same pass a
+// typo like `effort: turbo` was a config mistake that surfaced as an API 400
+// partway through a conversation — the failure the model: check exists to
+// prevent, arriving by a different door.
+func TestDelegateValidatesTheChildsProviderEntry(t *testing.T) {
+	for _, tc := range []struct{ name, entry, want string }{
+		{"effort", "{type: openai, key: k, model: m, effort: turbo}", "effort"},
+		{"temperature", "{type: openai, key: k, model: m, temperature: 3.5}", "temperature"},
+		{"top_p", "{type: openai, key: k, model: m, top_p: 2}", "top_p"},
+	} {
+		cfg := loadConfig(t, "providers:\n  bad: "+tc.entry+"\n")
+		_, err := buildDelegator(cfg, agentsNode(t, "agents:\n  a: bad\n"), nopHTTP{}, t.TempDir())
+		if err == nil {
+			t.Errorf("%s: an invalid value passed startup", tc.name)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: error should name the field: %v", tc.name, err)
+		}
+	}
+	// Valid values still build.
+	cfg := loadConfig(t, "providers:\n  ok: {type: openai, key: k, model: m, effort: high, temperature: 0.7, top_p: 0.9}\n")
+	if _, err := buildDelegator(cfg, agentsNode(t, "agents:\n  a: ok\n"), nopHTTP{}, t.TempDir()); err != nil {
+		t.Errorf("a valid entry was rejected: %v", err)
+	}
+}

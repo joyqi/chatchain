@@ -107,3 +107,78 @@ func TestTurnBudgetTravelsByContext(t *testing.T) {
 		t.Error("an absent budget was published as present")
 	}
 }
+
+// --max-turns already charges the run for a child's rounds; the report has to
+// charge it for their tokens. A caller running this binary as a child was
+// billed for rounds the report never mentioned.
+func TestDelegationLedgerAggregates(t *testing.T) {
+	var l *delegationLedger
+	if l.report() != nil {
+		t.Error("a nil ledger reported something")
+	}
+	l = &delegationLedger{}
+	if l.report() != nil {
+		t.Error("a run that delegated nothing carries an empty section")
+	}
+	l.add(3, provider.Usage{Input: 900, Output: 100, Total: 1000})
+	l.add(2, provider.Usage{Input: 400, Output: 50, Total: 450})
+	rep := l.report()
+	if rep == nil || rep.Rounds != 5 {
+		t.Fatalf("report = %+v, want 5 rounds", rep)
+	}
+	if rep.Usage.TotalTokens != 1450 || rep.Usage.InputTokens != 1300 {
+		t.Errorf("usage = %+v, want the sum of both children", rep.Usage)
+	}
+	// A child that never reached the provider adds nothing.
+	l.add(0, provider.Usage{Input: 999})
+	if l.report().Rounds != 5 || l.report().Usage.InputTokens != 1300 {
+		t.Error("a child with no rounds moved the totals")
+	}
+}
+
+// Parallel delegations finish on their own goroutines and land here at once.
+func TestDelegationLedgerIsExactUnderContention(t *testing.T) {
+	l := &delegationLedger{}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				l.add(1, provider.Usage{Input: 2, Total: 3})
+			}
+		}()
+	}
+	wg.Wait()
+	rep := l.report()
+	if rep.Rounds != 400 || rep.Usage.TotalTokens != 1200 || rep.Usage.InputTokens != 800 {
+		t.Errorf("ledger = %+v after 400 concurrent adds", rep)
+	}
+}
+
+// The delegated total stays out of the parent's own figures: one says what
+// this agent spent, the other what it spent by delegating.
+func TestReportKeepsDelegatedSeparate(t *testing.T) {
+	rec := newRunRecorder()
+	rec.total.add(provider.Usage{Input: 9, Output: 1, Total: 10})
+	rec.rounds = []RoundReport{{Round: 1}}
+	rec.delegated = &delegationLedger{}
+	rec.delegated.add(4, provider.Usage{Input: 3600, Output: 400, Total: 4000})
+
+	rep := rec.report(&reportingProvider{}, "done", nil, nil, nil)
+	if rep.Usage.TotalTokens != 10 {
+		t.Errorf("own usage = %d, want the parent's own calls only", rep.Usage.TotalTokens)
+	}
+	if rep.Rounds != 1 {
+		t.Errorf("own rounds = %d, want the parent's own rounds only", rep.Rounds)
+	}
+	if rep.Delegated == nil || rep.Delegated.Rounds != 4 || rep.Delegated.Usage.TotalTokens != 4000 {
+		t.Errorf("delegated = %+v, want the children's total", rep.Delegated)
+	}
+	// And it is omitted entirely when nothing was delegated.
+	bare := newRunRecorder()
+	bare.delegated = &delegationLedger{}
+	if bare.report(&reportingProvider{}, "x", nil, nil, nil).Delegated != nil {
+		t.Error("a run that delegated nothing carries a delegated section")
+	}
+}

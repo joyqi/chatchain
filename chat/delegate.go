@@ -154,5 +154,9 @@ func (d *Delegator) Run(ctx context.Context, spec tool.DelegateSpec) (tool.Deleg
 		Usage:    host.rec.usage(),
 		Duration: time.Since(started),
 	}
+	// The run's own report has to account for this: --max-turns already
+	// charges the run for a child's rounds, and the tokens they cost belong
+	// to the same run. A failed child counts — its rounds were billed.
+	delegationLedgerFrom(ctx).add(res.Rounds, res.Usage)
 	return res, err
 }

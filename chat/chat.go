@@ -38,6 +38,11 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 	// local per-loop cap is left off so the two cannot double-count.
 	budget := newTurnBudget(maxTurns)
 	ctx = withTurnBudget(ctx, budget)
+	// What the run delegates is billed to the caller too, so the report has
+	// to state it. The ledger travels the same way the budget does: a child
+	// is started by a tool, and a tool must not know what either of these is.
+	rec.delegated = &delegationLedger{}
+	ctx = withDelegationLedger(ctx, rec.delegated)
 	reply, images, imageErrs, err := runOnce(ctx, p, message, systemPrompt, dispatch, agent, 0, quietHost{rec: rec, turns: budget})
 
 	if format == OutputJSON {
