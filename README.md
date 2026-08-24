@@ -104,7 +104,7 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 | `--mcp` | | MCP server (command string or URL, repeatable) |
 | `--resume` | | Resume a saved session (`--resume` to pick interactively, `--resume=<id>` for a specific one) |
 | `--no-save` | | Start ephemeral — nothing touches disk unless `/save` is run |
-| `--max-turns` | | Limit agentic tool turns in non-interactive mode (`-m` only; 0 = unlimited) |
+| `--max-turns` | | Limit agentic tool turns for the whole run, delegated children included (`-m` only; 0 = unlimited) |
 | `--output-format` | | `-m` output: `text` (default, the reply alone) or `json` (one result object with per-round token usage) |
 | `--context-window` | | Context window size for compaction accounting (e.g. `200k`, `1m`; default 128k) |
 | `--agent` | | Enable agent mode (AGENTS.md overlay, skills, `load_skill`, project-scoped sessions) |
@@ -321,8 +321,9 @@ enabled by listing it under that provider's `tools:` key; the value is the
 set's shared configuration, and an empty value uses its defaults. Available
 sets: `shell` (running bash commands, sandboxed), `code` (reading, searching,
 and editing project files), `agent` (skill activation; auto-enabled by agent
-mode), and `ask` (interactive questions to the user; enabled by default in
-interactive sessions — disable with `ask: false`).
+mode), `ask` (interactive questions to the user; enabled by default in
+interactive sessions — disable with `ask: false`), and `delegate` (running a
+task as a child agent).
 
 ```yaml
 providers:
@@ -354,6 +355,50 @@ switches, one Enter commits all; single- or multi-select per question, and an
 single yes/no. ESC declines — the model is told and proceeds on its own.
 Zero side effects, on by default interactively, absent in `-m` runs; opt out
 per provider with `tools: {ask: false}`.
+
+#### `delegate` — `delegate`
+
+Runs a task as a **child agent**: its own context, its own tool loop, and
+only its final answer comes back — no tool calls, no reasoning. A survey that
+takes twenty rounds costs this conversation one paragraph.
+
+An agent is a name for a provider entry you already have, so nothing about
+the child is configured twice — its model, tools, approval settings, system
+prompt and sampling all come from the entry it names:
+
+```yaml
+tools:
+  delegate:
+    max_turns: 30            # optional per-child cap; default unlimited
+    agents:
+      search: fast-provider
+      review:
+        provider: careful-provider
+        description: Reads a diff and reports what is wrong with it
+```
+
+`description` is the only field that is not already over there, and it is
+what the model chooses between agents on. Image settings (`image`,
+`json_edits`, `aspect_ratio`, `image_size`, `negative_prompt`) are the one
+part a child does not adopt — a delegation returns text, and an image a child
+generated would land on disk where the parent never learns of it.
+
+In `-m` runs `--max-turns` is a budget for the whole run: the parent and every
+child it delegates to draw on one pool, so the number bounds what the run can
+cost rather than what each agent can. Interactive runs have no cap — ESC
+cancels a delegation the same as anything else.
+
+`--output-format json` reports what the children cost under `delegated`,
+beside the parent's own `usage` rather than inside it: one figure says what
+this agent spent, the other what it spent by delegating.
+
+Delegations to an agent whose tools cannot change state run **concurrently**;
+anything else runs one at a time. A child's write requests surface as an
+approval prompt in your terminal, labelled with the agent that asked
+(`review › edit_file wants to modify files`), and "allow for this session"
+covers parent and children alike. What a child cost appears beside its call
+and is never added to this conversation's context. A child is never given
+`delegate` itself.
 
 #### `shell` — `bash`
 
@@ -404,6 +449,11 @@ Safety model:
       code:
         auto_write: true   # optional; default asks before every write
 ```
+
+  Or withhold the writers entirely with `read_only: true`, leaving `glob`,
+  `grep`, `list_dir` and `read_file`. A tool the model cannot see is never
+  attempted and never refused — useful for a reviewer, and required for a
+  `delegate` agent that should search and still run concurrently.
 
 Design: docs/design/code-toolset.md
 

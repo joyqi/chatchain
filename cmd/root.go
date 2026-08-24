@@ -221,12 +221,25 @@ var rootCmd = &cobra.Command{
 		// binds the live UI); -m runs leave it nil, so the ask set
 		// contributes no tools and the model never sees them.
 		var interact *chat.Interactor
+		var delegator *chat.Delegator
 		if chatMessage == "" {
 			interact = chat.NewInteractor()
 			toolEnv.Interact = interact
 		}
 		if toolEnv.ProjectRoot == "" && cwdErr == nil {
 			toolEnv.ProjectRoot = agents.ProjectRoot(cwd)
+		}
+
+		// The delegate seam, when configured. Every agent resolves here so a
+		// bad provider name fails at startup rather than three tool calls
+		// into a conversation; without the seam the set contributes no tools.
+		if node, ok := pc.Tools["delegate"]; ok && !tool.SetDisabled(pc.Tools, "delegate") {
+			del, derr := buildDelegator(cfg, node, reqLog, toolEnv.ProjectRoot)
+			if derr != nil {
+				return fmt.Errorf("tools.delegate: %w", derr)
+			}
+			toolEnv.Delegate = del
+			delegator = del
 		}
 
 		// --output-format describes a single -m run; the REPL has no such run
@@ -398,7 +411,7 @@ var rootCmd = &cobra.Command{
 				return err
 			}
 		}
-		return chat.Run(p, titleP, systemPrompt, systemInteractive, importedHistory, dispatch, mgr, sw, newSession, interact, contextWindow, agentOpts, pc.Notify == nil || *pc.Notify, reqLog)
+		return chat.Run(p, titleP, systemPrompt, systemInteractive, importedHistory, dispatch, mgr, sw, newSession, interact, delegator, contextWindow, agentOpts, pc.Notify == nil || *pc.Notify, reqLog)
 	},
 }
 
@@ -416,7 +429,7 @@ func init() {
 	rootCmd.Flags().StringVar(&resumeID, "resume", "", "Resume a saved session: --resume to pick interactively, or --resume=<id>")
 	rootCmd.Flags().Lookup("resume").NoOptDefVal = " " // allow bare --resume (interactive picker)
 	rootCmd.Flags().BoolVar(&noSave, "no-save", false, "Start ephemeral: nothing persists unless you run /save in the chat")
-	rootCmd.Flags().IntVar(&maxTurns, "max-turns", 0, "Limit agentic tool turns in non-interactive mode (-m only; 0 = unlimited)")
+	rootCmd.Flags().IntVar(&maxTurns, "max-turns", 0, "Limit agentic tool turns for the whole run, delegated children included (-m only; 0 = unlimited)")
 	rootCmd.Flags().StringVar(&outputFormat, "output-format", "", "Non-interactive output: text (default, the reply alone) or json (one result object with token usage)")
 	rootCmd.Flags().StringVar(&contextWindowFlag, "context-window", "", "Context window size for compaction accounting (e.g. 200k, 1m); default 128k")
 	rootCmd.Flags().BoolVar(&agentFlag, "agent", false, "Enable agent mode (AGENTS.md system-prompt overlay)")

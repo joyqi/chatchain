@@ -10,9 +10,12 @@ import (
 	"chatchain/tool"
 )
 
-// Parallel tool execution. A round's calls arrive as a list, and the ones a
-// tool declares safe to run concurrently (tool.ParallelReporter — today the
-// read-only file tools) execute together instead of one after another.
+// Parallel tool execution. A round's calls arrive as a list, and the ones
+// declared safe to run concurrently (tool.ParallelReporter — today the
+// read-only file tools) execute together instead of one after another. The
+// declaration is per CALL: a tool whose calls differ in kind answers per
+// call, so the batches follow what is actually safe rather than what a tool
+// name can promise.
 //
 // Two orderings are kept regardless of who finishes first:
 //
@@ -28,9 +31,17 @@ import (
 
 // parallelRun returns the end of the run of consecutive parallel-capable
 // calls starting at i (i itself when the call at i is not one).
+//
+// Capability is asked per CALL, not per tool name, so a round that mixes
+// concurrent-safe and serial calls to the SAME tool splits at the boundaries
+// without any special handling: [a a b a] batches [a a], runs b alone, then
+// [a]. That falls out of scanning for consecutive runs — and it drops the
+// serial one into the path that already has approval gates, surfaces and
+// expanded rendering, which is exactly where a call needing any of them
+// belongs.
 func parallelRun(dispatch tool.Dispatcher, calls []provider.ToolCall, i int) int {
 	j := i
-	for j < len(calls) && supportsParallel(dispatch, calls[j].Name) {
+	for j < len(calls) && supportsParallel(dispatch, calls[j]) {
 		j++
 	}
 	return j
@@ -42,6 +53,7 @@ type batchOutcome struct {
 	text    string
 	isError bool
 	dur     time.Duration
+	note    string // user-only detail from the artifact side channel
 }
 
 // runParallelBatch executes calls concurrently and returns their results in
@@ -72,6 +84,26 @@ func runParallelBatch(ctx context.Context, pushScope func(context.CancelFunc) fu
 		pop = pushScope(cancel)
 	}
 
+	outcomes := runBatch(batchCtx, dispatch, calls)
+	pop()
+	cancel()
+
+	msgs := make([]provider.Message, 0, len(calls))
+	for i, tc := range calls {
+		tr.finishCall(headers[i], outcomes[i].text, outcomes[i].isError, outcomes[i].dur, outcomes[i].note)
+		msgs = append(msgs, batchMessage(tc, outcomes[i]))
+	}
+	if ctx.Err() != nil {
+		return msgs, errInterrupted
+	}
+	return msgs, nil
+}
+
+// runBatch is the concurrency itself, with no terminal in it: calls go out
+// together and their outcomes come back in CALL order. Both loops use it —
+// the interactive one wraps it in a widget and a cancel scope, the quiet one
+// (-m) has neither and needs neither.
+func runBatch(ctx context.Context, dispatch tool.Dispatcher, calls []provider.ToolCall) []batchOutcome {
 	outcomes := make([]batchOutcome, len(calls))
 	var wg sync.WaitGroup
 	for i, tc := range calls {
@@ -79,30 +111,30 @@ func runParallelBatch(ctx context.Context, pushScope func(context.CancelFunc) fu
 		go func(i int, tc provider.ToolCall) {
 			defer wg.Done()
 			started := time.Now()
-			text, isError, err := dispatch.CallTool(batchCtx, tc.Name, tc.Arguments)
+			// One artifact slot per call: the batch runs concurrently, so a
+			// shared slot would be a race with a last-writer-wins result.
+			callCtx, artifact := tool.WithArtifact(ctx)
+			text, isError, err := dispatch.CallTool(callCtx, tc.Name, tc.Arguments)
 			if err != nil {
 				text, isError = fmt.Sprintf("Error calling tool: %v", err), true
 			}
-			outcomes[i] = batchOutcome{text: text, isError: isError, dur: time.Since(started)}
+			outcomes[i] = batchOutcome{text: text, isError: isError,
+				dur: time.Since(started), note: artifactNote(artifact())}
 		}(i, tc)
 	}
 	wg.Wait()
-	pop()
-	cancel()
+	return outcomes
+}
 
-	msgs := make([]provider.Message, 0, len(calls))
-	for i, tc := range calls {
-		tr.finishCall(headers[i], outcomes[i].text, outcomes[i].isError, outcomes[i].dur)
-		msgs = append(msgs, provider.Message{
-			Role:         "tool",
-			Content:      outcomes[i].text,
-			ToolCallID:   tc.ID,
-			ToolCallName: tc.Name,
-			IsError:      outcomes[i].isError,
-		})
+// batchMessage is one call's result as history. Results answer calls in CALL
+// order regardless of who finished first — a protocol requirement, not a
+// preference.
+func batchMessage(tc provider.ToolCall, o batchOutcome) provider.Message {
+	return provider.Message{
+		Role:         "tool",
+		Content:      o.text,
+		ToolCallID:   tc.ID,
+		ToolCallName: tc.Name,
+		IsError:      o.isError,
 	}
-	if ctx.Err() != nil {
-		return msgs, errInterrupted
-	}
-	return msgs, nil
 }

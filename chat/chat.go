@@ -33,7 +33,17 @@ func FetchModels(ctx context.Context, p provider.Provider) ([]string, error) {
 // still travels either way, so the exit status keeps meaning what it did.
 func Once(ctx context.Context, p provider.Provider, message string, systemPrompt string, dispatch tool.Dispatcher, agent AgentOptions, maxTurns int, format OutputFormat, w io.Writer) error {
 	rec := newRunRecorder()
-	reply, images, imageErrs, err := runOnce(ctx, p, message, systemPrompt, dispatch, agent, maxTurns, rec)
+	// --max-turns is the RUN's budget, not the parent loop's: it is published
+	// to the context so a delegated child draws on the same pool, and the
+	// local per-loop cap is left off so the two cannot double-count.
+	budget := newTurnBudget(maxTurns)
+	ctx = withTurnBudget(ctx, budget)
+	// What the run delegates is billed to the caller too, so the report has
+	// to state it. The ledger travels the same way the budget does: a child
+	// is started by a tool, and a tool must not know what either of these is.
+	rec.delegated = &delegationLedger{}
+	ctx = withDelegationLedger(ctx, rec.delegated)
+	reply, images, imageErrs, err := runOnce(ctx, p, message, systemPrompt, dispatch, agent, 0, quietHost{rec: rec, turns: budget})
 
 	if format == OutputJSON {
 		if werr := writeReport(w, rec.report(p, reply, images, imageErrs, err)); werr != nil {
@@ -59,7 +69,7 @@ func Once(ctx context.Context, p provider.Provider, message string, systemPrompt
 // runOnce performs the send and reports what came back, writing nothing. Once
 // owns the formatting; keeping this half output-free is what lets a failed
 // run still be described.
-func runOnce(ctx context.Context, p provider.Provider, message string, systemPrompt string, dispatch tool.Dispatcher, agent AgentOptions, maxTurns int, rec *runRecorder) (reply string, images, imageErrs []string, err error) {
+func runOnce(ctx context.Context, p provider.Provider, message string, systemPrompt string, dispatch tool.Dispatcher, agent AgentOptions, maxTurns int, host quietHost) (reply string, images, imageErrs []string, err error) {
 	var messages []provider.Message
 	if systemPrompt != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
@@ -94,7 +104,7 @@ func runOnce(ctx context.Context, p provider.Provider, message string, systemPro
 	}
 
 	if isToolProvider && len(tools) > 0 {
-		reply, _, err = executeWithTools(ctx, tp, dispatch, &messages, tools, sendOverlay, maxTurns, rec)
+		reply, _, err = executeWithTools(ctx, tp, dispatch, &messages, tools, sendOverlay, maxTurns, host)
 		if err != nil {
 			return "", nil, nil, err
 		}
@@ -107,7 +117,7 @@ func runOnce(ctx context.Context, p provider.Provider, message string, systemPro
 		return "", nil, nil, err
 	}
 	// The tool loop records each of its rounds; this path has exactly one.
-	rec.observe(p, nil)
+	host.rec.observe(p, nil)
 	images, imageErrs = saveImagesQuiet(p)
 	return reply, images, imageErrs, nil
 }
@@ -270,10 +280,17 @@ var errToolRoundsExceeded = errors.New("tool loop reached the --max-turns limit 
 // the output format, because the cost of a few ints per round is not worth a
 // conditional, and because a run that fails mid-loop still owes an account of
 // the rounds it did pay for.
-func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, maxTurns int, rec *runRecorder) (string, string, error) {
+func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, maxTurns int, host quietHost) (string, string, error) {
 	for rounds := 0; ; rounds++ {
+		// Two caps, and they are different things: maxTurns bounds THIS loop
+		// (a delegated agent's own tools.delegate.max_turns), while the
+		// budget is the run's, shared with every child.
 		if maxTurns > 0 && rounds == maxTurns {
 			return "", "", fmt.Errorf("%w (%d turns)", errToolRoundsExceeded, maxTurns)
+		}
+		if !host.turns.take() {
+			return "", "", fmt.Errorf("%w (%d turns, shared by this run and everything it delegated)",
+				errToolRoundsExceeded, host.turns.cap())
 		}
 		if dispatch != nil && rounds > 0 {
 			// The advertised set is LIVE: tools a search_tools round loaded
@@ -296,7 +313,7 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 		// Read the accounting NOW: LastUsageFull reports the provider's most
 		// recent call, so anything between here and the next round would
 		// silently reassign this round's cost.
-		rec.observe(tp, toolNames(toolCalls))
+		host.rec.observe(tp, toolNames(toolCalls))
 		if len(toolCalls) == 0 {
 			if content == "" && reasoning != "" {
 				// Reasoning-only response: the reasoning IS the answer.
@@ -312,21 +329,37 @@ func executeWithTools(ctx context.Context, tp provider.ToolProvider, dispatch to
 		}
 		*history = append(*history, msg)
 
-		for _, tc := range toolCalls {
-			// Approval-requiring tools cannot ask anyone here: reject the call
-			// with a result that tells the model (and the user reading the
-			// transcript) how to enable it.
-			if needsApproval(dispatch, tc.Name) {
-				*history = append(*history, provider.Message{
-					Role: "tool",
-					Content: fmt.Sprintf("%s was not executed: it requires interactive approval, "+
-						"which is unavailable in this non-interactive run. Set the toolset's auto-approve option "+
-						"(tools.code.auto_write / tools.shell.auto_run) to permit it here.", tc.Name),
-					ToolCallID:   tc.ID,
-					ToolCallName: tc.Name,
-					IsError:      true,
-				})
+		for i := 0; i < len(toolCalls); {
+			// A run of concurrent-safe calls goes out together. Nothing here
+			// needs the terminal the interactive path wraps this in: a call
+			// may only opt into parallel execution if it needs no approval
+			// and opens no surface, so a batch can never want either.
+			if j := parallelRun(dispatch, toolCalls, i); j-i >= 2 {
+				batch := toolCalls[i:j]
+				for k, o := range runBatch(ctx, dispatch, batch) {
+					*history = append(*history, batchMessage(batch[k], o))
+				}
+				i = j
 				continue
+			}
+			tc := toolCalls[i]
+			i++
+			// Approval gate. This loop has no user of its own, so it either
+			// forwards the question to one who exists — a delegated child
+			// runs inside a parent that owns a terminal — or, with nobody to
+			// ask, refuses and says how to enable the call.
+			if needsApproval(dispatch, tc.Name) {
+				allowed, why := host.askApproval(ctx, tc, toolCallDetail(dispatch, tc))
+				if !allowed {
+					*history = append(*history, provider.Message{
+						Role:         "tool",
+						Content:      why,
+						ToolCallID:   tc.ID,
+						ToolCallName: tc.Name,
+						IsError:      true,
+					})
+					continue
+				}
 			}
 			resultText, isError, callErr := dispatch.CallTool(ctx, tc.Name, tc.Arguments)
 			if callErr != nil {
@@ -374,12 +407,14 @@ func headerSummaryOf(dispatch tool.Dispatcher, name string, args map[string]any)
 	return hr.HeaderSummary(name, args)
 }
 
-// supportsParallel reports whether the named tool's calls may run
-// concurrently (the optional tool.ParallelReporter capability; dispatchers
-// without it serialize everything, which is the safe answer).
-func supportsParallel(dispatch tool.Dispatcher, name string) bool {
+// supportsParallel reports whether THIS call may run concurrently with the
+// round's others (the optional tool.ParallelReporter capability; dispatchers
+// without it serialize everything, which is the safe answer). The arguments
+// travel because the answer can differ between two calls to one tool — see
+// tool.parallelizer.
+func supportsParallel(dispatch tool.Dispatcher, call provider.ToolCall) bool {
 	pr, ok := dispatch.(tool.ParallelReporter)
-	return ok && pr.SupportsParallel(name)
+	return ok && pr.SupportsParallel(call.Name, call.Arguments)
 }
 
 // isInteractive reports whether the named tool runs its own user surface:
@@ -404,15 +439,23 @@ const toolHeaderMaxValue = 15
 // to one line and truncated, and arguments past toolHeaderMaxArgs collapse to a
 // "… +N args" tail.
 func toolCallHeader(dispatch tool.Dispatcher, tc provider.ToolCall) string {
+	name := displayToolName(tc.Name)
+	if detail := toolCallDetail(dispatch, tc); detail != "" {
+		return "[" + name + " " + detail + "]"
+	}
+	return "[" + name + "]"
+}
+
+// toolCallDetail is what a header says about a call BESIDES its name: the
+// tool's own summary, else the argument digest. The approval prompt shows it
+// too — a gate that names only the tool asks the user to authorize
+// "edit_file" without saying which file.
+func toolCallDetail(dispatch tool.Dispatcher, tc provider.ToolCall) string {
 	// A tool that writes its own summary takes over completely — an empty
 	// one renders as a bare "[name]", never as the argument digest below
 	// (see tool.headliner: edit_file's new_string must not reach a header).
 	if summary, ok := headerSummaryOf(dispatch, tc.Name, tc.Arguments); ok {
-		name := displayToolName(tc.Name)
-		if summary == "" {
-			return "[" + name + "]"
-		}
-		return "[" + name + " " + summary + "]"
+		return summary
 	}
 	keys := make([]string, 0, len(tc.Arguments))
 	for k := range tc.Arguments {
@@ -425,8 +468,7 @@ func toolCallHeader(dispatch tool.Dispatcher, tc provider.ToolCall) string {
 		shown = shown[:toolHeaderMaxArgs]
 	}
 
-	parts := make([]string, 0, len(shown)+2)
-	parts = append(parts, displayToolName(tc.Name))
+	parts := make([]string, 0, len(shown)+1)
 	for _, k := range shown {
 		v := strings.ReplaceAll(fmt.Sprintf("%v", tc.Arguments[k]), "\n", " ")
 		parts = append(parts, k+":"+truncateRunes(v, toolHeaderMaxValue))
@@ -434,7 +476,7 @@ func toolCallHeader(dispatch tool.Dispatcher, tc provider.ToolCall) string {
 	if extra := len(keys) - len(shown); extra > 0 {
 		parts = append(parts, fmt.Sprintf("… +%d args", extra))
 	}
-	return "[" + strings.Join(parts, " ") + "]"
+	return strings.Join(parts, " ")
 }
 
 // toolResultMaxLines is how many lines of a tool result are shown inline; extra

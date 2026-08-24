@@ -16,7 +16,7 @@ import (
 // human at a terminal and the wrong one for everything else: what the run
 // cost, how many round trips it took and why it stopped were recoverable only
 // by reading prose. Anything driving this binary as a subprocess — CI, a
-// pipeline, a parent agent treating it as a sub-agent — needs those as data.
+// pipeline, a parent agent running it as a child — needs those as data.
 //
 // The shape follows the two CLIs that already settled this. Usage rides on
 // the round that incurred it (Codex's turn.completed.usage) and the run ends
@@ -30,9 +30,9 @@ type OutputFormat string
 
 const (
 	// OutputText prints the reply alone — the historical -m behaviour, and
-	// still the default. It is also the right choice for a sub-agent: the
-	// point of delegating is that the answer reaches the caller's context
-	// without the transcript that produced it.
+	// still the default. It is also what a delegated child reports: the point
+	// of delegating is that the answer reaches the caller's context without
+	// the transcript that produced it.
 	OutputText OutputFormat = "text"
 	// OutputJSON replaces that with a single result object.
 	OutputJSON OutputFormat = "json"
@@ -100,17 +100,29 @@ type RoundReport struct {
 // reading a mixed stream can branch on it the same way it will when the
 // streaming format arrives.
 type RunReport struct {
-	Type        string        `json:"type"` // always "result"
-	Provider    string        `json:"provider"`
-	Model       string        `json:"model"`
-	Reply       string        `json:"reply"`
-	Error       string        `json:"error,omitempty"`
-	Rounds      int           `json:"rounds"`
-	DurationMS  int64         `json:"duration_ms"`
-	Usage       TokenUsage    `json:"usage"`
-	RoundUsage  []RoundReport `json:"round_usage,omitempty"`
-	Images      []string      `json:"images,omitempty"`
-	ImageErrors []string      `json:"image_errors,omitempty"`
+	Type       string     `json:"type"` // always "result"
+	Provider   string     `json:"provider"`
+	Model      string     `json:"model"`
+	Reply      string     `json:"reply"`
+	Error      string     `json:"error,omitempty"`
+	Rounds     int        `json:"rounds"`
+	DurationMS int64      `json:"duration_ms"`
+	Usage      TokenUsage `json:"usage"`
+	// Delegated is what this run's child agents cost, kept beside Usage
+	// rather than inside it: one says what this agent spent, the other what
+	// it spent by delegating. Absent when nothing was delegated.
+	Delegated   *DelegatedReport `json:"delegated,omitempty"`
+	RoundUsage  []RoundReport    `json:"round_usage,omitempty"`
+	Images      []string         `json:"images,omitempty"`
+	ImageErrors []string         `json:"image_errors,omitempty"`
+}
+
+// DelegatedReport is the run's delegation total: how many rounds its children
+// ran, and what they cost. The per-child figures reach the terminal through
+// the artifact channel; this is the machine-readable aggregate.
+type DelegatedReport struct {
+	Rounds int        `json:"rounds"`
+	Usage  TokenUsage `json:"usage"`
 }
 
 // runRecorder accumulates what the tool loop learns as it runs. The loop
@@ -120,6 +132,9 @@ type runRecorder struct {
 	started time.Time
 	rounds  []RoundReport
 	total   TokenUsage
+	// delegated is the run's shared ledger, filled by children rather than
+	// by this loop. nil where delegation cannot happen.
+	delegated *delegationLedger
 }
 
 func newRunRecorder() *runRecorder { return &runRecorder{started: time.Now()} }
@@ -140,6 +155,18 @@ func (r *runRecorder) observe(p any, tools []string) {
 	r.rounds = append(r.rounds, rr)
 }
 
+// usage is the run's aggregate in provider terms, for callers that report it
+// as accounting rather than as JSON (a delegated child's cost).
+func (r *runRecorder) usage() provider.Usage {
+	return provider.Usage{
+		Input:      r.total.InputTokens,
+		Output:     r.total.OutputTokens,
+		CacheRead:  r.total.CacheReadTokens,
+		CacheWrite: r.total.CacheWriteTokens,
+		Total:      r.total.TotalTokens,
+	}
+}
+
 // report closes the run. A failed run still reports: the rounds that did
 // complete were billed, and hiding them would make exactly the runs worth
 // investigating the ones with no numbers.
@@ -152,6 +179,7 @@ func (r *runRecorder) report(p provider.Provider, reply string, images, imageErr
 		Rounds:      len(r.rounds),
 		DurationMS:  time.Since(r.started).Milliseconds(),
 		Usage:       r.total,
+		Delegated:   r.delegated.report(),
 		RoundUsage:  r.rounds,
 		Images:      images,
 		ImageErrors: imageErrs,

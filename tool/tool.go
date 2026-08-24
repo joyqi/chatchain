@@ -6,7 +6,8 @@
 // config maps a set name to the set's shared raw config; the set factory
 // decodes that one config instance and hands it to every tool it constructs
 // (an empty value means defaults). Current sets: "shell" (bash), "code"
-// (file tools), and "agent" (load_skill). The Registry aggregates the enabled
+// (file tools), "agent" (load_skill), "ask" (choose/confirm) and "delegate"
+// (run a child agent). The Registry aggregates the enabled
 // tools behind the Dispatcher surface, and Merge combines several dispatchers
 // (e.g. built-ins + an MCP manager) into one.
 package tool
@@ -19,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"time"
 
 	"chatchain/provider"
 
@@ -87,11 +89,11 @@ type PresentationReporter interface {
 	Presentation(name string) Presentation
 }
 
-// parallelizer is an optional Tool interface: the tool declares that its
-// calls may run CONCURRENTLY with other calls in the same round.
+// parallelizer is an optional Tool interface: the tool declares that a CALL
+// may run concurrently with other calls in the same round.
 //
-// The default is no, and the default is what almost every tool wants. A tool
-// may opt in only if all three hold:
+// The default is no, and the default is what almost every tool wants. A call
+// may be opted in only if all three hold:
 //
 //   - it does not write — two concurrent writers to one file is a race whose
 //     symptoms are intermittent and whose cause is invisible in a transcript;
@@ -99,19 +101,30 @@ type PresentationReporter interface {
 //     once have one screen to share;
 //   - it opens no surface (PresentSurface), for the same reason.
 //
-// Today that is exactly the read-only file tools. Codex arrived at the same
-// default (supports_parallel_tool_calls = false) and, notably, does not opt
-// its own shell in: a shell command's effects cannot be known from its
-// declaration, so the only honest answer for it is "no".
+// The question takes the call's ARGUMENTS because for some tools it cannot be
+// answered from the name. A delegation tool is the case that forces it: every
+// call is named the same and differs only in which configured agent it names,
+// and those differ in exactly the three properties above. One answer per name
+// would have to lie in one direction — serializing a read-only fan-out, or
+// letting a write-capable call into a batch.
+//
+// The arguments must be LOOKED UP, never interpreted. A key into a table the
+// user wrote resolves to a static fact they already authorized; a free-form
+// string does not. That is the line bash falls on the wrong side of, and why
+// it stays out even though the gate now exists: a shell command's effects
+// cannot be known from its declaration, and a model-supplied "this one only
+// reads" is the constrained party signing its own certificate. Codex settled
+// the same way — supports_parallel_tool_calls defaults false, and it does not
+// opt its own shell in either.
 type parallelizer interface {
-	SupportsParallel() bool
+	SupportsParallel(args map[string]any) bool
 }
 
 // ParallelReporter is the Dispatcher-side mirror of parallelizer (as
 // PresentationReporter mirrors presenter). Parts without the capability
 // report false, which keeps their calls serialized.
 type ParallelReporter interface {
-	SupportsParallel(name string) bool
+	SupportsParallel(name string, args map[string]any) bool
 }
 
 // headliner is an optional Tool interface: the tool writes the summary that
@@ -194,6 +207,10 @@ type Env struct {
 	// (the ask set). nil in non-interactive runs — a set that needs it
 	// returns no tools, so the model never sees what it cannot use.
 	Interact Interactor
+	// Delegate runs a child agent (the delegate set). nil where delegation
+	// is not configured — same contract as Interact: the set returns no
+	// tools, so the model never sees what it cannot use.
+	Delegate Delegator
 }
 
 // Root is the toolsets' anchor directory: the configured project root, else
@@ -218,6 +235,56 @@ func (e Env) Root() string {
 // surface engine; tools stay ignorant of the terminal stack.
 type Interactor interface {
 	Ask(ctx context.Context, spec AskSpec) (AskResult, error)
+}
+
+// Delegator is the host-side seam for running a child agent, as Interactor is
+// for asking the user something. A tool decides whether a delegation is
+// allowed and what to call it; building a provider, assembling a toolset and
+// driving a round loop is the chat layer's job, and none of it belongs in a
+// tool.
+type Delegator interface {
+	// AgentNames lists the configured agents in a stable order. The set is
+	// resolved by the host rather than decoded from this set's own config
+	// (the usual convention) because the config's values are provider names,
+	// and only the host can say what a provider name resolves to.
+	AgentNames() []string
+	// Agent resolves a configured agent by name. ok=false means the name is
+	// not configured, which the tool reports as an error rather than
+	// silently substituting a default.
+	Agent(name string) (AgentInfo, bool)
+	// Run executes the child to completion and returns its final answer.
+	Run(ctx context.Context, spec DelegateSpec) (DelegateResult, error)
+}
+
+// AgentInfo is what the tool needs to know about a configured agent without
+// being able to read provider configs itself.
+type AgentInfo struct {
+	// Description tells the model what this agent is for; it is the only
+	// basis on which the model can choose between them.
+	Description string
+	// ReadOnly reports that the agent's toolset grants nothing that changes
+	// state. It is the whole basis for letting a delegation run in parallel,
+	// and it is derived from the user's configuration — never from anything
+	// the model says about the task.
+	ReadOnly bool
+}
+
+// DelegateSpec is one delegation request.
+type DelegateSpec struct {
+	Agent  string // the configured agent name
+	Task   string // the entire brief; the child receives nothing else
+	Effort string // "" leaves the agent's configured default in place
+}
+
+// DelegateResult is what a finished child hands back. Reply is the only part
+// that reaches the model — no tool calls, no reasoning, which is the point of
+// delegating. The rest is accounting for the transcript, and travels as an
+// Artifact so that showing what a child cost does not itself cost tokens.
+type DelegateResult struct {
+	Reply    string
+	Rounds   int
+	Usage    provider.Usage
+	Duration time.Duration
 }
 
 // AskSpec is one interaction: 1–4 questions answered on one surface (Tab
@@ -266,10 +333,11 @@ type SetFactory func(env Env, node yaml.Node) ([]Tool, error)
 // its factory and one line here; growing a set = its factory returns one more
 // Tool. Future candidate: "web" (browse/search).
 var sets = map[string]SetFactory{
-	"shell": newShellSet,
-	"agent": newAgentSet,
-	"code":  newCodeSet,
-	"ask":   newAskSet,
+	"shell":    newShellSet,
+	"agent":    newAgentSet,
+	"code":     newCodeSet,
+	"ask":      newAskSet,
+	"delegate": newDelegateSet,
 }
 
 // SetDisabled reports an explicit boolean-false config value for a set —
@@ -413,10 +481,11 @@ func (r *Registry) Presentation(name string) Presentation {
 	return PresentGroup
 }
 
-// SupportsParallel reports whether the named built-in tool's calls may run
-// concurrently with others in the same round (the optional parallelizer
-// interface; absent means no).
-func (r *Registry) SupportsParallel(name string) bool {
+// SupportsParallel reports whether THIS call to the named built-in tool may
+// run concurrently with others in the same round (the optional parallelizer
+// interface; absent means no). args reaches the tool because the answer can
+// depend on the call — see parallelizer.
+func (r *Registry) SupportsParallel(name string, args map[string]any) bool {
 	if r == nil {
 		return false
 	}
@@ -425,7 +494,7 @@ func (r *Registry) SupportsParallel(name string) bool {
 		return false
 	}
 	p, ok := t.(parallelizer)
-	return ok && p.SupportsParallel()
+	return ok && p.SupportsParallel(args)
 }
 
 // HeaderSummary reports the named built-in tool's own call summary (via the
@@ -549,10 +618,10 @@ func (m *multiDispatcher) Presentation(name string) Presentation {
 // SupportsParallel routes the question to the part owning the tool name.
 // Parts without the capability — the MCP manager, whose servers make no such
 // promise — report false, so their calls stay serialized.
-func (m *multiDispatcher) SupportsParallel(name string) bool {
+func (m *multiDispatcher) SupportsParallel(name string, args map[string]any) bool {
 	if p := m.owner(name); p != nil {
 		if pr, ok := p.(ParallelReporter); ok {
-			return pr.SupportsParallel(name)
+			return pr.SupportsParallel(name, args)
 		}
 	}
 	return false
