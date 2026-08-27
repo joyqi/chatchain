@@ -311,7 +311,16 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 	// retrying …"); nothing lands in the transcript until the turn gives up —
 	// the caller prints the FINAL error once, instead of one red wall per
 	// attempt.
-	retry := func(fn func() error) error {
+	// retry re-attempts transient failures with linear backoff. The current
+	// error's classification rides the busy status row ("Rate limited (429) —
+	// retrying …"); nothing lands in the transcript until the turn gives up —
+	// the caller prints the FINAL error once, instead of one red wall per
+	// attempt. canReplay is consulted before every attempt: re-running fn
+	// replays the whole turn, and a turn that already EXECUTED tool calls
+	// must never run them again — one mid-stream upstream error used to
+	// re-execute every completed call per attempt (six duplicate browser
+	// tabs from one overloaded relay; brain: builtin-tools-framework).
+	retry := func(fn func() error, canReplay func(err error) bool) error {
 		err := fn()
 		if err == nil || !isRetryable(err) {
 			return err
@@ -323,8 +332,11 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 			return err
 		}
 		for attempt := 1; attempt <= maxRetries; attempt++ {
+			if canReplay != nil && !canReplay(err) {
+				return err
+			}
 			stop := u.Busy(fmt.Sprintf("%s — retrying (attempt %d/%d)", describeError(err).Headline, attempt, maxRetries))
-			time.Sleep(time.Duration(attempt) * time.Second)
+			time.Sleep(time.Duration(attempt) * retryBackoff)
 			stop()
 			err = fn()
 			if err == nil || !isRetryable(err) {
@@ -1015,6 +1027,26 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 			}
 			return out
 		}
+		// sideFx counts executed tool calls the parallel gate does not vouch
+		// for as read-only — the calls a whole-turn replay would run AGAIN.
+		var sideFx int
+		usedTools := isToolProvider && len(tools) > 0
+		canReplay := func(err error) bool {
+			if usedTools {
+				// toolLoop retries its own failing calls with the completed
+				// rounds — and their side effects — kept in place; an error
+				// it returns is final.
+				return false
+			}
+			if sideFx > 0 {
+				// Invariant, not a live path: plain streamed turns execute no
+				// tools. If a future path lands here, refuse loudly instead
+				// of re-running the user's tools.
+				printDim("⟳ %s — not replaying the turn: %d executed tool call(s) would run again", describeError(err).Headline, sideFx)
+				return false
+			}
+			return true
+		}
 		retryErr := retry(func() error {
 			history = history[:hist0] // tool rounds append; reset per attempt
 			history = append(history, injected...)
@@ -1026,14 +1058,14 @@ func Run(p, titleP provider.Provider, systemPrompt string, systemInteractive boo
 			}
 			var err error
 			if isToolProvider && len(tools) > 0 {
-				reply, thinking, err = toolLoop(turnCtx, u, sink, tr, tp, dispatch, &history, tools, sendOverlay, gate, sw.ImagesDir, ctxm, pres, steer)
+				reply, thinking, err = toolLoop(turnCtx, u, sink, tr, tp, dispatch, &history, tools, sendOverlay, gate, sw.ImagesDir, ctxm, pres, steer, &sideFx, !imageProvider)
 			} else {
 				reply, thinking, err = streamTurn(turnCtx, u, sink, tr, p, ctxm, func(w io.Writer, r io.WriteCloser) (string, string, error) {
 					return p.StreamChat(turnCtx, agents.ComposeSendHistory(history, sendOverlay), w, r)
 				})
 			}
 			return err
-		})
+		}, canReplay)
 		sink.Done()    // closes any leaked preview + pops the turn scope
 		tr.resetTurn() // a dropped widget's separator is reclaimed by the next block
 		cancelTurn()
@@ -1380,7 +1412,41 @@ func streamTurn(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcrip
 // steer (nil-safe) drains mid-turn type-ahead at each round boundary — the
 // only place a user message can legally enter the conversation (a round's
 // tool results must directly follow its calls).
-func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, gate *approvalGate, imgDir func() string, ctxm *ctxMeter, pres *host.Presenter, steer func() []provider.Message) (string, string, error) {
+// retryBackoff is one unit of the linear retry backoff (attempt N waits N of
+// these). A variable so tests can compress the wait.
+var retryBackoff = time.Second
+
+// retryRound re-issues one model call of a tool turn while its error stays
+// transient. The completed rounds live in the history the round closure
+// captured — a retry re-sends the SAME request, so tool calls that already
+// executed never run again (the turn-level replay above used to re-execute
+// them). allowed=false (dedicated image providers: every attempt bills)
+// passes the first result through untouched. A recovery leaves one dim ⟳
+// line so a turn that hit upstream trouble says so in the transcript.
+func retryRound(ctx context.Context, busy func(string) func(), notice func(string, ...any), allowed bool, round func() (string, string, []provider.ToolCall, error)) (string, string, []provider.ToolCall, error) {
+	content, reasoning, calls, err := round()
+	if !allowed {
+		return content, reasoning, calls, err
+	}
+	for attempt := 1; err != nil && isRetryable(err) && attempt <= maxRetries; attempt++ {
+		headline := describeError(err).Headline
+		stop := busy(fmt.Sprintf("%s — retrying (attempt %d/%d)", headline, attempt, maxRetries))
+		select {
+		case <-ctx.Done():
+			stop()
+			return content, reasoning, nil, errInterrupted
+		case <-time.After(time.Duration(attempt) * retryBackoff):
+		}
+		stop()
+		content, reasoning, calls, err = round()
+		if err == nil {
+			notice("⟳ %s — recovered after %d attempt(s)", headline, attempt)
+		}
+	}
+	return content, reasoning, calls, err
+}
+
+func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript, tp provider.ToolProvider, dispatch tool.Dispatcher, history *[]provider.Message, tools []provider.ToolDef, overlay string, gate *approvalGate, imgDir func() string, ctxm *ctxMeter, pres *host.Presenter, steer func() []provider.Message, sideFx *int, canRetry bool) (string, string, error) {
 	// No round cap: the user is the brake (ESC cancels the turn; approval
 	// gates cover mutating tools) — industry parity with the major CLIs.
 	interactive := func(name string) bool { return isInteractive(dispatch, name) }
@@ -1393,7 +1459,11 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 			tools = dispatch.Tools()
 		}
 		rounds++
-		content, reasoning, toolCalls, err := streamToolRound(ctx, u, sink, tr, tp, agents.ComposeSendHistory(*history, overlay), tools, ctxm, interactive)
+		content, reasoning, toolCalls, err := retryRound(ctx, u.Busy, tr.notice, canRetry, func() (string, string, []provider.ToolCall, error) {
+			// beginRound (inside) clears any streaming guards a failed
+			// attempt leaked, so re-entry is safe.
+			return streamToolRound(ctx, u, sink, tr, tp, agents.ComposeSendHistory(*history, overlay), tools, ctxm, interactive)
+		})
 		if err != nil {
 			return content, reasoning, err
 		}
@@ -1441,6 +1511,9 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 			// activity panel stays out of the way, the attention channels
 			// carry the waiting state, and the Q&A lands as its own record.
 			if mode == tool.PresentSurface {
+				if sideFx != nil && !supportsParallel(dispatch, tc) {
+					*sideFx++ // a replay would re-ask the user
+				}
 				pres.SetState(host.StateNeedsInput)
 				pres.Notify(host.Event{Kind: host.KindNeedsInput,
 					Text: fmt.Sprintf("%s needs your input", displayToolName(tc.Name))})
@@ -1522,6 +1595,9 @@ func toolLoop(ctx context.Context, u *ui.UI, sink ui.StreamSink, tr *transcript,
 			// out of the result text so it is never billed to the model.
 			// Every call gets a slot; only some post to one.
 			toolCtx, artifact := tool.WithArtifact(toolCtx)
+			if sideFx != nil && !supportsParallel(dispatch, tc) {
+				*sideFx++ // counted at execution: this is what a replay re-runs
+			}
 			pop := u.PushCancelScope(cancel)
 			started := time.Now()
 			resultText, isError, callErr := dispatch.CallTool(toolCtx, tc.Name, tc.Arguments)
