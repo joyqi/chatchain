@@ -11,6 +11,8 @@ import (
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/joyqi/iota/internal/app"
 )
 
 // Agent Skills per the spec (https://agentskills.io/specification): a skill
@@ -42,16 +44,26 @@ type Skill struct {
 func (s Skill) Dir() string { return filepath.Dir(s.Path) }
 
 // SkillRoots returns the skill discovery directories for a project root,
-// precedence high→low: the project's skills, then the chatchain-native and
+// precedence high→low: the project's skills, then the iota-native and
 // cross-client user directories.
 func SkillRoots(root string) []string {
 	dirs := []string{filepath.Join(root, ".agents", "skills")}
+	if user := userSkillsDir(); user != "" {
+		dirs = append(dirs, user)
+	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		dirs = append(dirs,
-			filepath.Join(home, ".chatchain", "skills"),
-			filepath.Join(home, ".agents", "skills"))
+		dirs = append(dirs, filepath.Join(home, ".agents", "skills"))
 	}
 	return dirs
+}
+
+// userSkillsDir is the program's own user-level skill directory
+// (~/.iota/skills); empty when the home directory is unknown.
+func userSkillsDir() string {
+	if dir, err := app.Home(); err == nil {
+		return filepath.Join(dir, "skills")
+	}
+	return ""
 }
 
 // DiscoverSkills scans the given directories (precedence high→low) for skills.
@@ -186,10 +198,11 @@ func probeSkills(dirs []string, skills []Skill) ([]string, []time.Time) {
 // discovery roots (project first, then the user-level directories).
 func SkillSourceTag(path, root string) string {
 	home, _ := os.UserHomeDir()
+	user := userSkillsDir()
 	switch {
 	case strings.HasPrefix(path, filepath.Join(root, ".agents", "skills")+string(filepath.Separator)):
 		return "project"
-	case home != "" && strings.HasPrefix(path, filepath.Join(home, ".chatchain", "skills")+string(filepath.Separator)):
+	case user != "" && strings.HasPrefix(path, user+string(filepath.Separator)):
 		return "user"
 	case home != "" && strings.HasPrefix(path, filepath.Join(home, ".agents", "skills")+string(filepath.Separator)):
 		return "user (.agents)"

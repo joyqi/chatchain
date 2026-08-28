@@ -10,8 +10,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"chatchain/internal/agents"
-	"chatchain/provider"
+	"github.com/joyqi/iota/internal/agents"
+	"github.com/joyqi/iota/provider"
 
 	"gopkg.in/yaml.v3"
 )

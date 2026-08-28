@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ChatChain — CLI AI Chat Tool</title>
+  <title>iota — Talk to any LLM from your terminal</title>
   <meta name="description" content="A lightweight, cross-platform CLI tool to chat with any LLM from your terminal. Supports OpenAI, Anthropic, Gemini, MCP tools, file attachments, markdown highlighting, and streaming responses.">
 
   <!-- Favicon -->
@@ -11,16 +11,16 @@
 
   <!-- Open Graph -->
   <meta property="og:type" content="website">
-  <meta property="og:title" content="ChatChain">
+  <meta property="og:title" content="iota">
   <meta property="og:description" content="Talk to any LLM from your terminal. Supports OpenAI, Anthropic, Gemini, MCP tools, markdown highlighting, and streaming responses.">
-  <meta property="og:image" content="https://chatchain.io/og.png">
-  <meta property="og:url" content="https://chatchain.io/">
+  <meta property="og:image" content="https://iota.sh/og.png">
+  <meta property="og:url" content="https://iota.sh/">
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="ChatChain">
+  <meta name="twitter:title" content="iota">
   <meta name="twitter:description" content="Talk to any LLM from your terminal. Supports OpenAI, Anthropic, Gemini, MCP tools, markdown highlighting, and streaming responses.">
-  <meta name="twitter:image" content="https://chatchain.io/og.png">
+  <meta name="twitter:image" content="https://iota.sh/og.png">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -347,15 +347,15 @@
 </head>
 <body>
   <div class="container">
-    <h1>ChatChain</h1>
+    <h1>iota</h1>
     <p class="slogan">Talk to any LLM from your terminal.</p>
 
     <div class="hero-buttons">
-      <a class="btn btn-primary" href="https://github.com/joyqi/chatchain/releases/latest">
+      <a class="btn btn-primary" href="https://github.com/joyqi/iota/releases/latest">
         <svg viewBox="0 0 16 16"><path d="M2.75 14A1.75 1.75 0 0 1 1 12.25v-2.5a.75.75 0 0 1 1.5 0v2.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25v-2.5a.75.75 0 0 1 1.5 0v2.5A1.75 1.75 0 0 1 13.25 14ZM7.25 7.689V2a.75.75 0 0 1 1.5 0v5.689l1.97-1.969a.749.749 0 1 1 1.06 1.06l-3.25 3.25a.749.749 0 0 1-1.06 0L4.22 6.78a.749.749 0 1 1 1.06-1.06l1.97 1.969Z"/></svg>
         Download
       </a>
-      <a class="btn btn-secondary" href="https://github.com/joyqi/chatchain">
+      <a class="btn btn-secondary" href="https://github.com/joyqi/iota">
         <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
         GitHub
       </a>
@@ -366,7 +366,7 @@
         <div class="demo-dot"></div>
         <div class="demo-dot"></div>
         <div class="demo-dot"></div>
-        <span>chatchain</span>
+        <span>iota</span>
       </div>
       <div class="demo-body" id="demo"></div>
       <button class="demo-restart" id="demo-replay" style="display:none">&#8635; replay</button>
@@ -403,7 +403,7 @@
         <div class="feature-card">
           <span class="icon">&#128736;</span>
           <h3>Config File</h3>
-          <p>Persistent API keys, default models, and custom provider aliases via <code>~/.chatchain.yaml</code>.</p>
+          <p>Persistent API keys, default models, and custom provider aliases via <code>~/.iota.yaml</code>.</p>
         </div>
         <div class="feature-card">
           <span class="icon">&#128268;</span>
@@ -423,7 +423,7 @@
         <div class="feature-card">
           <span class="icon">&#128190;</span>
           <h3>Session Persistence</h3>
-          <p>Every chat is auto-saved losslessly to <code>~/.chatchain/sessions/</code>. Resume past sessions &mdash; replaying the last few exchanges &mdash; switch models mid-chat, or run ephemerally.</p>
+          <p>Every chat is auto-saved losslessly to <code>~/.iota/sessions/</code>. Resume past sessions &mdash; replaying the last few exchanges &mdash; switch models mid-chat, or run ephemerally.</p>
         </div>
         <div class="feature-card">
           <span class="icon">&#128202;</span>
@@ -452,7 +452,7 @@
         <span class="provider-tag"><span class="dot" style="background:#ea4335"></span> Vertex AI</span>
         <span class="provider-tag"><span class="dot" style="background:#10a37f"></span> OpenAI Responses</span>
       </div>
-      <p>Each provider uses its official SDK. Pass your API key via flag or environment variable (<code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, <code>GOOGLE_API_KEY</code>).</p>
+      <p>Providers are spoken directly over the wire — no SDKs to carry. Pass your API key via flag or environment variable (<code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, <code>GOOGLE_API_KEY</code>).</p>
     </section>
 
     <section>
@@ -491,27 +491,26 @@
       <h2>Install</h2>
       <div class="terminal">
         <div><span class="comment"># Homebrew (macOS)</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">brew tap joyqi/tap</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">brew install chatchain</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">brew install joyqi/tap/iota</span></div>
         <div></div>
         <div><span class="comment"># Or via Go</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">go install github.com/joyqi/chatchain@latest</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">go install github.com/joyqi/iota@latest</span></div>
       </div>
     </section>
 
     <section>
       <h2>Claude Code Plugin</h2>
-      <p>ChatChain works as a <a href="https://docs.anthropic.com/en/docs/claude-code" style="color:#58a6ff">Claude Code</a> plugin. Install it to call other LLMs directly within Claude Code.</p>
+      <p>iota works as a <a href="https://docs.anthropic.com/en/docs/claude-code" style="color:#58a6ff">Claude Code</a> plugin. Install it to call other LLMs directly within Claude Code.</p>
       <div class="terminal">
         <div><span class="comment"># Add the marketplace and install</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">/plugin marketplace add joyqi/chatchain</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">/plugin install chatchain@chatchain-marketplace</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">/plugin marketplace add joyqi/iota</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">/plugin install iota@iota-marketplace</span></div>
         <div></div>
         <div><span class="comment"># Use the slash command</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">/chatchain:ask openai gpt-4o</span> <span class="string">"What is 1+1?"</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">/iota:ask openai gpt-4o</span> <span class="string">"What is 1+1?"</span></div>
         <div></div>
         <div><span class="comment"># Or let Claude auto-detect when to use it</span></div>
-        <div><span class="prompt">></span> <span class="cmd">Use chatchain to ask Gemini to explain quicksort</span></div>
+        <div><span class="prompt">></span> <span class="cmd">Use iota to ask Gemini to explain quicksort</span></div>
       </div>
     </section>
 
@@ -519,28 +518,28 @@
       <h2>Usage</h2>
       <div class="terminal">
         <div><span class="comment"># Interactive chat with model selection</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-k</span> <span class="string">sk-xxx</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">iota openai</span> <span class="flag">-k</span> <span class="string">sk-xxx</span></div>
         <div></div>
         <div><span class="comment"># Specify a model directly</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">chatchain anthropic</span> <span class="flag">-M</span> <span class="string">claude-sonnet-4-20250514</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">iota anthropic</span> <span class="flag">-M</span> <span class="string">claude-sonnet-4-20250514</span></div>
         <div></div>
         <div><span class="comment"># Non-interactive one-shot</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-M</span> <span class="string">gpt-4o</span> <span class="flag">-m</span> <span class="string">"Explain quicksort"</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">iota openai</span> <span class="flag">-M</span> <span class="string">gpt-4o</span> <span class="flag">-m</span> <span class="string">"Explain quicksort"</span></div>
         <div></div>
         <div><span class="comment"># System prompt</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-M</span> <span class="string">gpt-4o</span> <span class="flag">-s</span> <span class="string">'You are a translator'</span> <span class="flag">-m</span> <span class="string">"Hello"</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">iota openai</span> <span class="flag">-M</span> <span class="string">gpt-4o</span> <span class="flag">-s</span> <span class="string">'You are a translator'</span> <span class="flag">-m</span> <span class="string">"Hello"</span></div>
         <div></div>
         <div><span class="comment"># Custom API endpoint</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-u</span> <span class="string">https://your-proxy.com/v1</span> <span class="flag">-k</span> <span class="string">sk-xxx</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">iota openai</span> <span class="flag">-u</span> <span class="string">https://your-proxy.com/v1</span> <span class="flag">-k</span> <span class="string">sk-xxx</span></div>
         <div></div>
         <div><span class="comment"># With MCP tools</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">chatchain openai</span> <span class="flag">-M</span> <span class="string">gpt-4o</span> <span class="flag">--mcp</span> <span class="string">"npx -y @modelcontextprotocol/server-filesystem /tmp"</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">iota openai</span> <span class="flag">-M</span> <span class="string">gpt-4o</span> <span class="flag">--mcp</span> <span class="string">"npx -y @modelcontextprotocol/server-filesystem /tmp"</span></div>
         <div></div>
         <div><span class="comment"># List all providers and config aliases</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">chatchain</span> <span class="flag">-l</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">iota</span> <span class="flag">-l</span></div>
         <div></div>
         <div><span class="comment"># List available models for a provider</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">chatchain</span> <span class="flag">-l</span> <span class="string">openai</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">iota</span> <span class="flag">-l</span> <span class="string">openai</span></div>
       </div>
     </section>
 
@@ -557,15 +556,15 @@
         <tr><td><code>--system-input</code></td><td><code>-S</code></td><td>Enter system prompt interactively</td></tr>
         <tr><td><code>--list</code></td><td><code>-l</code></td><td>List configured providers, or models for a given provider</td></tr>
         <tr><td><code>--mcp</code></td><td></td><td>MCP server (command or URL, repeatable)</td></tr>
-        <tr><td><code>--config</code></td><td><code>-c</code></td><td>Path to config file (default: <code>~/.chatchain.yaml</code>)</td></tr>
+        <tr><td><code>--config</code></td><td><code>-c</code></td><td>Path to config file (default: <code>~/.iota.yaml</code>)</td></tr>
       </table>
     </section>
 
     <section>
       <h2>Config File</h2>
-      <p>Save API keys, default models, and custom provider aliases in <code>~/.chatchain.yaml</code>. Priority: CLI flag > env var > config file.</p>
+      <p>Save API keys, default models, and custom provider aliases in <code>~/.iota.yaml</code>. Priority: CLI flag > env var > config file.</p>
       <div class="terminal">
-        <div><span class="comment"># ~/.chatchain.yaml</span></div>
+        <div><span class="comment"># ~/.iota.yaml</span></div>
         <div><span class="flag">providers</span><span class="dim">:</span></div>
         <div>  <span class="flag">openai</span><span class="dim">:</span></div>
         <div>    <span class="dim">key:</span> <span class="string">sk-official</span></div>
@@ -587,7 +586,7 @@
         <div>    <span class="dim">headers:</span></div>
         <div>      <span class="dim">Authorization:</span> <span class="string">"Bearer ${env:GITHUB_TOKEN}"</span></div>
       </div>
-      <p>With this config, <code>chatchain deepseek -m "hello"</code> uses the OpenAI provider with DeepSeek's key, URL, and model. MCP servers are connected automatically on startup. MCP values support VS Code-style variables: <code>${workspaceFolder}</code>, <code>${userHome}</code>, <code>${pathSeparator}</code>, and <code>${env:VAR}</code>. Config files are loaded from <code>~/</code> (global) and <code>./</code> (project-local), or via <code>-c &lt;path&gt;</code>.</p>
+      <p>With this config, <code>iota deepseek -m "hello"</code> uses the OpenAI provider with DeepSeek's key, URL, and model. MCP servers are connected automatically on startup. MCP values support VS Code-style variables: <code>${workspaceFolder}</code>, <code>${userHome}</code>, <code>${pathSeparator}</code>, and <code>${env:VAR}</code>. Config files are loaded from <code>~/</code> (global) and <code>./</code> (project-local), or via <code>-c &lt;path&gt;</code>.</p>
     </section>
 
     <section>
@@ -614,15 +613,15 @@
     var stopped = false;
 
     var script = [
-      { type: 'cmd',   text: '$ chatchain openai -M gpt-4o' },
+      { type: 'cmd',   text: '$ iota openai -M gpt-4o' },
       { type: 'pause', ms: 600 },
       { type: 'system', text: 'Chat started. Press Ctrl+C to exit.' },
       { type: 'system', text: 'Commands: /file [path], /session, /model, /compact, /export, /status, /tools' },
       { type: 'pause', ms: 400 },
       { type: 'blank' },
-      { type: 'user',  text: 'What is ChatChain?' },
+      { type: 'user',  text: 'What is iota?' },
       { type: 'pause', ms: 800 },
-      { type: 'stream', text: 'ChatChain is a lightweight CLI tool that lets you chat with LLMs directly from your terminal. It supports OpenAI, Anthropic, Gemini, and Vertex AI \u2014 with streaming responses, file attachments, and conversation history.' },
+      { type: 'stream', text: 'iota is a lightweight CLI tool that lets you chat with LLMs directly from your terminal. It supports OpenAI, Anthropic, Gemini, and Vertex AI \u2014 with streaming responses, file attachments, and conversation history.' },
       { type: 'pause', ms: 1200 },
       { type: 'blank' },
       { type: 'file',  text: '/file screenshot.png' },
@@ -631,7 +630,7 @@
       { type: 'pause', ms: 400 },
       { type: 'user',  text: 'What do you see in this image?' },
       { type: 'pause', ms: 600 },
-      { type: 'stream', text: 'The screenshot shows a terminal window running ChatChain. I can see the interactive chat interface with color-coded prompts \u2014 cyan for the user and magenta for the assistant.' },
+      { type: 'stream', text: 'The screenshot shows a terminal window running iota. I can see the interactive chat interface with color-coded prompts \u2014 cyan for the user and magenta for the assistant.' },
       { type: 'pause', ms: 1000 },
       { type: 'done' },
     ];

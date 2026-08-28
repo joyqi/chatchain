@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // Protocol-backed defer modes. Unlike normal (which hides schemas behind the

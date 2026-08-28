@@ -14,7 +14,7 @@ import (
 
 // Google is the generateContent dialect serving both backends in "express"
 // auth mode (x-goog-api-key): the Gemini Developer API and Vertex AI.
-// chatchain always has an API key (cmd requires one), so the genai SDK's
+// iota always has an API key (cmd requires one), so the genai SDK's
 // ADC/OAuth path was unreachable here — express is full parity. The request
 // body is identical across backends; only the URL form differs.
 type Google struct {
@@ -31,7 +31,7 @@ type GContent struct {
 	Role  string   `json:"role,omitempty"`
 }
 
-// GPart models the part one-of. Fields chatchain never touches are kept as
+// GPart models the part one-of. Fields iota never touches are kept as
 // raw JSON so persisted session content (and future server additions) survive
 // the round-trip verbatim.
 type GPart struct {
@@ -43,7 +43,7 @@ type GPart struct {
 	FunctionCall     *GFunctionCall  `json:"functionCall,omitempty"`
 	FunctionResponse *GFunctionResp  `json:"functionResponse,omitempty"`
 
-	// Opaque pass-through one-ofs (never produced by chatchain).
+	// Opaque pass-through one-ofs (never produced by iota).
 	ExecutableCode      json.RawMessage `json:"executableCode,omitempty"`
 	CodeExecutionResult json.RawMessage `json:"codeExecutionResult,omitempty"`
 	VideoMetadata       json.RawMessage `json:"videoMetadata,omitempty"`
@@ -309,7 +309,7 @@ type GImageInstance struct {
 	ReferenceImages []*GReferenceImage `json:"referenceImages,omitempty"`
 }
 
-// GImageParams carries the generation knobs chatchain exposes; zero values
+// GImageParams carries the generation knobs iota exposes; zero values
 // are omitted so the server default applies. Keys follow what the genai SDK
 // converters EMIT on the wire — notably sampleImageSize, not the SDK-level
 // config name imageSize.

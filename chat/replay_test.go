@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 func TestLastRounds(t *testing.T) {

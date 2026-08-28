@@ -8,12 +8,13 @@ import (
 	"sort"
 	"strings"
 
-	"chatchain/chat"
-	"chatchain/config"
-	"chatchain/internal/agents"
-	mcpmgr "chatchain/mcp"
-	"chatchain/provider"
-	"chatchain/tool"
+	"github.com/joyqi/iota/chat"
+	"github.com/joyqi/iota/config"
+	"github.com/joyqi/iota/internal/agents"
+	"github.com/joyqi/iota/internal/app"
+	mcpmgr "github.com/joyqi/iota/mcp"
+	"github.com/joyqi/iota/provider"
+	"github.com/joyqi/iota/tool"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -39,10 +40,17 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "chatchain [openai|anthropic|gemini|vertexai|openresponses|imagen|images]",
+	Use:   "iota [openai|anthropic|gemini|vertexai|openresponses|imagen|images]",
 	Short: "A lightweight cross-platform AI chat CLI",
 	Args:  cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// One-time rename of the pre-2.17 ~/.chatchain names, announced on
+		// stderr so the move is never a mystery; silent once done.
+		if home, err := os.UserHomeDir(); err == nil {
+			for _, note := range app.MigrateLegacy(home) {
+				fmt.Fprintln(os.Stderr, note)
+			}
+		}
 		cfg := config.Load(configPath)
 
 		// List mode: no provider arg → list providers; with provider arg → list models
@@ -424,7 +432,7 @@ func init() {
 	rootCmd.Flags().StringVarP(&systemPrompt, "system", "s", "", "System prompt")
 	rootCmd.Flags().BoolVarP(&systemInteractive, "system-input", "S", false, "Enter system prompt interactively")
 	rootCmd.Flags().BoolVarP(&list, "list", "l", false, "List configured providers, or models for a given provider")
-	rootCmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to config file (default: ~/.chatchain.yaml)")
+	rootCmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to config file (default: ~/.iota.yaml)")
 	rootCmd.Flags().StringArrayVar(&mcpFlags, "mcp", nil, "MCP server (command string or URL, repeatable)")
 	rootCmd.Flags().StringVar(&resumeID, "resume", "", "Resume a saved session: --resume to pick interactively, or --resume=<id>")
 	rootCmd.Flags().Lookup("resume").NoOptDefVal = " " // allow bare --resume (interactive picker)
@@ -470,7 +478,7 @@ func runList(cmd *cobra.Command, cfg *config.Config, args []string) error {
 		sort.Strings(available)
 
 		if len(available) == 0 {
-			fmt.Println("No providers configured. Set API keys via environment variables or ~/.chatchain.yaml")
+			fmt.Println("No providers configured. Set API keys via environment variables or ~/.iota.yaml")
 			return nil
 		}
 

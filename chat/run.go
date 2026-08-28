@@ -10,14 +10,14 @@ import (
 	"sync"
 	"time"
 
-	"chatchain/internal/agents"
-	"chatchain/internal/host"
-	"chatchain/internal/markdown"
-	"chatchain/internal/textwidth"
-	"chatchain/internal/ui"
-	mcpmgr "chatchain/mcp"
-	"chatchain/provider"
-	"chatchain/tool"
+	"github.com/joyqi/iota/internal/agents"
+	"github.com/joyqi/iota/internal/host"
+	"github.com/joyqi/iota/internal/markdown"
+	"github.com/joyqi/iota/internal/textwidth"
+	"github.com/joyqi/iota/internal/ui"
+	mcpmgr "github.com/joyqi/iota/mcp"
+	"github.com/joyqi/iota/provider"
+	"github.com/joyqi/iota/tool"
 )
 
 // Run is the interactive chat loop, rendered through the bubbletea facade

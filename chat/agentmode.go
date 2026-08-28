@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"chatchain/internal/agents"
+	"github.com/joyqi/iota/internal/agents"
 )
 
 // Chat-side glue for agent mode: the Run option struct and the /skills view.

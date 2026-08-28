@@ -3,7 +3,7 @@ package chat
 import (
 	"testing"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // titleProbe wires a sessionTitle to an in-memory writer and records what the

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"chatchain/internal/shell"
+	"github.com/joyqi/iota/internal/shell"
 
 	"gopkg.in/yaml.v3"
 )

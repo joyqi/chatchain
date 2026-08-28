@@ -20,7 +20,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"chatchain/internal/textwidth"
+	"github.com/joyqi/iota/internal/textwidth"
 )
 
 // ErrClosed is returned by blocking calls when the UI has shut down.

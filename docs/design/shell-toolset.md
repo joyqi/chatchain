@@ -85,7 +85,7 @@ output readable), middle elided with markers that tell the model to narrow
 via head/tail/grep. Compiler and test failures sit at the end, context at the
 start, so the tail budget dominates. The output is also **capped while
 streaming** (a head buffer + rolling tail ring, ~52 KB of memory total), so a
-command printing gigabytes never grows chatchain's memory. cwd defaults to
+command printing gigabytes never grows iota's memory. cwd defaults to
 the project root; relative `cwd` arguments resolve against it.
 
 ## Deferred (v2+)

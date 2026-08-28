@@ -1,4 +1,4 @@
-// Package tool provides chatchain's built-in toolsets — named groups of
+// Package tool provides iota's built-in toolsets — named groups of
 // internal tools the user enables through the config file (alongside, or
 // instead of, MCP servers).
 //
@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 
 	"gopkg.in/yaml.v3"
 )

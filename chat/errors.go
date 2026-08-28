@@ -7,7 +7,7 @@ import (
 	"net"
 	"strings"
 
-	"chatchain/internal/llm"
+	"github.com/joyqi/iota/internal/llm"
 )
 
 // errorReport is a turn error shaped for display: a short classification

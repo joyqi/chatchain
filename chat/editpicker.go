@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"chatchain/internal/imgterm"
-	"chatchain/internal/markdown"
-	"chatchain/provider"
+	"github.com/joyqi/iota/internal/imgterm"
+	"github.com/joyqi/iota/internal/markdown"
+	"github.com/joyqi/iota/provider"
 )
 
 // imageChoice is one candidate on the bare-/edit picker: an image the model

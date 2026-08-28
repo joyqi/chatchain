@@ -1,4 +1,4 @@
-# ChatChain
+# iota
 
 A lightweight, cross-platform AI chat CLI built with Go. Supports multiple providers, streaming responses, file attachments, and an interactive terminal UI.
 
@@ -13,14 +13,14 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 - **File attachments** — send images, PDFs, and text files alongside messages; `/file` opens a tabbed surface with the attached list and a directory browser
 - **Non-interactive mode** — single message in, response out, pipe-friendly
 - **Conversation history** — full context maintained within a session
-- **Session persistence** — every interactive session is auto-saved (losslessly: messages, tool calls, attachments, reasoning) to `~/.chatchain/sessions/`. Resume with `/session` in chat or `--resume[=<id>]` at launch (any unique id prefix works), and resuming echoes the last few exchanges back to the terminal; auto-titled by the model after the first reply; `--no-save` (or `no_save: true` per provider) starts ephemeral — nothing touches disk unless you run `/save [title]` mid-chat, which persists the whole backlog and auto-saves from then on (great for exploratory chats you might or might not keep)
+- **Session persistence** — every interactive session is auto-saved (losslessly: messages, tool calls, attachments, reasoning) to `~/.iota/sessions/`. Resume with `/session` in chat or `--resume[=<id>]` at launch (any unique id prefix works), and resuming echoes the last few exchanges back to the terminal; auto-titled by the model after the first reply; `--no-save` (or `no_save: true` per provider) starts ephemeral — nothing touches disk unless you run `/save [title]` mid-chat, which persists the whole backlog and auto-saves from then on (great for exploratory chats you might or might not keep)
 - **Context management** — live token accounting against the context window (configurable via `--context-window` or the `/model` Context tab), with `/compact` LLM-summarization of older history; when the window nears full a confirmation is offered before compacting (declining snoozes the prompt until usage grows further)
 - **Model settings mid-chat** — `/model` opens a tabbed panel over the model, context window, reasoning effort, and temperature, all persisted with the session and replayed on resume
 - **Conversation export** — `/export` renders the session to a single self-contained HTML file (inline CSS, dark mode with a toggle, syntax-highlighted code) or a plain Markdown document; saved sessions export the full on-disk log, so compaction never hides older rounds (ephemeral `--no-save` sessions export the current in-memory view)
 - **Agent mode** — opt-in via `--agent` (or `agent: true` per provider): layered `AGENTS.md` instructions and [Agent Skills](https://agentskills.io/specification) are injected as a volatile system-prompt overlay, the `agent` toolset (`load_skill`) is auto-enabled, and sessions are grouped per project
 - **Request inspector** — `/debug` opens a two-tab console: a **Verbose** toggle turns recording on/off (off by default), and **Messages** browses the captured API calls (newest first), each summarized by action and content (e.g. `Chat 你好…`) rather than raw method/URL — drill into any one to read its `↑ Request` and `↓ Response` bodies, pretty-printed, with `c` to copy to the clipboard. Nothing is printed to the terminal; it replaces the old `-v` flag
 - **System prompt** — set via flag or interactive input
-- **Config file** — persistent API keys, default models, custom provider aliases, and MCP server definitions via `~/.chatchain.yaml`
+- **Config file** — persistent API keys, default models, custom provider aliases, and MCP server definitions via `~/.iota.yaml`
 - **Styled terminal output** — color-coded prompts
 
 ## Install
@@ -28,36 +28,48 @@ A lightweight, cross-platform AI chat CLI built with Go. Supports multiple provi
 ### Homebrew (macOS)
 
 ```bash
-brew tap joyqi/tap
-brew install chatchain
+brew install joyqi/tap/iota
 ```
 
 ### Go
 
 ```bash
-go install github.com/joyqi/chatchain@latest
+go install github.com/joyqi/iota@latest
 ```
 
 ### Build from source
 
 ```bash
-git clone https://github.com/joyqi/chatchain.git
-cd chatchain
-go build -o chatchain .
+git clone https://github.com/joyqi/iota.git
+cd iota
+go build -o iota .
 ```
+
+### Migrating from ChatChain
+
+iota is the same program under a new name — it was called ChatChain through
+v2.16. The first run of iota moves your data into place and says so on
+stderr: `~/.chatchain/` becomes `~/.iota/` (sessions, generated images, user
+skills) and `~/.chatchain.yaml` becomes `~/.iota.yaml`; nothing inside them
+changes, and existing names are never overwritten. A project-local
+`.chatchain.yaml` keeps working as is, with a one-line nudge to rename it.
+Homebrew users just `brew upgrade`: the tap records the rename, so an
+installed `chatchain` migrates to `iota` on its own (a fresh install is
+`brew install joyqi/tap/iota`). The Claude Code plugin is now
+`iota@iota-marketplace` with the `/iota:ask` command.
 
 ## Claude Code Plugin
 
-ChatChain provides a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin, allowing you to call other LLMs directly within Claude Code.
+iota provides a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin, allowing you to call other LLMs directly within Claude Code.
 
 ### Plugin Install
 
 ```bash
 # Add the marketplace
-/plugin marketplace add joyqi/chatchain
+/plugin marketplace add joyqi/iota
 
 # Install the plugin
-/plugin install chatchain@chatchain-marketplace
+/plugin install iota@iota-marketplace
 ```
 
 ### Plugin Usage
@@ -65,28 +77,28 @@ ChatChain provides a [Claude Code](https://docs.anthropic.com/en/docs/claude-cod
 **Slash command** — manually ask another LLM:
 
 ```
-/chatchain:ask openai gpt-4o "What is the meaning of life?"
-/chatchain:ask anthropic claude-sonnet-4-20250514 "Explain monads"
-/chatchain:ask gemini "Write a haiku"
+/iota:ask openai gpt-4o "What is the meaning of life?"
+/iota:ask anthropic claude-sonnet-4-20250514 "Explain monads"
+/iota:ask gemini "Write a haiku"
 ```
 
-**Agent skill** — Claude automatically uses ChatChain when you ask it to query another LLM:
+**Agent skill** — Claude automatically uses iota when you ask it to query another LLM:
 
 ```
-> Use chatchain to ask GPT what is 1+1
-> Ask Gemini to explain quicksort via chatchain
+> Use iota to ask GPT what is 1+1
+> Ask Gemini to explain quicksort via iota
 ```
 
 ### Local Testing
 
 ```bash
-claude --plugin-dir ./chatchain-plugin
+claude --plugin-dir ./iota-plugin
 ```
 
 ## Usage
 
 ```bash
-chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
+iota [openai|anthropic|gemini|vertexai|openresponses] [flags]
 ```
 
 ### Flags
@@ -108,7 +120,7 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 | `--output-format` | | `-m` output: `text` (default, the reply alone) or `json` (one result object with per-round token usage) |
 | `--context-window` | | Context window size for compaction accounting (e.g. `200k`, `1m`; default 128k) |
 | `--agent` | | Enable agent mode (AGENTS.md overlay, skills, `load_skill`, project-scoped sessions) |
-| `--config` | `-c` | Path to config file (default: `~/.chatchain.yaml`) |
+| `--config` | `-c` | Path to config file (default: `~/.iota.yaml`) |
 
 ### Environment Variables
 
@@ -120,12 +132,12 @@ chatchain [openai|anthropic|gemini|vertexai|openresponses] [flags]
 
 ### Config File
 
-ChatChain supports YAML config files for persistent settings and custom provider aliases.
+iota supports YAML config files for persistent settings and custom provider aliases.
 
 #### Config Lookup Order
 
-1. `~/.chatchain.yaml` or `~/.chatchain.yml` (global)
-2. `./.chatchain.yaml` or `./.chatchain.yml` (project-local, merges over global)
+1. `~/.iota.yaml` or `~/.iota.yml` (global)
+2. `./.iota.yaml` or `./.iota.yml` (project-local, merges over global)
 3. `-c/--config <path>` (explicit, highest priority, used alone)
 
 Same-name providers in later files override earlier ones.
@@ -137,7 +149,7 @@ For individual values: **CLI flag > env var > config file**.
 #### Example
 
 ```yaml
-# ~/.chatchain.yaml
+# ~/.iota.yaml
 providers:
   openai:
     key: sk-official
@@ -193,7 +205,7 @@ Provider config values (`key`, `url`, `system_file`) and MCP server values (`com
 |----------|-----------|
 | `${workspaceFolder}` / `${cwd}` | Current working directory |
 | `${userHome}` | User home directory |
-| `${appHome}` | chatchain's global directory (`~/.chatchain`) |
+| `${appHome}` | iota's global directory (`~/.iota`) |
 | `${pathSeparator}` / `${/}` | OS path separator (`/` or `\`) |
 | `${env:VAR}` | Value of environment variable `VAR` |
 
@@ -203,13 +215,13 @@ With this config:
 
 ```bash
 # Use the "deepseek" alias — resolves to OpenAI provider with DeepSeek's key/URL/model
-chatchain deepseek -m "hello"
+iota deepseek -m "hello"
 
 # Config key used, no need for -k
-chatchain openai -m "hi" -M gpt-4o
+iota openai -m "hi" -M gpt-4o
 
 # CLI flag overrides config
-chatchain openai -k sk-override -m "hi" -M gpt-4o
+iota openai -k sk-override -m "hi" -M gpt-4o
 ```
 
 ### Image Generation
@@ -219,7 +231,7 @@ model (e.g. `gemini-3.1-flash-image`) just ask — the picture renders inline
 as ANSI half-block art (capped well below a screenful, indented like other
 blocks), and is saved INSIDE the session bundle (`<session>/images/` —
 deleted with the session; ephemeral and `-m` runs fall back to
-`~/.chatchain/images/`). The printed path is an OSC 8 hyperlink — clickable
+`~/.iota/images/`). The printed path is an OSC 8 hyperlink — clickable
 in terminals that support it (⌘-click in Ghostty/iTerm2; Terminal.app has no
 OSC 8 support). Generated images round-trip
 into the conversation, so follow-ups like "make the circle blue" edit the
@@ -315,7 +327,7 @@ image-capable ones when the server provides capability metadata.
 
 ### Built-in Toolsets
 
-Besides MCP servers, ChatChain ships built-in tools grouped into named
+Besides MCP servers, iota ships built-in tools grouped into named
 **toolsets** that you enable per provider in the config file. A toolset is
 enabled by listing it under that provider's `tools:` key; the value is the
 set's shared configuration, and an empty value uses its defaults. Available
@@ -492,7 +504,7 @@ frontmatter. Discovery directories, highest precedence first (same-name skill:
 higher wins):
 
 1. `<project root>/.agents/skills/` — project skills
-2. `~/.chatchain/skills/` — chatchain user skills
+2. `~/.iota/skills/` — iota user skills
 3. `~/.agents/skills/` — cross-client user skills
 
 Discovered skills are advertised to the model as a name + description catalog
@@ -514,7 +526,7 @@ explicitly under `tools:` like any other, agent mode or not.
 #### Project-Scoped Sessions
 
 Sessions started in agent mode are stored per project under
-`~/.chatchain/sessions/projects/<slug>/`, and `/session` and `--resume` list
+`~/.iota/sessions/projects/<slug>/`, and `/session` and `--resume` list
 only the current project's sessions there (`--resume=<id>` with an id from
 anywhere still works). Normal-mode sessions stay in the flat global store,
 whose list also shows every project's sessions labelled with their project —
@@ -553,60 +565,60 @@ Attached files are sent with your next message, then cleared automatically.
 
 ```bash
 # Interactive model selection
-chatchain openai -k sk-xxx
+iota openai -k sk-xxx
 
 # Specify model directly
-chatchain openai -k sk-xxx -M gpt-4o
+iota openai -k sk-xxx -M gpt-4o
 
 # Use Anthropic
-chatchain anthropic -M claude-sonnet-4-20250514
+iota anthropic -M claude-sonnet-4-20250514
 
 # Use Gemini
-chatchain gemini -M gemini-2.5-flash
+iota gemini -M gemini-2.5-flash
 
 # Use Vertex AI (with custom endpoint)
-chatchain vertexai -u https://your-proxy.com/api/vertex-ai -M gemini-2.5-flash -m "Hello"
+iota vertexai -u https://your-proxy.com/api/vertex-ai -M gemini-2.5-flash -m "Hello"
 
 # Use OpenAI Responses API
-chatchain openresponses -M gpt-4o -m "Hello"
+iota openresponses -M gpt-4o -m "Hello"
 
 # With system prompt
-chatchain openai -M gpt-4o -s 'You are a helpful translator' -m "Translate to French: hello"
+iota openai -M gpt-4o -s 'You are a helpful translator' -m "Translate to French: hello"
 
 # Interactive system prompt input (prompts inside the chat UI before the first message)
-chatchain openai -M gpt-4o -S
+iota openai -M gpt-4o -S
 
 # Non-interactive mode (requires -M)
-chatchain openai -M gpt-4o -m "Explain quicksort in one paragraph"
+iota openai -M gpt-4o -m "Explain quicksort in one paragraph"
 
 # Adjust temperature
-chatchain anthropic -M claude-sonnet-4-20250514 -t 0.5 -m "Write a haiku"
+iota anthropic -M claude-sonnet-4-20250514 -t 0.5 -m "Write a haiku"
 
 # Custom API endpoint
-chatchain openai -u https://your-proxy.com/v1 -k sk-xxx
+iota openai -u https://your-proxy.com/v1 -k sk-xxx
 
 # With MCP tools (ad-hoc server via CLI flag)
-chatchain openai -M gpt-4o --mcp "npx -y @modelcontextprotocol/server-filesystem /tmp"
+iota openai -M gpt-4o --mcp "npx -y @modelcontextprotocol/server-filesystem /tmp"
 
 # Multiple MCP servers
-chatchain anthropic -M claude-sonnet-4-20250514 --mcp "npx -y @modelcontextprotocol/server-filesystem /tmp" --mcp "https://mcp.example.com/sse"
+iota anthropic -M claude-sonnet-4-20250514 --mcp "npx -y @modelcontextprotocol/server-filesystem /tmp" --mcp "https://mcp.example.com/sse"
 
 # MCP servers from config file are loaded automatically
-chatchain openai -M gpt-4o
+iota openai -M gpt-4o
 
 # Read message from stdin (pipe-friendly)
-echo "Explain quicksort" | chatchain openai -M gpt-4o -m -
-cat prompt.txt | chatchain openai -M gpt-4o -m -
+echo "Explain quicksort" | iota openai -M gpt-4o -m -
+cat prompt.txt | iota openai -M gpt-4o -m -
 
 # Use a provider alias from config
-chatchain deepseek -m "Explain quicksort"
+iota deepseek -m "Explain quicksort"
 
 # List all configured providers and aliases
-chatchain -l
+iota -l
 
 # List available models for a provider
-chatchain -l openai
-chatchain -l deepseek
+iota -l openai
+iota -l deepseek
 ```
 
 ### File Attachment Example
@@ -625,7 +637,7 @@ You> Summarize the report and describe the photo
 ## Project Structure
 
 ```
-chatchain/
+iota/
 ├── main.go              # Entry point
 ├── cmd/
 │   └── root.go          # CLI definition (cobra)

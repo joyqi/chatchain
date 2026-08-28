@@ -3,7 +3,7 @@ package chat
 import (
 	"testing"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // lastGeneratedImages picks the /edit canvas: the newest assistant reply

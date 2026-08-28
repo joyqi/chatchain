@@ -109,7 +109,7 @@ paths (titles, /compact, -m) split the same way.
 
 ### Auth (Vertex) — resolved: no OAuth needed at all
 Implementation finding: cmd/root.go REQUIRES an API key for every provider, so the genai
-SDK's ADC/OAuth path was unreachable in chatchain — Vertex has only ever run in "express"
+SDK's ADC/OAuth path was unreachable in iota — Vertex has only ever run in "express"
 mode (x-goog-api-key on aiplatform.googleapis.com). The port keeps exactly that; the
 planned ~200-line stdlib ADC token source was never needed. If ADC-based Vertex auth ever
 becomes a requirement, that plan (refresh-token + RS256 JWT-bearer grants, GCE metadata)

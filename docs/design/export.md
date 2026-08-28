@@ -10,7 +10,7 @@ Export the conversation for reading and archiving:
   HTML. `~` expands; relative paths resolve against the working directory.
   An existing file is an error (no silent overwrite).
 - `/export` — a selector picks HTML or Markdown; the filename is generated as
-  `chatchain-<title-slug-or-id>-<YYYYMMDD-HHMMSS>.<ext>` in the working
+  `iota-<title-slug-or-id>-<YYYYMMDD-HHMMSS>.<ext>` in the working
   directory. The full path is printed on success.
 
 ## Scope of the exported history

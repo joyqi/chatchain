@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"chatchain/internal/llm"
+	"github.com/joyqi/iota/internal/llm"
 )
 
 // TestImagenGoldenRequest pins the :predict request wire for the relay
@@ -243,7 +243,7 @@ func TestImagenGcsURIFetched(t *testing.T) {
 	}
 }
 
-// A gs:// URI needs Google credentials chatchain never holds: fail loudly
+// A gs:// URI needs Google credentials iota never holds: fail loudly
 // instead of reporting "no images".
 func TestImagenGcsURIUnfetchable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

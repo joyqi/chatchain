@@ -3,7 +3,7 @@ package host
 import (
 	"testing"
 
-	"chatchain/internal/ui"
+	"github.com/joyqi/iota/internal/ui"
 )
 
 type sinkRec struct {
@@ -33,8 +33,8 @@ func TestANSIMapping(t *testing.T) {
 		}
 	}
 
-	a.Notify(Event{Kind: KindDone, Text: "chatchain: The fix"})
-	if len(rec.notes) != 1 || rec.notes[0] != "chatchain: The fix" {
+	a.Notify(Event{Kind: KindDone, Text: "iota: The fix"})
+	if len(rec.notes) != 1 || rec.notes[0] != "iota: The fix" {
 		t.Errorf("notes = %v", rec.notes)
 	}
 }

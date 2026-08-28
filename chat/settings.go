@@ -1,7 +1,7 @@
 package chat
 
 import (
-	"chatchain/internal/tokfmt"
+	"github.com/joyqi/iota/internal/tokfmt"
 	"sort"
 	"strconv"
 )

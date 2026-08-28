@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"chatchain/internal/textwidth"
+	"github.com/joyqi/iota/internal/textwidth"
 )
 
 // clipLine returns the slice of s covering visible columns [start,

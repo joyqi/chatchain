@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"chatchain/config"
-	"chatchain/internal/ui"
-	"chatchain/provider"
+	"github.com/joyqi/iota/config"
+	"github.com/joyqi/iota/internal/ui"
+	"github.com/joyqi/iota/provider"
 )
 
 // TestSystemPromptPanelAbsent: no system message (or an empty one) means no

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"chatchain/internal/timefmt"
-	"chatchain/internal/tokfmt"
-	"chatchain/provider"
+	"github.com/joyqi/iota/internal/timefmt"
+	"github.com/joyqi/iota/internal/tokfmt"
+	"github.com/joyqi/iota/provider"
 
 	"gopkg.in/yaml.v3"
 )

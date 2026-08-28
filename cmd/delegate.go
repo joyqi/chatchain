@@ -6,10 +6,10 @@ import (
 	"os"
 	"strings"
 
-	"chatchain/chat"
-	"chatchain/config"
-	"chatchain/provider"
-	"chatchain/tool"
+	"github.com/joyqi/iota/chat"
+	"github.com/joyqi/iota/config"
+	"github.com/joyqi/iota/provider"
+	"github.com/joyqi/iota/tool"
 
 	"gopkg.in/yaml.v3"
 )

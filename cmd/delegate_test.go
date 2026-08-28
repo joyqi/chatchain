@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"chatchain/config"
-	"chatchain/tool"
+	"github.com/joyqi/iota/config"
+	"github.com/joyqi/iota/tool"
 
 	"gopkg.in/yaml.v3"
 )

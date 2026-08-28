@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // The run's turn budget: --max-turns, counted once for everything the run

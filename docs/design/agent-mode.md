@@ -46,7 +46,7 @@ Per the Agent Skills spec (https://agentskills.io/specification):
 
 - **Discovery dirs, precedence high→low** (same-name skill: higher wins):
   1. `<project root>/.agents/skills/` (project)
-  2. `~/.chatchain/skills/` (chatchain-native user dir)
+  2. `~/.iota/skills/` (iota-native user dir)
   3. `~/.agents/skills/` (cross-client user dir)
 - A skill = `<dir>/SKILL.md` with YAML frontmatter; required `name` (1–64
   chars, `[a-z0-9-]`, no leading/trailing/double hyphen, must equal the
@@ -110,8 +110,8 @@ is a defect everywhere; the cap is far above legitimate use.
 Directory-as-index layout; meta stays the source of truth:
 
 ```
-~/.chatchain/sessions/<id>/                      # normal sessions, unchanged
-~/.chatchain/sessions/projects/<slug>/<id>/      # agent-mode sessions
+~/.iota/sessions/<id>/                      # normal sessions, unchanged
+~/.iota/sessions/projects/<slug>/<id>/      # agent-mode sessions
 ```
 
 - `<slug>` encodes the absolute project root (path separators → `-`,

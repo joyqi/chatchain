@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"chatchain/internal/agents"
+	"github.com/joyqi/iota/internal/agents"
 )
 
 func writeSkill(t *testing.T, dir, name, body string) agents.Skill {

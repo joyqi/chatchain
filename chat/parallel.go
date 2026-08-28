@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"chatchain/provider"
-	"chatchain/tool"
+	"github.com/joyqi/iota/provider"
+	"github.com/joyqi/iota/tool"
 )
 
 // Parallel tool execution. A round's calls arrive as a list, and the ones

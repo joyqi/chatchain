@@ -18,10 +18,10 @@ func TestCmuxBatches(t *testing.T) {
 		return strings.Join(lines, "\n")
 	}
 	for state, want := range map[State]string{
-		StateBusy:       "set-status chatchain Running --icon bolt.fill --color #4C8DFF\nworkspace loading on --id chatchain",
-		StateNeedsInput: "workspace loading off --id chatchain\nset-status chatchain Needs input --icon bell.fill",
-		StateError:      "workspace loading off --id chatchain\nset-status chatchain Failed --icon exclamationmark.triangle.fill --color #FF3B30",
-		StateIdle:       "workspace loading off --id chatchain\nset-status chatchain Idle --icon pause.circle.fill --color #8E8E93",
+		StateBusy:       "set-status iota Running --icon bolt.fill --color #4C8DFF\nworkspace loading on --id iota",
+		StateNeedsInput: "workspace loading off --id iota\nset-status iota Needs input --icon bell.fill",
+		StateError:      "workspace loading off --id iota\nset-status iota Failed --icon exclamationmark.triangle.fill --color #FF3B30",
+		StateIdle:       "workspace loading off --id iota\nset-status iota Idle --icon pause.circle.fill --color #8E8E93",
 	} {
 		if got := join(cmuxBatch(state)); got != want {
 			t.Errorf("state %v:\n got %q\nwant %q", state, got, want)
@@ -68,9 +68,9 @@ func TestCmuxCoalescing(t *testing.T) {
 		cmds = append(cmds, argv[0]+" "+argv[1])
 	}
 	want := []string{
-		"set-status chatchain", "workspace loading", // busy
-		"workspace loading", "set-status chatchain", // idle (needs-input dropped)
-		"workspace loading", "clear-status chatchain", // close
+		"set-status iota", "workspace loading", // busy
+		"workspace loading", "set-status iota", // idle (needs-input dropped)
+		"workspace loading", "clear-status iota", // close
 	}
 	if strings.Join(cmds, ",") != strings.Join(want, ",") {
 		t.Fatalf("executed = %v\nwant heads %v", cmds, want)

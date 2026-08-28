@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"chatchain/provider"
-	"chatchain/tool"
+	"github.com/joyqi/iota/provider"
+	"github.com/joyqi/iota/tool"
 
 	"github.com/fatih/color"
 )

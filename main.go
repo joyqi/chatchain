@@ -1,6 +1,6 @@
 package main
 
-import "chatchain/cmd"
+import "github.com/joyqi/iota/cmd"
 
 func main() {
 	cmd.Execute()

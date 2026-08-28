@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // writeAgents writes dir/AGENTS.md (creating dir), returning the file path.

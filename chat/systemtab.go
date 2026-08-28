@@ -3,9 +3,9 @@ package chat
 import (
 	"strings"
 
-	"chatchain/internal/agents"
-	"chatchain/internal/ui"
-	"chatchain/provider"
+	"github.com/joyqi/iota/internal/agents"
+	"github.com/joyqi/iota/internal/ui"
+	"github.com/joyqi/iota/provider"
 )
 
 // systemPromptPanel builds the /model surface's read-only System tab, or

@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"chatchain/internal/tokfmt"
-	"chatchain/provider"
+	"github.com/joyqi/iota/internal/tokfmt"
+	"github.com/joyqi/iota/provider"
 
 	"github.com/pkoukk/tiktoken-go"
 	tiktoken_loader "github.com/pkoukk/tiktoken-go-loader"
@@ -183,7 +183,7 @@ func (b *contextBudget) reseed(history []provider.Message) {
 //     user with 200k still free.
 //
 // pi uses the reserve rule alone (16384 tokens); the percentage floor is what
-// makes it safe across the window sizes chatchain also has to serve.
+// makes it safe across the window sizes iota also has to serve.
 func (b *contextBudget) threshold() int {
 	pct := b.window * compactThresholdPercent / 100
 	if reserve := b.window - compactReserveTokens; reserve > pct {

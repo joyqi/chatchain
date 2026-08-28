@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"chatchain/internal/tokfmt"
-	mcpmgr "chatchain/mcp"
-	"chatchain/provider"
-	"chatchain/tool"
+	"github.com/joyqi/iota/internal/tokfmt"
+	mcpmgr "github.com/joyqi/iota/mcp"
+	"github.com/joyqi/iota/provider"
+	"github.com/joyqi/iota/tool"
 )
 
 // imageGenLabel renders an image provider's generation defaults for /status.

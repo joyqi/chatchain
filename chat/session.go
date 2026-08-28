@@ -14,14 +14,15 @@ import (
 	"sync"
 	"time"
 
-	"chatchain/internal/ui"
-	"chatchain/provider"
+	"github.com/joyqi/iota/internal/app"
+	"github.com/joyqi/iota/internal/ui"
+	"github.com/joyqi/iota/provider"
 
 	gonanoid "github.com/matoous/go-nanoid/v2"
 )
 
 // Session persistence: every interactive session is stored as a directory
-// bundle under ~/.chatchain/sessions/<id>/:
+// bundle under ~/.iota/sessions/<id>/:
 //
 //	meta.json          session metadata (small, rewritten on each change)
 //	messages.jsonl     one JSON message per line, append-only
@@ -153,11 +154,11 @@ type Session struct {
 // ---- paths ----
 
 func sessionsDir() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := app.Home()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".chatchain", "sessions"), nil
+	return filepath.Join(home, "sessions"), nil
 }
 
 // projectsDirName is the sessionsDir subdirectory holding project-scoped

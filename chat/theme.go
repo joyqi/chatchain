@@ -1,9 +1,9 @@
 package chat
 
 import (
-	"chatchain/internal/host"
-	"chatchain/internal/markdown"
-	"chatchain/internal/ui"
+	"github.com/joyqi/iota/internal/host"
+	"github.com/joyqi/iota/internal/markdown"
+	"github.com/joyqi/iota/internal/ui"
 )
 
 // detectCodeTheme resolves the terminal background at startup through the

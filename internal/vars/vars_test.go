@@ -16,7 +16,7 @@ func TestExpand(t *testing.T) {
 		"":                                "",
 		"plain":                           "plain",
 		"${userHome}/x":                   filepath.Join(home, "x"),
-		"${appHome}/sys.md":         filepath.Join(home, ".chatchain", "sys.md"),
+		"${appHome}/sys.md":               filepath.Join(home, ".iota", "sys.md"),
 		"${cwd}":                          wd,
 		"${workspaceFolder}":              wd,
 		"${env:VARS_TEST_TOKEN}":          "sekrit",
@@ -29,7 +29,7 @@ func TestExpand(t *testing.T) {
 		}
 	}
 
-	if !strings.HasSuffix(Expand("${appHome}"), ".chatchain") {
-		t.Error("appHome must end in .chatchain")
+	if !strings.HasSuffix(Expand("${appHome}"), ".iota") {
+		t.Error("appHome must end in .iota")
 	}
 }

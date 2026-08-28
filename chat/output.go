@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // The machine-readable report for a non-interactive (-m) run.

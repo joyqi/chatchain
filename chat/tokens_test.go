@@ -5,7 +5,7 @@ import (
 	"io"
 	"testing"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 func TestParseWindowSize(t *testing.T) {

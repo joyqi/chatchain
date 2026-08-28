@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"chatchain/internal/llm"
+	"github.com/joyqi/iota/internal/llm"
 )
 
 // Compile-time check that OpenAIProvider implements ToolProvider.

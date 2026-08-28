@@ -15,7 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // agentsFileName is the exact file name looked up in each directory on the

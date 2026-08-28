@@ -5,6 +5,8 @@ import (
 	"io"
 	"os/exec"
 	"time"
+
+	"github.com/joyqi/iota/internal/app"
 )
 
 // Cmux drives the cmux sidebar (github.com/manaflow-ai/cmux): the status
@@ -33,7 +35,7 @@ type Cmux struct {
 }
 
 // cmuxKey names both the status row and the loading spinner's loader id.
-const cmuxKey = "chatchain"
+const cmuxKey = app.Name
 
 func detectCmux(env Env) Host {
 	if env.Getenv("CMUX_SURFACE_ID") == "" {
@@ -116,7 +118,7 @@ func (c *Cmux) Close() error {
 // cmuxBatch is the CLI sequence for a state. Icons and colors mirror what
 // cmux's own Claude Code hook handler sends (bolt/blue running, bell for
 // attention, pause/gray idle), pinned by its e2e tests — so the sidebar
-// reads the same for chatchain as for the built-in agents.
+// reads the same for iota as for the built-in agents.
 func cmuxBatch(s State) [][]string {
 	switch s {
 	case StateBusy:

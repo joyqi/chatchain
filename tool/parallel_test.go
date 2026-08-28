@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // A tool may run concurrently only if it needs nothing that concurrency

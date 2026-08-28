@@ -3,7 +3,7 @@ package provider
 import (
 	"testing"
 
-	"chatchain/internal/llm"
+	"github.com/joyqi/iota/internal/llm"
 )
 
 func googleForTest(toolCallIDs bool) *GoogleProvider {

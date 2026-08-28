@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"chatchain/internal/markdown"
+	"github.com/joyqi/iota/internal/markdown"
 )
 
 // recordingSink captures CommitLines batches and preview lifecycle events.

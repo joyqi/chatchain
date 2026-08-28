@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"chatchain/internal/llm"
-	"chatchain/provider"
+	"github.com/joyqi/iota/internal/llm"
+	"github.com/joyqi/iota/provider"
 )
 
 func statusErr(status int, body string) *llm.StatusError {

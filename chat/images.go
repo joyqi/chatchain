@@ -8,21 +8,22 @@ import (
 	"sync"
 	"time"
 
-	"chatchain/internal/imgterm"
-	"chatchain/internal/markdown"
-	"chatchain/internal/ui"
-	"chatchain/provider"
+	"github.com/joyqi/iota/internal/app"
+	"github.com/joyqi/iota/internal/imgterm"
+	"github.com/joyqi/iota/internal/markdown"
+	"github.com/joyqi/iota/internal/ui"
+	"github.com/joyqi/iota/provider"
 )
 
 // fallbackImagesDir holds generated images for EPHEMERAL sessions
-// (~/.chatchain/images); saved sessions keep them inside the bundle
+// (~/.iota/images); saved sessions keep them inside the bundle
 // (SessionWriter.ImagesDir) so deleting the session deletes its images.
 func fallbackImagesDir() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := app.Home()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".chatchain", "images")
+	dir := filepath.Join(home, "images")
 	return dir, os.MkdirAll(dir, 0o755)
 }
 
@@ -108,7 +109,7 @@ func lastGeneratedImages(history []provider.Message) []provider.Attachment {
 
 // collectImages drains the provider's generated images after a stream round:
 // they are attached to the assistant message (history round-trip + session
-// persistence), saved under ~/.chatchain/images, and rendered into the chat
+// persistence), saved under ~/.iota/images, and rendered into the chat
 // as half-block blocks. A decode failure still saves the file — the path
 // line is the fallback rendering.
 // dir resolves lazily — only when an image actually needs saving — so the

@@ -5,9 +5,10 @@ package vars
 
 import (
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/joyqi/iota/internal/app"
 )
 
 // pattern matches ${name} or ${env:NAME} variable references.
@@ -17,7 +18,7 @@ var pattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 //
 //	${workspaceFolder}, ${cwd}  — current working directory
 //	${userHome}                 — user home directory
-//	${appHome}            — chatchain's global directory (~/.chatchain)
+//	${appHome}            — iota's global directory (~/.iota)
 //	${pathSeparator}, ${/}      — OS path separator
 //	${env:VAR}                  — environment variable VAR
 //
@@ -49,8 +50,8 @@ func resolve(name string) (string, bool) {
 			return home, true
 		}
 	case "appHome":
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, ".chatchain"), true
+		if dir, err := app.Home(); err == nil {
+			return dir, true
 		}
 	case "pathSeparator", "/":
 		return string(os.PathSeparator), true

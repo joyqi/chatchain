@@ -1,6 +1,6 @@
 package chat
 
-import "chatchain/internal/textwidth"
+import "github.com/joyqi/iota/internal/textwidth"
 
 // displayWidth and runeWidth are thin aliases over the shared width rulers in
 // internal/textwidth (uniseg for strings, go-runewidth for single runes) —

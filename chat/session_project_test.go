@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // writeBundle fabricates a session bundle on disk (meta.json + a one-line
@@ -44,7 +44,7 @@ func writeBundle(t *testing.T, dir, id, cwd string) {
 
 // bucketDir is the on-disk bucket for a project root under the test HOME.
 func bucketDir(home, root string) string {
-	return filepath.Join(home, ".chatchain", "sessions", projectsDirName, projectSlug(root))
+	return filepath.Join(home, ".iota", "sessions", projectsDirName, projectSlug(root))
 }
 
 func TestProjectSlug(t *testing.T) {
@@ -99,7 +99,7 @@ func TestProjectSessionWriter(t *testing.T) {
 		t.Fatalf("AppendMessages: %v", err)
 	}
 	sw2.Close()
-	flat := filepath.Join(home, ".chatchain", "sessions", sw2.ID())
+	flat := filepath.Join(home, ".iota", "sessions", sw2.ID())
 	if _, err := os.Stat(filepath.Join(flat, "meta.json")); err != nil {
 		t.Fatalf("flat bundle missing at %s: %v", flat, err)
 	}
@@ -118,7 +118,7 @@ func TestSessionLocatorAcrossLayouts(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	p := &stubProvider{model: "m1"}
-	base := filepath.Join(home, ".chatchain", "sessions")
+	base := filepath.Join(home, ".iota", "sessions")
 	root := "/work/p1"
 
 	flatID := "aaaa00000000"
@@ -171,7 +171,7 @@ func TestSessionLocatorAcrossLayouts(t *testing.T) {
 func TestListSessionsScoped(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	base := filepath.Join(home, ".chatchain", "sessions")
+	base := filepath.Join(home, ".iota", "sessions")
 	root1, root2 := "/work/p1", "/work/p2"
 
 	writeBundle(t, filepath.Join(base, "aaaa00000000"), "aaaa00000000", "/elsewhere")
@@ -246,7 +246,7 @@ func TestDeleteSessionInBucket(t *testing.T) {
 	if err := DeleteSession(projectsDirName); err == nil {
 		t.Error("deleting the projects container should fail")
 	}
-	if _, err := os.Stat(filepath.Join(home, ".chatchain", "sessions", projectsDirName)); err != nil {
+	if _, err := os.Stat(filepath.Join(home, ".iota", "sessions", projectsDirName)); err != nil {
 		t.Errorf("projects container gone: %v", err)
 	}
 }
@@ -257,7 +257,7 @@ func TestOldSessionCompat(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	p := &stubProvider{model: "m1"}
-	base := filepath.Join(home, ".chatchain", "sessions")
+	base := filepath.Join(home, ".iota", "sessions")
 	id := "dddd00000000"
 	writeBundle(t, filepath.Join(base, id), id, "")
 
@@ -284,7 +284,7 @@ func TestOldSessionCompat(t *testing.T) {
 // Fresh ids never collide with a bundle in either layout.
 func TestSessionIDTaken(t *testing.T) {
 	home := t.TempDir()
-	base := filepath.Join(home, ".chatchain", "sessions")
+	base := filepath.Join(home, ".iota", "sessions")
 	root := "/work/p1"
 	if err := os.MkdirAll(filepath.Join(base, "aaaa00000000"), 0o755); err != nil {
 		t.Fatal(err)

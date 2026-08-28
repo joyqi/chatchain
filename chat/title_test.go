@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // firstUserText is the sole naming input: the first user message with any

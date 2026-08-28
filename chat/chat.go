@@ -10,11 +10,12 @@ import (
 	"sort"
 	"strings"
 
-	"chatchain/internal/agents"
-	"chatchain/internal/llm"
-	mcpmgr "chatchain/mcp"
-	"chatchain/provider"
-	"chatchain/tool"
+	"github.com/joyqi/iota/internal/agents"
+	"github.com/joyqi/iota/internal/app"
+	"github.com/joyqi/iota/internal/llm"
+	mcpmgr "github.com/joyqi/iota/mcp"
+	"github.com/joyqi/iota/provider"
+	"github.com/joyqi/iota/tool"
 )
 
 func FetchModels(ctx context.Context, p provider.Provider) ([]string, error) {
@@ -255,7 +256,7 @@ func truncateRunes(s string, max int) string {
 }
 
 // appTitle is the terminal-title fallback before a session has a real title.
-const appTitle = "chatchain"
+const appTitle = app.Name
 
 // errToolRoundsExceeded is returned when an explicit --max-turns limit is
 // hit. Non-retryable (see isRetryable): retrying a runaway loop would only

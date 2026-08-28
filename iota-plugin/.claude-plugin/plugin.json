@@ -1,0 +1,10 @@
+{
+  "name": "iota",
+  "description": "Chat with multiple LLM providers (OpenAI, Anthropic, Gemini, Vertex AI, OpenAI Responses) via the iota CLI",
+  "version": "2.0.0",
+  "author": { "name": "joyqi" },
+  "homepage": "https://iota.sh",
+  "repository": "https://github.com/joyqi/iota",
+  "license": "MIT",
+  "keywords": ["llm", "openai", "anthropic", "gemini", "chat"]
+}

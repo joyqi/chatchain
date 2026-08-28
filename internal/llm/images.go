@@ -237,7 +237,7 @@ func (i Images) Edit(ctx context.Context, req *ImagesEditRequest, onPartial func
 
 // imagesEditJSONImage is one reference image of a JSON edit request: the
 // xAI shape, a typed object carrying a data URI (a public URL or file id
-// would fit the same field, but chatchain always has the bytes in hand).
+// would fit the same field, but iota always has the bytes in hand).
 type imagesEditJSONImage struct {
 	Type string `json:"type"` // "image_url"
 	URL  string `json:"url"`

@@ -3,7 +3,7 @@ package chat
 import (
 	"sync"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // sessionTitle owns a session's name across a turn's lifecycle. Three moves,

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"chatchain/internal/tokfmt"
-	"chatchain/provider"
-	"chatchain/tool"
+	"github.com/joyqi/iota/internal/tokfmt"
+	"github.com/joyqi/iota/provider"
+	"github.com/joyqi/iota/tool"
 
 	"github.com/fatih/color"
 )

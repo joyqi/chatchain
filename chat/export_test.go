@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 func TestDetectExportFormat(t *testing.T) {
@@ -60,15 +60,15 @@ func TestSlugify(t *testing.T) {
 func TestExportFileName(t *testing.T) {
 	now := time.Date(2026, 7, 7, 9, 30, 15, 0, time.UTC)
 
-	if got := exportFileName("Fix the Build!", "k7qz3xv9m2ht", exportHTML, now); got != "chatchain-fix-the-build-20260707-093015.html" {
+	if got := exportFileName("Fix the Build!", "k7qz3xv9m2ht", exportHTML, now); got != "iota-fix-the-build-20260707-093015.html" {
 		t.Errorf("title slug: got %q", got)
 	}
 	// Empty title falls back to the session id.
-	if got := exportFileName("", "k7qz3xv9m2ht", exportMarkdown, now); got != "chatchain-k7qz3xv9m2ht-20260707-093015.md" {
+	if got := exportFileName("", "k7qz3xv9m2ht", exportMarkdown, now); got != "iota-k7qz3xv9m2ht-20260707-093015.md" {
 		t.Errorf("id fallback: got %q", got)
 	}
 	// Both empty fall back to "session".
-	if got := exportFileName("", "", exportHTML, now); got != "chatchain-session-20260707-093015.html" {
+	if got := exportFileName("", "", exportHTML, now); got != "iota-session-20260707-093015.html" {
 		t.Errorf("session fallback: got %q", got)
 	}
 }

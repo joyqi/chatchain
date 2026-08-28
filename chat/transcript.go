@@ -8,9 +8,9 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"chatchain/internal/timefmt"
-	"chatchain/internal/tokfmt"
-	"chatchain/tool"
+	"github.com/joyqi/iota/internal/timefmt"
+	"github.com/joyqi/iota/internal/tokfmt"
+	"github.com/joyqi/iota/tool"
 )
 
 // The transcript is the session's single write surface for the chat area:
@@ -86,7 +86,7 @@ type activityGroup struct {
 	firstHeader string        // the lone call's classic form, valid while tools == 1
 	firstResult string
 	firstErr    bool
-	firstNote   string // the lone call's user-only trailing detail
+	firstNote   string   // the lone call's user-only trailing detail
 	failLines   []string // red breakout rows appended under the summary
 }
 

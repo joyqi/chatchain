@@ -4,7 +4,7 @@ import (
 	"errors"
 	"io"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // errInterrupted is the sentinel returned by a streaming section when the user

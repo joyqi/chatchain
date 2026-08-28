@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"chatchain/internal/ui"
+	"github.com/joyqi/iota/internal/ui"
 )
 
 // uiMDSink adapts the ui to markdown.Sink for the interactive loop: the

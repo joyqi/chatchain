@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"chatchain/internal/host"
-	"chatchain/internal/ui"
-	"chatchain/tool"
+	"github.com/joyqi/iota/internal/host"
+	"github.com/joyqi/iota/internal/ui"
+	"github.com/joyqi/iota/tool"
 )
 
 // approvalGate is the one place a state-changing call is put to the user.

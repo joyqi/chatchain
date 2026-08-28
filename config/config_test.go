@@ -133,7 +133,7 @@ func TestLoadExpandsProviderVars(t *testing.T) {
 		t.Errorf("url = %q", pc.URL)
 	}
 	home, _ := os.UserHomeDir()
-	if want := filepath.Join(home, ".chatchain", "sys.md"); pc.SystemFile != want {
+	if want := filepath.Join(home, ".iota", "sys.md"); pc.SystemFile != want {
 		t.Errorf("system_file = %q, want %q", pc.SystemFile, want)
 	}
 	if pc.Effort != "high" {
@@ -290,5 +290,24 @@ func TestDeferModeField(t *testing.T) {
 	}
 	if _, pc := cfg.Get("b"); pc.DeferMode != "" {
 		t.Errorf("defer_mode must default empty, got %q", pc.DeferMode)
+	}
+}
+
+// Config lookup: the current .iota.* names win; a pre-rename .chatchain.*
+// file is still found (project-local files are never moved, only nudged).
+func TestFindConfigFileLegacyFallback(t *testing.T) {
+	dir := t.TempDir()
+	if got := findConfigFile(dir); got != "" {
+		t.Fatalf("empty dir: got %q", got)
+	}
+	legacy := filepath.Join(dir, ".chatchain.yml")
+	os.WriteFile(legacy, []byte("providers: {}\n"), 0o644)
+	if got := findConfigFile(dir); got != legacy {
+		t.Errorf("legacy only: got %q, want %q", got, legacy)
+	}
+	current := filepath.Join(dir, ".iota.yaml")
+	os.WriteFile(current, []byte("providers: {}\n"), 0o644)
+	if got := findConfigFile(dir); got != current {
+		t.Errorf("both present: got %q, want %q", got, current)
 	}
 }

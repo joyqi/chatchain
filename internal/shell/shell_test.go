@@ -120,7 +120,7 @@ func TestSandboxIsolation(t *testing.T) {
 	if err != nil || home == "" {
 		t.Skip("no home directory")
 	}
-	outside, err := os.MkdirTemp(home, ".chatchain-sbx-test-")
+	outside, err := os.MkdirTemp(home, ".iota-sbx-test-")
 	if err != nil {
 		t.Skipf("cannot create probe dir in home: %v", err)
 	}

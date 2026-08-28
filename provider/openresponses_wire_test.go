@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"chatchain/internal/llm"
+	"github.com/joyqi/iota/internal/llm"
 )
 
 type writerFunc func([]byte) (int, error)

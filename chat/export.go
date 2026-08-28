@@ -13,7 +13,8 @@ import (
 	"time"
 	"unicode"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/internal/app"
+	"github.com/joyqi/iota/provider"
 
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
 	chromastyles "github.com/alecthomas/chroma/v2/styles"
@@ -101,7 +102,7 @@ func slugify(s string) string {
 }
 
 // exportFileName generates the no-argument /export target name:
-// "chatchain-<slug>-<YYYYMMDD-HHMMSS>.<ext>". The slug is derived from the
+// "iota-<slug>-<YYYYMMDD-HHMMSS>.<ext>". The slug is derived from the
 // session title, falling back to the session id and then to "session".
 func exportFileName(title, id string, format exportFormat, now time.Time) string {
 	slug := slugify(title)
@@ -111,7 +112,7 @@ func exportFileName(title, id string, format exportFormat, now time.Time) string
 	if slug == "" {
 		slug = "session"
 	}
-	return fmt.Sprintf("chatchain-%s-%s.%s", slug, now.Format("20060102-150405"), format.ext())
+	return fmt.Sprintf("%s-%s-%s.%s", app.Name, slug, now.Format("20060102-150405"), format.ext())
 }
 
 // exportMeta carries the session fields shown in export headers.
@@ -127,7 +128,7 @@ func exportTitle(meta exportMeta) string {
 	if t := strings.TrimSpace(meta.Title); t != "" {
 		return t
 	}
-	return "ChatChain session"
+	return app.Name + " session"
 }
 
 // exportMetaLine joins the available header fields (session id, model, date,
@@ -407,14 +408,14 @@ img { max-width: 100%; }
 // html[data-theme] then overrides the prefers-color-scheme defaults above.
 const exportToggleJS = `(function () {
   var root = document.documentElement;
-  var stored = localStorage.getItem("chatchain-theme");
+  var stored = localStorage.getItem("iota-theme");
   if (stored) root.setAttribute("data-theme", stored);
   document.getElementById("theme-toggle").addEventListener("click", function () {
     var sysDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
     var cur = root.getAttribute("data-theme") || (sysDark ? "dark" : "light");
     var next = cur === "dark" ? "light" : "dark";
     root.setAttribute("data-theme", next);
-    localStorage.setItem("chatchain-theme", next);
+    localStorage.setItem("iota-theme", next);
   });
 })();`
 

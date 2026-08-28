@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // stubProvider implements provider.Provider + provider.RawContentProvider for
@@ -382,7 +382,7 @@ func TestLazySessionCreation(t *testing.T) {
 	if infos, _ := ListSessions(""); len(infos) != 0 {
 		t.Fatalf("expected no sessions on disk before any append, got %d", len(infos))
 	}
-	if _, err := os.Stat(filepath.Join(home, ".chatchain", "sessions", id)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(home, ".iota", "sessions", id)); !os.IsNotExist(err) {
 		t.Fatalf("session dir should not exist before append; stat err = %v", err)
 	}
 

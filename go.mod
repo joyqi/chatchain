@@ -1,4 +1,4 @@
-module chatchain
+module github.com/joyqi/iota
 
 go 1.25.0
 

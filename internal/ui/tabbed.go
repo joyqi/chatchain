@@ -11,8 +11,8 @@ import (
 	"charm.land/bubbles/v2/textinput"
 
 	"charm.land/lipgloss/v2"
-	"chatchain/internal/textwidth"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/joyqi/iota/internal/textwidth"
 )
 
 // PanelKind selects a tabbed panel's behavior — the v2 ports of the vendored

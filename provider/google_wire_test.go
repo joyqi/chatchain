@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"chatchain/internal/llm"
+	"github.com/joyqi/iota/internal/llm"
 )
 
 // genaiContentFixture is the exact JSON google.golang.org/genai@v1.63.0

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // loopingToolProvider always requests another tool call, never producing a

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"chatchain/internal/textwidth"
+	"github.com/joyqi/iota/internal/textwidth"
 )
 
 // Display formatting shared by the toolsets' call headers (the headliner

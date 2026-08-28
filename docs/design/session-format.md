@@ -4,7 +4,7 @@ Status: **Draft** · Target: v1.9
 
 ## 1. Background & Motivation
 
-ChatChain's current session persistence (`SaveHistory` / `ImportHistory` in `chat/file.go`) is a human-readable Markdown transcript. It's fine for "glance at the history", but as an **agent session archive it is badly lossy** — it cannot support the core ability to **fully resume a half-finished agent session**.
+iota's current session persistence (`SaveHistory` / `ImportHistory` in `chat/file.go`) is a human-readable Markdown transcript. It's fine for "glance at the history", but as an **agent session archive it is badly lossy** — it cannot support the core ability to **fully resume a half-finished agent session**.
 
 As the chat evolves toward an agent (multi-step tool loops, reasoning chains, context-budget management), we need a **lossless, resumable, crash-safe** on-disk session format. This document defines that format and the related interface changes.
 
@@ -42,7 +42,7 @@ Also, import uses line prefixes `You> ` / `Assistant> ` / `System> ` / `Reasonin
 A session is a **directory** on disk:
 
 ```
-~/.chatchain/sessions/<session-id>/
+~/.iota/sessions/<session-id>/
   meta.json          # session metadata (small file, rewritten whole)
   messages.jsonl     # one message per line, strictly append-only
   attachments/
@@ -213,7 +213,7 @@ func LoadSession(id string, p provider.Provider) (*Session, error)
 // read meta.json; read messages.jsonl → []provider.Message (ignore a bad last line);
 // resolve attachments by data_ref; restore raw if the provider matches, else drop.
 func ListSessions() ([]SessionInfo, error)
-// scan ~/.chatchain/sessions/, read each meta.json, sort by updated_at desc.
+// scan ~/.iota/sessions/, read each meta.json, sort by updated_at desc.
 // SessionInfo: { ID, Title, Model, Provider, UpdatedAt, MessageCount }
 ```
 
@@ -221,8 +221,8 @@ func ListSessions() ([]SessionInfo, error)
 
 A flag on each provider subcommand, using cobra's `NoOptDefVal` to support both forms:
 
-- `chatchain openai --resume` (no value) → at startup, pop the `ListSessions` picker (`chat.PickSession`: a one-shot, surface-only list rendered via `ui.RunSurface` before the chat Program starts — arrow keys to move, Enter picks, Esc cancels); load the selection and enter chat.
-- `chatchain openai --resume=<id>` → load that id directly. **Must use `=`** — with `NoOptDefVal` set, the space form `--resume <id>` would treat `<id>` as the provider positional arg, not the flag value.
+- `iota openai --resume` (no value) → at startup, pop the `ListSessions` picker (`chat.PickSession`: a one-shot, surface-only list rendered via `ui.RunSurface` before the chat Program starts — arrow keys to move, Enter picks, Esc cancels); load the selection and enter chat.
+- `iota openai --resume=<id>` → load that id directly. **Must use `=`** — with `NoOptDefVal` set, the space form `--resume <id>` would treat `<id>` as the provider positional arg, not the flag value.
 
 Model selection: if `-M` is also given, use it; otherwise **default to the session's `meta.model`** and skip the picker (no need to re-pick a model on resume).
 
@@ -232,7 +232,7 @@ For switching/resuming mid-conversation. `/session` opens a tabbed ui surface wi
 
 ### 8.3 Shared rules
 
-- The bound provider is decided by the `chatchain <provider>` subcommand; resume **continues under the current provider** and does not rebuild from the session's origin provider (there's no key to rebuild with anyway).
+- The bound provider is decided by the `iota <provider>` subcommand; resume **continues under the current provider** and does not rebuild from the session's origin provider (there's no key to rebuild with anyway).
 - If the loaded session's `meta.provider == the current provider.Type()` → `RawContent` is restored; otherwise `raw` is dropped per §5.
 
 ## 9. Decoupling from context budgeting / compaction (important property)
@@ -249,7 +249,7 @@ Once persistence is **fully automatic**, every "manual save/load" command loses 
 
 | Command | Change |
 |---|---|
-| Interactive session | **Auto** created under `~/.chatchain/sessions/<id>/` and continuously appended — no manual action |
+| Interactive session | **Auto** created under `~/.iota/sessions/<id>/` and continuously appended — no manual action |
 | `/save` | **Removed** — everything is already persisted |
 | `/import` | **Removed** — replaced by the `/session` picker |
 | `/export` | **Not added** — no Markdown export |

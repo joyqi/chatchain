@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 func TestTurnBudgetUnlimitedWithoutAFlag(t *testing.T) {

@@ -3,7 +3,7 @@ package chat
 import (
 	"testing"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // TestFinalizeInterrupt covers the three-state persistence table from

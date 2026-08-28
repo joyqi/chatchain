@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"chatchain/provider"
-	"chatchain/tool"
+	"github.com/joyqi/iota/provider"
+	"github.com/joyqi/iota/tool"
 )
 
 func TestParseOutputFormat(t *testing.T) {
@@ -81,9 +81,9 @@ func (p *reportingProvider) Chat(context.Context, []provider.Message) (string, e
 func (p *reportingProvider) StreamChat(context.Context, []provider.Message, io.Writer, io.WriteCloser) (string, string, error) {
 	return "", "", nil
 }
-func (p *reportingProvider) Type() string     { return "openai" }
-func (p *reportingProvider) Model() string    { return "gpt-test" }
-func (p *reportingProvider) SetModel(string)  {}
+func (p *reportingProvider) Type() string    { return "openai" }
+func (p *reportingProvider) Model() string   { return "gpt-test" }
+func (p *reportingProvider) SetModel(string) {}
 func (p *reportingProvider) LastUsage() (int, int, bool) {
 	return p.last.Input, p.last.Output, true
 }

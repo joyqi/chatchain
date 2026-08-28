@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"chatchain/internal/llm"
+	"github.com/joyqi/iota/internal/llm"
 )
 
 var _ ToolProvider = (*GoogleProvider)(nil)
@@ -23,7 +23,7 @@ const (
 
 // GoogleProvider serves both Google backends through the shared
 // generateContent dialect (internal/llm): the Gemini Developer API ("gemini")
-// and Vertex AI ("vertexai", express/API-key mode — chatchain always has a
+// and Vertex AI ("vertexai", express/API-key mode — iota always has a
 // key, so the SDK's ADC path was never reachable). The request schema is
 // shared; the remaining field-level differences are parameterized here —
 // Vertex AI does not accept FunctionCall/FunctionResponse IDs and strictly

@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/fatih/color"
 
-	"chatchain/internal/markdown"
+	"github.com/joyqi/iota/internal/markdown"
 )
 
 // The showcase diff renderer: unified hunks become an annotated listing —

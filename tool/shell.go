@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"chatchain/internal/shell"
-	"chatchain/provider"
+	"github.com/joyqi/iota/internal/shell"
+	"github.com/joyqi/iota/provider"
 
 	"gopkg.in/yaml.v3"
 )

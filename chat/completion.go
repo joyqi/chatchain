@@ -1,6 +1,6 @@
 package chat
 
-import "chatchain/internal/ui"
+import "github.com/joyqi/iota/internal/ui"
 
 // The slash-command table: the single source for the composer's completion
 // list (UI.SetSlashCommands) and the command dispatch in the run loop. Values

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

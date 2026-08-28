@@ -13,7 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/internal/app"
+	"github.com/joyqi/iota/provider"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -353,7 +354,7 @@ func connectServer(ctx context.Context, raw ServerConfig) serverResult {
 		return res
 	}
 
-	client := mcp.NewClient(&mcp.Implementation{Name: "chatchain", Version: "1.0.0"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: app.Name, Version: "1.0.0"}, nil)
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
 		msg := fmt.Sprintf("connect failed: %v", err)

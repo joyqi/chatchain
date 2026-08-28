@@ -3,7 +3,7 @@ package provider
 import (
 	"testing"
 
-	"chatchain/internal/llm"
+	"github.com/joyqi/iota/internal/llm"
 )
 
 // ContextTokens must read each dialect's contract, not one hardcoded formula:

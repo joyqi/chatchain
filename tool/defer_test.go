@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // fakeMCP is a stand-in for the MCP manager: a live tool list plus recorded

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"chatchain/provider"
-	"chatchain/tool"
+	"github.com/joyqi/iota/provider"
+	"github.com/joyqi/iota/tool"
 )
 
 // parallelDispatch is a Dispatcher whose named tools are parallel-capable and

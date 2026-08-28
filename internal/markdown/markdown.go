@@ -7,8 +7,8 @@ import (
 	"strings"
 	"unicode"
 
-	"chatchain/internal/mathtext"
-	"chatchain/internal/textwidth"
+	"github.com/joyqi/iota/internal/mathtext"
+	"github.com/joyqi/iota/internal/textwidth"
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"

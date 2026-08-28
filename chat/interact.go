@@ -3,8 +3,8 @@ package chat
 import (
 	"context"
 
-	"chatchain/internal/ui"
-	"chatchain/tool"
+	"github.com/joyqi/iota/internal/ui"
+	"github.com/joyqi/iota/tool"
 )
 
 // Interactor is the chat-side tool.Interactor: it maps an AskSpec onto the

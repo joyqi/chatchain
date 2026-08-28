@@ -243,7 +243,7 @@ Two supporting contracts:
   (seen live as a double blank between a tool result and the next thinking
   marker). `lineCommitter.flush` glues escape-only lines back onto their
   predecessor; the transcript's blank latch can then stay display-naive.
-- **`CHATCHAIN_DEBUG_REGION=<file>`** traces every region op (commit /
+- **`IOTA_DEBUG_REGION=<file>`** traces every region op (commit /
   openCallPreview / closePreview / dropPreview + overflow batches). Spacing
   faults that sit in a producer or the renderer are invisible to region unit
   tests — the live op trace is how you localize which layer emitted a stray

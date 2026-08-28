@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 const maxFileSize = 20 * 1024 * 1024 // 20MB

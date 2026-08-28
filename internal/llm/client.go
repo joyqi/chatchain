@@ -1,5 +1,5 @@
 // Package llm is the minimal wire client behind provider/: hand-rolled HTTP +
-// SSE for the few endpoints chatchain actually uses, replacing the official
+// SSE for the few endpoints iota actually uses, replacing the official
 // SDKs (docs/design/internal-llm-client.md). One dialect file per wire shape
 // (chatcomp, responses, anthropic, google); provider/ maps provider.Message to
 // and from the dialect structs.

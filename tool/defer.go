@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // Deferred tool loading: instead of advertising every MCP tool's schema on

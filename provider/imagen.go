@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"chatchain/internal/llm"
+	"github.com/joyqi/iota/internal/llm"
 )
 
 // ImagenProvider speaks the dedicated Imagen :predict dialect: every turn is

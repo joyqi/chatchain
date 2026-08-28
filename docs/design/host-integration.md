@@ -2,7 +2,7 @@
 
 Status: **Shipped** · Depends on: internal/ui (the ANSI fallback wraps its facade)
 
-chatchain signals its lifecycle to whatever terminal environment ("host") it
+iota signals its lifecycle to whatever terminal environment ("host") it
 runs inside: a progress indicator while a turn works, a warning state while
 it is blocked on the user, and attention pings when something finishes or
 needs approval while the user is away. Different hosts speak different
@@ -49,9 +49,9 @@ model.
 
 **cmux** (`cmux.go`) — detected via the `CMUX_SURFACE_ID` env var cmux
 injects into every pane plus its CLI on PATH. State drives the sidebar
-through the public CLI: `set-status chatchain … --icon … --color …` (the
+through the public CLI: `set-status iota … --icon … --color …` (the
 icons/colors mirror what cmux's own Claude Code integration sends, so the
-row reads identically) and `workspace loading on|off --id chatchain` for the
+row reads identically) and `workspace loading on|off --id iota` for the
 spinner. A single worker goroutine executes commands off the chat loop; a
 capacity-1 last-wins mailbox coalesces bursts so a stale state never lands
 late; every call is best-effort with a 2s timeout — sidebar dressing must

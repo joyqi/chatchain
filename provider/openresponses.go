@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"chatchain/internal/llm"
+	"github.com/joyqi/iota/internal/llm"
 )
 
 var _ ToolProvider = (*OpenResponsesProvider)(nil)

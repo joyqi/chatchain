@@ -15,9 +15,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"chatchain/internal/textwidth"
-	"chatchain/internal/timefmt"
-	"chatchain/internal/tokfmt"
+	"github.com/joyqi/iota/internal/textwidth"
+	"github.com/joyqi/iota/internal/timefmt"
+	"github.com/joyqi/iota/internal/tokfmt"
 )
 
 // spinnerFrames drive the busy/preview headers and the per-insert activity

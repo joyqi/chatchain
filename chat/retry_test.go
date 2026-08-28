@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // Provider-declared permanent failures (imagen safety filters, malformed

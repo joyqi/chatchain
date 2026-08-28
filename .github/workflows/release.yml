@@ -33,6 +33,6 @@ jobs:
       - name: Trigger pkg.go.dev indexing
         run: |
           GOPROXY=https://proxy.golang.org
-          MODULE=github.com/joyqi/chatchain
+          MODULE=github.com/joyqi/iota
           VERSION=${{ github.event.release.tag_name }}
           curl -s "${GOPROXY}/${MODULE}/@v/${VERSION}.info" > /dev/null

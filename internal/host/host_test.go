@@ -27,7 +27,7 @@ func TestPresenterPerCapabilityFallback(t *testing.T) {
 	p := &Presenter{hosts: []Host{so, fb}, notifyOn: true}
 
 	p.SetState(StateBusy)
-	p.Notify(Event{Kind: KindDone, Text: "chatchain: done"})
+	p.Notify(Event{Kind: KindDone, Text: "iota: done"})
 
 	if len(so.states) != 1 || so.states[0] != StateBusy {
 		t.Errorf("specialized host states = %v, want [Busy]", so.states)
@@ -35,7 +35,7 @@ func TestPresenterPerCapabilityFallback(t *testing.T) {
 	if len(fb.states) != 0 {
 		t.Errorf("fallback got states %v although a host owns the capability", fb.states)
 	}
-	if len(fb.events) != 1 || fb.events[0].Text != "chatchain: done" {
+	if len(fb.events) != 1 || fb.events[0].Text != "iota: done" {
 		t.Errorf("fallback events = %v, want the ping it alone can deliver", fb.events)
 	}
 }

@@ -1,6 +1,6 @@
 package host
 
-import "chatchain/internal/ui"
+import "github.com/joyqi/iota/internal/ui"
 
 // UISink is the slice of the ui facade the ANSI host speaks — an interface
 // so tests record instead of driving a live Program.

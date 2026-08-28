@@ -1,5 +1,5 @@
 ---
-name: chatchain
+name: iota
 description: >
   Send questions to other LLM models — GPT-4o, GPT-4, o1, o3, Gemini, Claude (via API), etc.
   Use this skill whenever the user wants to ask, query, chat with, or get answers from another AI model,
@@ -7,49 +7,49 @@ description: >
   "compare answers from different models", "get a second opinion from another LLM",
   or any request that involves calling OpenAI, Anthropic, Gemini, or Vertex AI models.
 allowed-tools:
-  - Bash(chatchain *)
+  - Bash(iota *)
 ---
 
-# ChatChain CLI — Agent Skill
+# iota CLI — Agent Skill
 
-ChatChain is a CLI tool for chatting with multiple LLM providers.
+iota is a CLI tool for chatting with multiple LLM providers.
 
 ## Prerequisites
 
-First check if ChatChain is installed:
+First check if iota is installed:
 
 ```bash
-command -v chatchain
+command -v iota
 ```
 
 If not installed, install via Homebrew:
 
 ```bash
-brew tap joyqi/tap && brew install chatchain
+brew install joyqi/tap/iota
 ```
 
 Or via Go:
 
 ```bash
-go install github.com/joyqi/chatchain@latest
+go install github.com/joyqi/iota@latest
 ```
 
 ## CRITICAL: Discover Providers and Models Before Calling
 
-**DO NOT guess or hardcode provider names or model names.** Always discover them first using `chatchain -l`.
+**DO NOT guess or hardcode provider names or model names.** Always discover them first using `iota -l`.
 
 ### Step 1: List available providers
 
 ```bash
-chatchain -l
+iota -l
 ```
 
-This shows all built-in providers and any custom aliases configured in `~/.chatchain.yaml`. Only use providers that appear in this list.
+This shows all built-in providers and any custom aliases configured in `~/.iota.yaml`. Only use providers that appear in this list.
 
 ### Step 2: List available models for the chosen provider
 
 ```bash
-chatchain -l <provider>
+iota -l <provider>
 ```
 
 This queries the provider's API and returns the actual available models. Only use model names that appear in this list. If the user asks for a specific model (e.g. "ask GPT-4o"), find the closest match from the list.
@@ -57,7 +57,7 @@ This queries the provider's API and returns the actual available models. Only us
 ### Step 3: Send the message
 
 ```bash
-chatchain <provider> -M <model> -m "<message>"
+iota <provider> -M <model> -m "<message>"
 ```
 
 ## Key Flags
@@ -65,13 +65,13 @@ chatchain <provider> -M <model> -m "<message>"
 | Flag | Description |
 |------|-------------|
 | `-l, --list` | List configured providers (no arg), or models for a provider (with arg) |
-| `-M, --model <model>` | Specify model — **must be a real model from `chatchain -l <provider>`** |
+| `-M, --model <model>` | Specify model — **must be a real model from `iota -l <provider>`** |
 | `-m, --message <msg>` | Non-interactive mode: send a single message and exit (use `-` to read from stdin) |
 | `-s, --system <prompt>` | Set system prompt |
 | `-t, --temperature <val>` | Set temperature (0.0–2.0) |
 | `-k, --key <key>` | API key (overrides env var) |
 | `-u, --url <url>` | Custom API base URL |
-| `-c, --config <path>` | Path to config file (default: `~/.chatchain.yaml`) |
+| `-c, --config <path>` | Path to config file (default: `~/.iota.yaml`) |
 | `--max-turns <n>` | Limit agentic tool turns in non-interactive mode (default: unlimited) |
 | `--output-format <fmt>` | `-m` output: `text` (default) or `json` — one result object carrying the reply, per-round token usage and timing |
 
@@ -82,14 +82,14 @@ chatchain <provider> -M <model> -m "<message>"
 | OpenAI | `openai` | `OPENAI_API_KEY` | GPT models |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | Claude models |
 | Gemini | `gemini` | `GOOGLE_API_KEY` | Gemini models |
-| Vertex AI | `vertexai` | — | Uses Google Cloud ADC |
+| Vertex AI | `vertexai` | `GOOGLE_API_KEY` | Express (API-key) mode |
 | OpenAI Responses | `openresponses` | `OPENAI_API_KEY` | OpenAI Responses API |
 
-Custom aliases may also be configured in `~/.chatchain.yaml` (e.g. `deepseek`, `chatgpt`). Always run `chatchain -l` to see the full list.
+Custom aliases may also be configured in `~/.iota.yaml` (e.g. `deepseek`, `chatgpt`). Always run `iota -l` to see the full list.
 
 ## Config File
 
-ChatChain supports a YAML config file (`~/.chatchain.yaml`) for persistent API keys, default models, and custom provider aliases. Priority: CLI flag > env var > config file.
+iota supports a YAML config file (`~/.iota.yaml`) for persistent API keys, default models, and custom provider aliases. Priority: CLI flag > env var > config file.
 
 ```yaml
 providers:
@@ -101,7 +101,7 @@ providers:
     system: "You are a helpful coding assistant"
 ```
 
-With a config like this, `chatchain deepseek -m "hello"` works as a provider alias.
+With a config like this, `iota deepseek -m "hello"` works as a provider alias.
 
 ## Usage Examples
 
@@ -109,25 +109,25 @@ With a config like this, `chatchain deepseek -m "hello"` works as a provider ali
 
 ```bash
 # 1. Discover providers
-chatchain -l
+iota -l
 
 # 2. Pick a provider, discover its models
-chatchain -l openai
+iota -l openai
 
 # 3. Send the message with a real model name
-chatchain openai -M gpt-4o -m "What is the capital of France?"
+iota openai -M gpt-4o -m "What is the capital of France?"
 ```
 
 ### With system prompt
 
 ```bash
-chatchain anthropic -M claude-sonnet-4-20250514 -s "You are a helpful coding assistant" -m "Explain async/await in JavaScript"
+iota anthropic -M claude-sonnet-4-20250514 -s "You are a helpful coding assistant" -m "Explain async/await in JavaScript"
 ```
 
 ### Pipe content via stdin
 
 ```bash
-echo "Summarize this text" | chatchain gemini -M gemini-2.0-flash -m -
+echo "Summarize this text" | iota gemini -M gemini-2.0-flash -m -
 ```
 
 Note: `-m -` (dash) reads the message from stdin.
@@ -135,13 +135,13 @@ Note: `-m -` (dash) reads the message from stdin.
 ### With temperature
 
 ```bash
-chatchain openai -M gpt-4o -t 0.7 -m "Write a haiku about programming"
+iota openai -M gpt-4o -t 0.7 -m "Write a haiku about programming"
 ```
 
 ## Important Notes
 
-- **NEVER guess provider or model names** — always run `chatchain -l` and `chatchain -l <provider>` first
+- **NEVER guess provider or model names** — always run `iota -l` and `iota -l <provider>` first
 - Always use `-m` for non-interactive mode (otherwise it opens an interactive TUI)
 - Use `-m -` to read the message from stdin
-- If no `-M` is specified, ChatChain will prompt for model selection interactively (avoid this in automation)
+- If no `-M` is specified, iota will prompt for model selection interactively (avoid this in automation)
 - API keys are read from environment variables by default; use `-k` only if the env var is not set

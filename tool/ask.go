@@ -7,7 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // The ask set: model-initiated user interaction — `choose` (1–4 single/multi

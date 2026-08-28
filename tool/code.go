@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 
 	"github.com/aymanbagabas/go-udiff"
 	"github.com/bmatcuk/doublestar/v4"

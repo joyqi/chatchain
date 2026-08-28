@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"chatchain/provider"
-	"chatchain/tool"
+	"github.com/joyqi/iota/provider"
+	"github.com/joyqi/iota/tool"
 )
 
 // Delegation: running a child agent from inside a parent's tool call.

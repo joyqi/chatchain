@@ -1,8 +1,10 @@
 version: 2
 
+project_name: iota
+
 builds:
   - main: .
-    binary: chatchain
+    binary: iota
     env:
       - CGO_ENABLED=0
     goos:
@@ -33,11 +35,11 @@ brews:
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Formula
-    homepage: https://github.com/joyqi/chatchain
+    homepage: https://iota.sh
     description: A lightweight cross-platform AI chat CLI
     license: MIT
     install: |
-      bin.install "chatchain"
+      bin.install "iota"
 
 changelog:
   use: github-native

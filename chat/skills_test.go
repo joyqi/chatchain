@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"chatchain/internal/agents"
+	"github.com/joyqi/iota/internal/agents"
 )
 
 // Discovery, catalog rendering, and overlay freshness are tested in

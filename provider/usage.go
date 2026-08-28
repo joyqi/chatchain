@@ -1,6 +1,6 @@
 package provider
 
-import "chatchain/internal/llm"
+import "github.com/joyqi/iota/internal/llm"
 
 // Per-dialect usage conversion. The wire shapes disagree on what "input"
 // covers and on whether a total exists at all, so each converter states its

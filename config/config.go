@@ -7,7 +7,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"chatchain/internal/vars"
+	"github.com/joyqi/iota/internal/app"
+	"github.com/joyqi/iota/internal/vars"
 )
 
 // ProviderConfig holds per-provider settings from the config file.
@@ -118,14 +119,14 @@ func Load(explicitPath string) *Config {
 		return cfg
 	}
 
-	// Global: ~/.chatchain.yaml / .yml
+	// Global: ~/.iota.yaml / .yml
 	if home, err := os.UserHomeDir(); err == nil {
 		if f := findConfigFile(home); f != "" {
 			cfg.loadFile(f)
 		}
 	}
 
-	// Local: ./.chatchain.yaml / .yml
+	// Local: ./.iota.yaml / .yml
 	if wd, err := os.Getwd(); err == nil {
 		if f := findConfigFile(wd); f != "" {
 			cfg.loadFile(f)
@@ -149,15 +150,28 @@ func (c *Config) Get(name string) (providerType string, pc ProviderConfig) {
 	return providerType, pc
 }
 
-// findConfigFile looks for .chatchain.yaml then .chatchain.yml in dir.
+// findConfigFile looks for .iota.yaml then .iota.yml in dir, falling back
+// to the pre-rename .chatchain.* names: the global copy is moved on first
+// run (app.MigrateLegacy), a project-local one is honoured in place with a
+// nudge — it sits in somebody's working tree and is never touched.
 func findConfigFile(dir string) string {
-	for _, ext := range []string{".yaml", ".yml"} {
-		p := filepath.Join(dir, ".chatchain"+ext)
-		if _, err := os.Stat(p); err == nil {
+	for _, ext := range app.ConfigExts {
+		if p := filepath.Join(dir, app.ConfigBase+ext); fileExists(p) {
+			return p
+		}
+	}
+	for _, ext := range app.ConfigExts {
+		if p := filepath.Join(dir, app.LegacyConfigBase+ext); fileExists(p) {
+			fmt.Fprintf(os.Stderr, "Warning: config %s: legacy name, rename it to %s%s\n", p, app.ConfigBase, ext)
 			return p
 		}
 	}
 	return ""
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 // loadFile reads a single config file and merges its entries into c.
@@ -172,7 +186,7 @@ func (c *Config) loadFile(path string) {
 	var fc Config
 	if err := yaml.Unmarshal(data, &fc); err != nil {
 		// LOUD, never silent: swallowing a parse error here discards the
-		// whole file and reads as "chatchain stopped loading my config"
+		// whole file and reads as "iota stopped loading my config"
 		// with no clue why (a notify field type change proved it).
 		fmt.Fprintf(os.Stderr, "Warning: config %s: %v (file ignored)\n", path, err)
 		return

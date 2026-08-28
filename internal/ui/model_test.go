@@ -13,7 +13,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
-	"chatchain/internal/textwidth"
+	"github.com/joyqi/iota/internal/textwidth"
 )
 
 // step drives one Update and returns the (mutated) model.

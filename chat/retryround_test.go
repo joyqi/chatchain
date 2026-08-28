@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // retryRound contract: a transient failure re-issues the SAME call — the round

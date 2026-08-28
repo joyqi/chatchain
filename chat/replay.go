@@ -9,9 +9,9 @@ import (
 
 	"golang.org/x/term"
 
-	"chatchain/internal/imgterm"
-	"chatchain/internal/markdown"
-	"chatchain/provider"
+	"github.com/joyqi/iota/internal/imgterm"
+	"github.com/joyqi/iota/internal/markdown"
+	"github.com/joyqi/iota/provider"
 )
 
 // resumeEchoRounds is how many trailing conversation rounds a resumed session

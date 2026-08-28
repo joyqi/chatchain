@@ -1,6 +1,6 @@
 package mcp
 
-import "chatchain/internal/vars"
+import "github.com/joyqi/iota/internal/vars"
 
 // expandServerConfig returns a copy of cfg with ${…} variables expanded in
 // all string fields (command, args, url, env values, header values) — the

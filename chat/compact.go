@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"chatchain/provider"
+	"github.com/joyqi/iota/provider"
 )
 
 // compactThresholdPercent: compact when projected tokens reach this % of the window.

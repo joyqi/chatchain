@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"strings"
 
-	"chatchain/internal/llm"
+	"github.com/joyqi/iota/internal/llm"
 )
 
 // ImagesProvider speaks the OpenAI Images dialect (/images/generations and
